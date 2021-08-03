@@ -1,0 +1,288 @@
+%YAML 1.1
+---
+
+# Suricata configuration file. In addition to the comments describing all
+# options in this file, full documentation can be found at:
+# https://suricata.readthedocs.io/en/latest/configuration/suricata-yaml.html
+
+##
+## Step 1: Inform Suricata about your network
+##
+
+vars:
+  # more specific is better for alert accuracy and performance
+  address-groups:
+    HOME_NET: "[10.2.3.0/24, 10.2.4.0/24, 172.31.32.218/16]"
+
+  port-groups:
+    HTTP_PORTS: "80"
+    VXLAN_PORTS: 4789
+
+##
+## Step 2: Select outputs to enable
+##
+
+# The default logging directory.  Any log or output file will be
+# placed here if it's not specified with a full path name. This can be
+# overridden with the -l command line parameter.
+default-log-dir: /usr/local/var/log/suricata/
+
+# Global stats configuration
+stats:
+  enabled: yes
+  # The interval field (in seconds) controls the interval at
+  # which stats are updated in the log.
+  interval: 8
+# Configure the type of alert (and other) logging you would like.
+outputs:
+  # a line based alerts log similar to Snort's fast.log
+  - fast:
+      enabled: yes
+      filename: fast.log
+      append: yes
+      #filetype: regular # 'regular', 'unix_stream' or 'unix_dgram'
+
+  # Extensible Event Format (nicknamed EVE) event log in JSON format
+  - eve-log:
+      enabled: yes
+      filetype: unix_dgram #regular|syslog|unix_dgram|unix_stream|redis
+      filename: eve.json
+
+      # include the name of the input pcap file in pcap file processing mode
+      pcap-file: false
+
+      # enable/disable the community id feature.
+      community-id: false
+      # Seed value for the ID output. Valid values are 0-65535.
+      community-id-seed: 0
+
+      xff:
+        enabled: no
+
+      types:
+        - alert:
+            payload: no             # enable dumping payload in Base64
+            payload-buffer-size: 132kb # max size of payload buffer to output in eve-log
+            payload-printable: no   # enable dumping payload in printable (lossy) format
+            metadata: yes             # enable inclusion of app layer metadata with alert. Default yes
+            http-body: no           # Requires metadata; enable dumping of HTTP body in Base64
+            http-body-printable: yes # Requires metadata; enable dumping of HTTP body in printable format
+
+            # Enable the logging of tagged packets for rules using the
+            # "tag" keyword.
+            tagged-packets: yes
+        - http:
+            extended: yes     # enable this for extended logging information
+            dump-all-headers: both
+        - http2
+
+  # a line based log of HTTP requests (no alerts)
+  - http-log:
+      enabled: no
+
+  # a line based log of TLS handshake parameters (no alerts)
+  - tls-log:
+      enabled: no  # Log TLS connections.
+      filename: tls.log # File to store TLS logs.
+      append: yes
+  # output module to store certificates chain to disk
+  - tls-store:
+      enabled: no
+  - pcap-log:
+      enabled: no
+  # a full alert log containing much information for signature writers
+  # or for investigating suspected false positives.
+  - alert-debug:
+      enabled: no
+  # alert output to prelude (https://www.prelude-siem.org/) only
+  # available if Suricata has been compiled with --enable-prelude
+  - alert-prelude:
+      enabled: no
+  # Stats.log contains data from various counters of the Suricata engine.
+  - stats:
+      enabled: yes
+      filename: stats.log
+      append: yes       # append to file (yes) or overwrite it (no)
+      totals: yes       # stats for all threads merged together
+      threads: no       # per thread stats
+      #null-values: yes  # print counters that have value 0. Default: no
+
+  # a line based alerts log similar to fast.log into syslog
+  - syslog:
+      enabled: no
+  - file-store:
+      enabled: no
+
+  - tcp-data:
+      enabled: no
+
+  - http-body-data:
+      enabled: no
+
+  - lua:
+      enabled: no
+
+# Logging configuration.  This is not about logging IDS alerts/events, but
+# output about what Suricata is doing, like startup messages, errors, etc.
+logging:
+  # The default log level: can be overridden in an output section.
+  # Note that debug level logging will only be emitted if Suricata was
+  # compiled with the --enable-debug configure option.
+  #
+  # This value is overridden by the SC_LOG_LEVEL env var.
+  default-log-level: notice
+
+  # Define your logging outputs.  If none are defined, or they are all
+  # disabled you will get the default: console output.
+  outputs:
+  - console:
+      enabled: yes
+      # type: json
+  - file:
+      enabled: yes
+      level: info
+      filename: suricata.log
+      # type: json
+  - syslog:
+      enabled: no
+      facility: local5
+      format: "[%i] <%d> -- "
+      # type: json
+
+
+##
+## Step 3: Configure common capture settings
+##
+## See "Advanced Capture Options" below for more options, including Netmap
+## and PF_RING.
+##
+
+# Linux high speed capture support
+af-packet:
+  # Put default values here. These will be used for an interface that is not
+  # in the list above.
+  - interface: default
+
+##
+## Step 4: App Layer Protocol configuration
+##
+app-layer:
+  protocols:
+    rfb:
+      enabled: no
+    mqtt:
+      enabled: no
+    krb5:
+      enabled: no
+    snmp:
+      enabled: no
+    ike:
+      enabled: no
+    tls:
+      enabled: no
+    dcerpc:
+      enabled: no
+    ftp:
+      enabled: no
+      # memcap: 64mb
+    rdp:
+      enabled: no
+    ssh:
+      enabled: no
+    # HTTP2: Experimental HTTP 2 support. Disabled by default.
+    http2:
+      enabled: yes
+    smtp:
+      enabled: no
+    imap:
+      enabled: no
+    smb:
+      enabled: no
+    nfs:
+      enabled: no
+    tftp:
+      enabled: no
+    dns:
+      tcp:
+        enabled: no
+      udp:
+        enabled: no
+    http:
+      enabled: yes
+      libhtp:
+         default-config:
+           personality: IDS
+
+           # Can be specified in kb, mb, gb.  Just a number indicates
+           # it's in bytes.
+           request-body-limit: 2kb
+           response-body-limit: 2kb
+
+           # inspection limits
+           request-body-minimal-inspect-size: 32kb
+           request-body-inspect-window: 4kb
+           response-body-minimal-inspect-size: 40kb
+           response-body-inspect-window: 16kb
+
+           # response body decompression (0 disables)
+           response-body-decompress-layer-limit: 2
+
+           # auto will use http-body-inline mode in IPS mode, yes or no set it statically
+           http-body-inline: auto
+
+           # Decompress SWF files.
+           swf-decompression:
+             enabled: no
+
+           # decoding
+           double-decode-path: no
+           double-decode-query: no
+
+
+         server-config:
+
+    modbus:
+      enabled: no
+    # DNP3
+    dnp3:
+      enabled: no
+    enip:
+      enabled: no
+    ntp:
+      enabled: no
+
+    dhcp:
+      enabled: no
+
+    sip:
+      enabled: no
+
+#
+# Configure Suricata to load Suricata-Update managed rules.
+#
+
+default-rule-path: /usr/local/etc/suricata/rules
+
+rule-files:
+  - suricata.rules
+
+#
+# Auxiliary configuration files.
+#
+
+classification-file: /usr/local/etc/suricata/classification.config
+reference-config-file: /usr/local/etc/suricata/reference.config
+threshold-file: /usr/local/etc/suricata/threshold.config
+
+##
+## Include other configs
+##
+
+# Includes:  Files included here will be handled as if they were in-lined
+# in this configuration file. Files with relative pathnames will be
+# searched for in the same directory as this configuration file. You may
+# use absolute pathnames too.
+# You can specify more than 2 configuration files, if needed.
+#include: include1.yaml
+#include: include2.yaml
+
