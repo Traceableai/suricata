@@ -470,6 +470,11 @@ static void EveHttpLogJSON(JsonHttpLogThread *aft, JsonBuilder *js, htp_tx_t *tx
     if (http_ctx->flags & LOG_HTTP_RES_HEADERS)
         EveHttpLogJSONHeaders(js, LOG_HTTP_RES_HEADERS, tx);
 
+    HtpTxUserData *htud = (HtpTxUserData *)htp_tx_get_user_data(tx);
+    if (htud != NULL) {
+        BodyPrintableBuffer(js, &htud->request_body, "http_request_body_printable");
+        BodyPrintableBuffer(js, &htud->response_body, "http_response_body_printable");
+    }
     jb_close(js);
 }
 
