@@ -30,6 +30,7 @@ use std::ffi::{CStr, CString};
 use std::fmt;
 use std::io;
 use std::mem::transmute;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static mut ALPROTO_HTTP2: AppProto = ALPROTO_UNKNOWN;
 
@@ -137,6 +138,9 @@ pub struct HTTP2Transaction {
     ft_tc: FileTransferTracker,
     ft_ts: FileTransferTracker,
 
+    pub start_time: u128,
+    pub end_time: u128,
+
     //temporary escaped header for detection
     //must be attached to transaction for memory management (be freed at the right time)
     pub escaped: Vec<Vec<u8>>,
@@ -158,6 +162,8 @@ impl HTTP2Transaction {
             ft_tc: FileTransferTracker::new(),
             ft_ts: FileTransferTracker::new(),
             escaped: Vec::with_capacity(16),
+            start_time: 0,
+            end_time: 0,
         }
     }
 
@@ -276,6 +282,11 @@ impl HTTP2Transaction {
                             }
                         }
                     }
+                    let start_time = SystemTime::now();
+                    let since_the_epoch = start_time
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards");
+                    self.end_time = since_the_epoch.as_millis();
                 } else if header.ftype == parser::HTTP2FrameType::DATA as u8 {
                     //not end of stream
                     if dir == STREAM_TOSERVER {
@@ -491,6 +502,11 @@ impl HTTP2State {
             tx.tx_id = self.tx_id;
             tx.stream_id = sid;
             tx.state = HTTP2TransactionState::HTTP2StateOpen;
+            let start_time = SystemTime::now();
+            let since_the_epoch = start_time
+               .duration_since(UNIX_EPOCH)
+               .expect("Time went backwards");
+            tx.start_time = since_the_epoch.as_millis();
             self.transactions.push(tx);
             return self.transactions.last_mut().unwrap();
         }

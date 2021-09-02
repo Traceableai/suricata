@@ -240,6 +240,8 @@ typedef struct HtpTxUserData_ {
 
     DetectEngineState *de_state;
     AppLayerTxData tx_data;
+    struct timeval request_start_timestamp;
+    struct timeval response_end_timestamp;
 } HtpTxUserData;
 
 typedef struct HtpState_ {
