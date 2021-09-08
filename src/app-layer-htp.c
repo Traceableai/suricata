@@ -1949,7 +1949,6 @@ static int HTPCallbackResponseBodyData(htp_tx_data_t *d)
     if (tx_ud == NULL) {
         SCReturnInt(HTP_OK);
     }
-    TimeGet(&tx_ud->response_end_timestamp);
     if (!tx_ud->request_body_init) {
         tx_ud->request_body_init = 1;
     }
@@ -2190,7 +2189,6 @@ static int HTPCallbackResponse(htp_tx_t *tx)
             SCLogDebug("closing file that was being stored");
             (void)HTPFileClose(hstate, NULL, 0, 0, STREAM_TOCLIENT);
             htud->tcflags &= ~HTP_FILENAME_SET;
-            TimeGet(&htud->response_end_timestamp);
         }
     }
 
