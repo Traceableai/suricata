@@ -69,7 +69,7 @@ typedef struct JsonHttpLogThread_ {
 } JsonHttpLogThread;
 
 #define MAX_SIZE_HEADER_NAME 256
-#define MAX_SIZE_HEADER_VALUE 2048
+#define MAX_SIZE_HEADER_VALUE 16384
 
 #define LOG_HTTP_DEFAULT 0
 #define LOG_HTTP_EXTENDED 1
