@@ -43,6 +43,8 @@
 /** Echo Congestion flag */
 #define TH_CWR                               0x80
 
+#define TH_SSL                               0x08
+
 /* tcp option codes */
 #define TCP_OPT_EOL                          0x00
 #define TCP_OPT_NOP                          0x01
