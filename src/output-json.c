@@ -921,7 +921,7 @@ JsonBuilder *CreateEveHeaderWithTxId(const Packet *p, enum OutputJsonLogDirectio
 
     /* tx id for correlation with other events */
     jb_set_uint(js, "tx_id", tx_id);
-    jb_set_uint(js, "is_tls", p->tcph->th_offx2 & TH_SSL?true:false);
+    jb_set_bool(js, "is_tls", p->tcph->th_offx2 & TH_SSL?true:false);
 
 
     return js;
