@@ -187,6 +187,15 @@ fn log_response(res: &PgsqlBEMessage, jb: &mut JsonBuilder) -> Result<(), JsonEr
         }) => {
             jb.set_string_from_bytes(res.to_str(), payload)?;
         }
+        PgsqlBEMessage::UnknownMessageType(RegularPacket {
+            identifier: _,
+            length,
+            payload,
+        }) => {
+            // jb.set_string_from_bytes("identifier", identifier.to_vec())?;
+            jb.set_uint("length", (*length).into())?;
+            jb.set_string_from_bytes("payload", payload)?;
+        }
         PgsqlBEMessage::AuthenticationOk(_)
         | PgsqlBEMessage::AuthenticationKerb5(_)
         | PgsqlBEMessage::AuthenticationCleartextPassword(_)
@@ -262,10 +271,6 @@ fn log_startup_parameters(params: &PgsqlStartupParameters) -> Result<JsonBuilder
     let mut jb = JsonBuilder::new_object();
     // User is a mandatory field in a pgsql message
     jb.set_string_from_bytes("user", &params.user.value)?;
-    if let Some(PgsqlParameter { name: _, value }) = &params.database {
-        jb.set_string_from_bytes("database", value)?;
-    }
-
     if let Some(parameters) = &params.optional_params {
         jb.open_array("optional_parameters")?;
         for parameter in parameters {

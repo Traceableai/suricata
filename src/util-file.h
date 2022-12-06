@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2011 Open Information Security Foundation
+/* Copyright (C) 2007-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -26,8 +26,8 @@
 #define __UTIL_FILE_H__
 
 #include "conf.h"
-
 #include "util-streaming-buffer.h"
+#include "flow.h"
 
 /* Hack: Pulling rust.h to get the SCSha256 causes all sorts of problems with
  *   header include orders, which is something we'll have to resolve as we provide
@@ -61,6 +61,10 @@ typedef struct SCMd5 SCMd5;
 // to be used instead of PATH_MAX which depends on the OS
 #define SC_FILENAME_MAX 4096
 
+#define FILEDATA_CONTENT_LIMIT            100000
+#define FILEDATA_CONTENT_INSPECT_MIN_SIZE 32768
+#define FILEDATA_CONTENT_INSPECT_WINDOW   4096
+
 typedef enum FileState_ {
     FILE_STATE_NONE = 0,    /**< no state */
     FILE_STATE_OPENED,      /**< flow file is opened */
@@ -77,7 +81,6 @@ typedef struct File_ {
     uint16_t name_len;
     FileState state;
     StreamingBuffer *sb;
-    uint64_t txid;                  /**< tx this file is part of */
     uint32_t file_track_id;         /**< id used by protocol parser */
     uint32_t file_store_id;         /**< id used in store file name file.<id> */
     int fd;                         /**< file descriptor for filestore, not
@@ -200,21 +203,14 @@ int FileSetRange(FileContainer *, uint64_t start, uint64_t end);
 int FileStore(File *);
 
 /**
- *  \brief Set the TX id for a file
- *
- *  \param ff The file to store
- *  \param txid the tx id
- */
-int FileSetTx(File *, uint64_t txid);
-void FileContainerSetTx(FileContainer *ffc, uint64_t tx_id);
-
-/**
  *  \brief disable file storing for a transaction
  *
  *  \param f flow
+ *  \param direction STREAM_TOSERVER or STREAM_TOCLIENT
+ *  \param tx transaction pointer
  *  \param tx_id transaction id
  */
-void FileDisableStoringForTransaction(Flow *f, uint8_t direction, uint64_t tx_id);
+void FileDisableStoringForTransaction(Flow *f, const uint8_t direction, void *tx, uint64_t tx_id);
 
 void FlowFileDisableStoringForTransaction(struct Flow_ *f, uint64_t tx_id);
 void FilePrune(FileContainer *ffc);
@@ -242,8 +238,6 @@ void FileForceHashParseCfg(ConfNode *);
 
 void FileForceTrackingEnable(void);
 
-void FileStoreAllFiles(FileContainer *);
-void FileStoreAllFilesForTx(FileContainer *, uint64_t);
 void FileStoreFileById(FileContainer *fc, uint32_t);
 
 void FileTruncateAllOpenFiles(FileContainer *);
@@ -251,6 +245,13 @@ void FileTruncateAllOpenFiles(FileContainer *);
 uint64_t FileDataSize(const File *file);
 uint64_t FileTrackedSize(const File *file);
 
+uint16_t FileFlowFlagsToFlags(const uint16_t flow_file_flags, uint8_t direction);
 uint16_t FileFlowToFlags(const Flow *flow, uint8_t direction);
+
+#ifdef DEBUG
+void FilePrintFlags(const File *file);
+#else
+#define FilePrintFlags(file)
+#endif
 
 #endif /* __UTIL_FILE_H__ */

@@ -31,6 +31,7 @@
 #include "tm-threads.h"
 
 #include "util-privs.h"
+#include "util-datalink.h"
 #include "util-device.h"
 #include "tmqh-packetpool.h"
 #include "source-erf-dag.h"
@@ -305,6 +306,8 @@ ReceiveErfDagThreadInit(ThreadVars *tv, void *initdata, void **data)
     ewtn->tv = tv;
     *data = (void *)ewtn;
 
+    DatalinkSetGlobalType(LINKTYPE_ETHERNET);
+
     SCLogInfo("Starting processing packets from stream: %d on DAG: %s",
         ewtn->dagstream, ewtn->dagname);
 
@@ -334,6 +337,10 @@ ReceiveErfDagLoop(ThreadVars *tv, void *data, void *slot)
     TmSlot *s = (TmSlot *)slot;
 
     dtv->slot = s->slot_next;
+
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
 
     while (1) {
         if (suricata_ctl_flags & SURICATA_STOP) {

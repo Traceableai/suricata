@@ -24,9 +24,6 @@
 #ifndef __STREAM_TCP_PRIVATE_H__
 #define __STREAM_TCP_PRIVATE_H__
 
-#include "tree.h"
-#include "decode.h"
-#include "util-pool.h"
 #include "util-pool-thread.h"
 #include "util-streaming-buffer.h"
 
@@ -58,12 +55,27 @@ int TcpSackCompare(struct StreamTcpSackRecord *a, struct StreamTcpSackRecord *b)
 RB_HEAD(TCPSACK, StreamTcpSackRecord);
 RB_PROTOTYPE(TCPSACK, StreamTcpSackRecord, rb, TcpSackCompare);
 
+#define TCPSEG_PKT_HDR_DEFAULT_SIZE 64
+
+/*
+ * Struct to add the additional information required to use TcpSegments to dump
+ * a packet capture to file with the stream-pcap-log output option. This is only
+ * used if the session-dump option is enabled.
+ */
+typedef struct TcpSegmentPcapHdrStorage_ {
+    struct timeval ts;
+    uint32_t pktlen;
+    uint32_t alloclen;
+    uint8_t *pkt_hdr;
+} TcpSegmentPcapHdrStorage;
+
 typedef struct TcpSegment {
-    PoolThreadReserved res;
+    PoolThreadId pool_id;
     uint16_t payload_len;       /**< actual size of the payload */
     uint32_t seq;
     RB_ENTRY(TcpSegment) __attribute__((__packed__)) rb;
     StreamingBufferSegment sbseg;
+    TcpSegmentPcapHdrStorage *pcap_hdr_storage;
 } __attribute__((__packed__)) TcpSegment;
 
 /** \brief compare function for the Segment tree
@@ -134,20 +146,19 @@ typedef struct TcpStream_ {
 #define STREAM_LOG_PROGRESS(stream) (STREAM_BASE_OFFSET((stream)) + (stream)->log_progress_rel)
 
 /* from /usr/include/netinet/tcp.h */
-enum TcpState
-{
-    TCP_NONE,
-    TCP_LISTEN,
-    TCP_SYN_SENT,
-    TCP_SYN_RECV,
-    TCP_ESTABLISHED,
-    TCP_FIN_WAIT1,
-    TCP_FIN_WAIT2,
-    TCP_TIME_WAIT,
-    TCP_LAST_ACK,
-    TCP_CLOSE_WAIT,
-    TCP_CLOSING,
-    TCP_CLOSED,
+enum TcpState {
+    TCP_NONE = 0,
+    // TCP_LISTEN = 1,
+    TCP_SYN_SENT = 2,
+    TCP_SYN_RECV = 3,
+    TCP_ESTABLISHED = 4,
+    TCP_FIN_WAIT1 = 5,
+    TCP_FIN_WAIT2 = 6,
+    TCP_TIME_WAIT = 7,
+    TCP_LAST_ACK = 8,
+    TCP_CLOSE_WAIT = 9,
+    TCP_CLOSING = 10,
+    TCP_CLOSED = 11,
 };
 
 /*
@@ -195,7 +206,8 @@ enum TcpState
  * Per STREAM flags
  */
 
-// bit 0 vacant
+/** Flag to indicate that we have seen gap on the stream */
+#define STREAMTCP_STREAM_FLAG_HAS_GAP BIT_U16(0)
 /** Flag to avoid stream reassembly/app layer inspection for the stream */
 #define STREAMTCP_STREAM_FLAG_NOREASSEMBLY                  BIT_U16(1)
 /** we received a keep alive */
@@ -258,7 +270,7 @@ enum TcpState
 }
 
 typedef struct TcpSession_ {
-    PoolThreadReserved res;
+    PoolThreadId pool_id;
     uint8_t state:4;                        /**< tcp state from state enum */
     uint8_t pstate:4;                       /**< previous state */
     uint8_t queue_len;                      /**< length of queue list below */
@@ -268,6 +280,7 @@ typedef struct TcpSession_ {
     /* coccinelle: TcpSession:flags:STREAMTCP_FLAG */
     uint16_t flags;
     uint32_t reassembly_depth;      /**< reassembly depth for the stream */
+    bool lossy_be_liberal;
     TcpStream server;
     TcpStream client;
     TcpStateQueue *queue;                   /**< list of SYN/ACK candidates */

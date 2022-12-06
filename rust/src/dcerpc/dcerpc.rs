@@ -1,4 +1,4 @@
-/* Copyright (C) 2020 Open Information Security Foundation
+/* Copyright (C) 2020-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -15,7 +15,7 @@
  * 02110-1301, USA.
  */
 
-use crate::applayer::*;
+use crate::applayer::{self, *};
 use crate::core::{self, *};
 use crate::dcerpc::parser;
 use nom7::error::{Error, ErrorKind};
@@ -24,6 +24,7 @@ use nom7::{Err, IResult, Needed};
 use std;
 use std::cmp;
 use std::ffi::CString;
+use std::collections::VecDeque;
 
 // Constant DCERPC UDP Header length
 pub const DCERPC_HDR_LEN: u16 = 16;
@@ -185,6 +186,13 @@ pub struct DCERPCTransaction {
     pub tx_data: AppLayerTxData,
 }
 
+impl Transaction for DCERPCTransaction {
+    fn id(&self) -> u64 {
+        // need +1 to match state.tx_id
+        self.id + 1
+    }
+}
+
 impl DCERPCTransaction {
     pub fn new() -> Self {
         return Self {
@@ -239,7 +247,7 @@ impl DCERPCUuidEntry {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Uuid {
     pub time_low: Vec<u8>,
     pub time_mid: Vec<u8>,
@@ -275,7 +283,7 @@ pub struct BindCtxItem {
     pub versionminor: u16,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DCERPCBindAckResult {
     pub ack_result: u16,
     pub ack_reason: u16,
@@ -296,12 +304,12 @@ pub struct DCERPCState {
     pub header: Option<DCERPCHdr>,
     pub bind: Option<DCERPCBind>,
     pub bindack: Option<DCERPCBindAck>,
-    pub transactions: Vec<DCERPCTransaction>,
+    pub transactions: VecDeque<DCERPCTransaction>,
     pub buffer_ts: Vec<u8>,
     pub buffer_tc: Vec<u8>,
     pub pad: u8,
     pub padleft: u16,
-    pub bytes_consumed: u16,
+    pub bytes_consumed: i32,
     pub tx_id: u64,
     pub query_completed: bool,
     pub data_needed_for_dir: Direction,
@@ -313,6 +321,17 @@ pub struct DCERPCState {
     pub ts_ssn_trunc: bool, /// true if Truncated in this direction
     pub tc_ssn_trunc: bool,
     pub flow: Option<*const core::Flow>,
+    state_data: AppLayerStateData,
+}
+
+impl State<DCERPCTransaction> for DCERPCState {
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&DCERPCTransaction> {
+        self.transactions.get(index)
+    }
 }
 
 impl DCERPCState {
@@ -343,7 +362,7 @@ impl DCERPCState {
         let mut index = 0;
         for i in 0..len {
             let tx = &self.transactions[i];
-            if tx.id as u64 == tx_id { //+ 1 {
+            if tx.id == tx_id { //+ 1 {
                 found = true;
                 index = i;
                 SCLogDebug!("tx {} progress {}/{}", tx.id, tx.req_done, tx.resp_done);
@@ -418,14 +437,14 @@ impl DCERPCState {
     }
 
     pub fn handle_gap_ts(&mut self) -> u8 {
-        if self.buffer_ts.len() > 0 {
+        if !self.buffer_ts.is_empty() {
             self.buffer_ts.clear();
         }
         return 0;
     }
 
     pub fn handle_gap_tc(&mut self) -> u8 {
-        if self.buffer_tc.len() > 0 {
+        if !self.buffer_tc.is_empty() {
             self.buffer_tc.clear();
         }
         return 0;
@@ -546,7 +565,7 @@ impl DCERPCState {
                     SCLogDebug!("post_gap_housekeeping: done");
                     break;
                 }
-                if tx.req_done == false {
+                if !tx.req_done {
                     tx.req_lost = true;
                 }
                 tx.req_done = true;
@@ -560,10 +579,10 @@ impl DCERPCState {
                     SCLogDebug!("post_gap_housekeeping: done");
                     break;
                 }
-                if tx.req_done == false {
+                if !tx.req_done {
                     tx.req_lost = true;
                 }
-                if tx.resp_done == false {
+                if !tx.resp_done {
                     tx.resp_lost = true;
                 }
                 tx.req_done = true;
@@ -583,7 +602,7 @@ impl DCERPCState {
             }
             d = &d[1..];
         }
-        Err(Err::Incomplete(Needed::new(2 as usize - d.len())))
+        Err(Err::Incomplete(Needed::new(2_usize - d.len())))
     }
 
     /// Makes a call to the nom parser for parsing DCERPC Header.
@@ -677,7 +696,7 @@ impl DCERPCState {
                     if retval == -1 {
                         return -1;
                     }
-                    idx = retval + idx;
+                    idx += retval;
                 }
                 let call_id = self.get_hdr_call_id().unwrap_or(0);
                 let mut tx = self.create_tx(call_id);
@@ -687,7 +706,7 @@ impl DCERPCState {
                     sc_app_layer_parser_trigger_raw_stream_reassembly(flow, Direction::ToServer as i32);
                 }
                 tx.frag_cnt_ts = 1;
-                self.transactions.push(tx);
+                self.transactions.push_back(tx);
                 // Bytes parsed with `parse_dcerpc_bind` + (bytes parsed per bindctxitem [44] * number
                 // of bindctxitems)
                 (input.len() - leftover_bytes.len()) as i32 + retval * numctxitems as i32
@@ -740,7 +759,7 @@ impl DCERPCState {
         }
     }
 
-    pub fn handle_stub_data(&mut self, input: &[u8], input_len: u16, dir: Direction) -> u16 {
+    pub fn handle_stub_data(&mut self, input: &[u8], input_len: usize, dir: Direction) -> u16 {
         let retval;
         let hdrpfcflags = self.get_hdr_pfcflags().unwrap_or(0);
         let padleft = self.padleft;
@@ -818,19 +837,20 @@ impl DCERPCState {
     /// Return value:
     /// * Success: Number of bytes successfully parsed.
     /// * Failure: -1 in case fragment length defined by header mismatches the data.
-    pub fn handle_common_stub(&mut self, input: &[u8], bytes_consumed: u16, dir: Direction) -> i32 {
+    pub fn handle_common_stub(&mut self, input: &[u8], bytes_consumed: usize, dir: Direction) -> i32 {
         let fraglen = self.get_hdr_fraglen().unwrap_or(0);
-        if fraglen < bytes_consumed as u16 + DCERPC_HDR_LEN {
+        if (fraglen as usize) < bytes_consumed + (DCERPC_HDR_LEN as usize) {
             return -1;
         }
-        self.padleft = fraglen - DCERPC_HDR_LEN - bytes_consumed;
-        let mut input_left = input.len() as u16 - bytes_consumed;
+        // Above check makes sure padleft stays in u16 limits
+        self.padleft = fraglen - DCERPC_HDR_LEN - bytes_consumed as u16;
+        let mut input_left = input.len() - bytes_consumed;
         let mut parsed = bytes_consumed as i32;
         while input_left > 0 && parsed < fraglen as i32 {
             let retval = self.handle_stub_data(&input[parsed as usize..], input_left, dir);
-            if retval > 0 && retval <= input_left {
+            if retval > 0 && retval as usize <= input_left {
                 parsed += retval as i32;
-                input_left -= retval;
+                input_left -= <u16 as std::convert::Into<usize>>::into(retval);
             } else if input_left > 0 {
                 SCLogDebug!(
                     "Error parsing DCERPC {} stub data",
@@ -867,12 +887,12 @@ impl DCERPCState {
                         tx.ctxid = request.ctxid;
                         tx.opnum = request.opnum;
                         tx.first_request_seen = request.first_request_seen;
-                        self.transactions.push(tx);
+                        self.transactions.push_back(tx);
                     }
                 }
                 let parsed = self.handle_common_stub(
                     input,
-                    (input.len() - leftover_input.len()) as u16,
+                    input.len() - leftover_input.len(),
                     Direction::ToServer,
                 );
                 parsed
@@ -922,7 +942,7 @@ impl DCERPCState {
                     if consumed < 2 {
                         consumed = 0;
                     } else {
-                        consumed = consumed - 1;
+                        consumed -= 1;
                     }
                     SCLogDebug!("DCERPC record NOT found");
                     return AppLayerResult::incomplete(consumed as u32, 2);
@@ -957,7 +977,7 @@ impl DCERPCState {
             }
         };
 
-        if self.data_needed_for_dir != direction && buffer.len() != 0 {
+        if self.data_needed_for_dir != direction && !buffer.is_empty() {
             return AppLayerResult::err();
         }
 
@@ -966,7 +986,7 @@ impl DCERPCState {
 
         // Check if header data was complete. In case of EoF or incomplete data, wait for more
         // data else return error
-        if self.bytes_consumed < DCERPC_HDR_LEN && input_len > 0 {
+        if self.bytes_consumed < DCERPC_HDR_LEN.into() && input_len > 0 {
             parsed = self.process_header(buffer);
             if parsed == -1 {
                 self.extend_buffer(buffer, direction);
@@ -975,7 +995,7 @@ impl DCERPCState {
             if parsed == -2 {
                 return AppLayerResult::err();
             }
-            self.bytes_consumed += parsed as u16;
+            self.bytes_consumed += parsed;
         }
 
         let fraglen = self.get_hdr_fraglen().unwrap_or(0);
@@ -987,7 +1007,7 @@ impl DCERPCState {
         } else {
             self.query_completed = true;
         }
-        parsed = self.bytes_consumed as i32;
+        parsed = self.bytes_consumed;
 
         let current_call_id = self.get_hdr_call_id().unwrap_or(0);
 
@@ -1010,8 +1030,8 @@ impl DCERPCState {
                     } else {
                         let mut tx = self.create_tx(current_call_id);
                         tx.resp_cmd = x;
-                        self.transactions.push(tx);
-                        self.transactions.last_mut().unwrap()
+                        self.transactions.push_back(tx);
+                        self.transactions.back_mut().unwrap()
                     };
                     tx.resp_done = true;
                     tx.frag_cnt_tc = 1;
@@ -1036,7 +1056,7 @@ impl DCERPCState {
                         None => {
                             let mut tx = self.create_tx(current_call_id);
                             tx.resp_cmd = x;
-                            self.transactions.push(tx);
+                            self.transactions.push_back(tx);
                         }
                     };
                     retval = self.handle_common_stub(
@@ -1058,10 +1078,10 @@ impl DCERPCState {
                 return AppLayerResult::err();
             }
         }
-        self.bytes_consumed += retval as u16;
+        self.bytes_consumed += retval;
 
         // If the query has been completed, clean the buffer and reset the direction
-        if self.query_completed == true {
+        if self.query_completed {
             self.clean_buffer(direction);
             self.reset_direction(direction);
         }
@@ -1072,12 +1092,13 @@ impl DCERPCState {
 }
 
 fn evaluate_stub_params(
-    input: &[u8], input_len: u16, hdrflags: u8, lenleft: u16,
+    input: &[u8], input_len: usize, hdrflags: u8, lenleft: u16,
     stub_data_buffer: &mut Vec<u8>,stub_data_buffer_reset: &mut bool,
 ) -> u16 {
-    let stub_len: u16;
+    
     let fragtype = hdrflags & (PFC_FIRST_FRAG | PFC_LAST_FRAG);
-    stub_len = cmp::min(lenleft, input_len);
+    // min of usize and u16 is a valid u16
+    let stub_len: u16 = cmp::min(lenleft as usize, input_len) as u16;
     if stub_len == 0 {
         return 0;
     }
@@ -1170,7 +1191,7 @@ pub extern "C" fn rs_dcerpc_state_free(state: *mut std::os::raw::c_void) {
 #[no_mangle]
 pub unsafe extern "C" fn rs_dcerpc_state_transaction_free(state: *mut std::os::raw::c_void, tx_id: u64) {
     let dce_state = cast_pointer!(state, DCERPCState);
-    SCLogDebug!("freeing tx {}", tx_id as u64);
+    SCLogDebug!("freeing tx {}", tx_id);
     dce_state.free_tx(tx_id);
 }
 
@@ -1302,13 +1323,13 @@ pub unsafe extern "C" fn rs_dcerpc_probe_tcp(_f: *const core::Flow, direction: u
 
 fn register_pattern_probe() -> i8 {
     unsafe {
-        if AppLayerProtoDetectPMRegisterPatternCSwPP(IPPROTO_TCP as u8, ALPROTO_DCERPC,
+        if AppLayerProtoDetectPMRegisterPatternCSwPP(IPPROTO_TCP, ALPROTO_DCERPC,
                                                      b"|05 00|\0".as_ptr() as *const std::os::raw::c_char, 2, 0,
                                                      Direction::ToServer.into(), rs_dcerpc_probe_tcp, 0, 0) < 0 {
             SCLogDebug!("TOSERVER => AppLayerProtoDetectPMRegisterPatternCSwPP FAILED");
             return -1;
         }
-        if AppLayerProtoDetectPMRegisterPatternCSwPP(IPPROTO_TCP as u8, ALPROTO_DCERPC,
+        if AppLayerProtoDetectPMRegisterPatternCSwPP(IPPROTO_TCP, ALPROTO_DCERPC,
                                                      b"|05 00|\0".as_ptr() as *const std::os::raw::c_char, 2, 0,
                                                      Direction::ToClient.into(), rs_dcerpc_probe_tcp, 0, 0) < 0 {
             SCLogDebug!("TOCLIENT => AppLayerProtoDetectPMRegisterPatternCSwPP FAILED");
@@ -1319,9 +1340,10 @@ fn register_pattern_probe() -> i8 {
     0
 }
 
+export_state_data_get!(rs_dcerpc_get_state_data, DCERPCState);
 
 // Parser name as a C style string.
-pub const PARSER_NAME: &'static [u8] = b"dcerpc\0";
+pub const PARSER_NAME: &[u8] = b"dcerpc\0";
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_dcerpc_register_parser() {
@@ -1347,9 +1369,10 @@ pub unsafe extern "C" fn rs_dcerpc_register_parser() {
         get_eventinfo_byid : None,
         localstorage_new: None,
         localstorage_free: None,
-        get_files: None,
-        get_tx_iterator: None,
+        get_tx_files: None,
+        get_tx_iterator: Some(applayer::state_get_tx_iterator::<DCERPCState, DCERPCTransaction>),
         get_tx_data: rs_dcerpc_get_tx_data,
+        get_state_data: rs_dcerpc_get_state_data,
         apply_tx_config: None,
         flags: APP_LAYER_PARSER_OPT_ACCEPT_GAPS,
         truncate: None,

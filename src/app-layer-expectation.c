@@ -54,7 +54,6 @@
 
 #include "queue.h"
 #include "suricata-common.h"
-#include "debug.h"
 
 #include "ippair-storage.h"
 #include "flow-storage.h"
@@ -124,11 +123,11 @@ static void AppLayerFreeExpectation(Expectation *exp)
 static void ExpectationListFree(void *el)
 {
     ExpectationList *exp_list = (ExpectationList *)el;
-    Expectation *exp, *pexp;
     if (exp_list == NULL)
         return;
 
     if (exp_list->length > 0) {
+        Expectation *exp = NULL, *pexp = NULL;
         CIRCLEQ_FOREACH_SAFE(exp, &exp_list->list, entries, pexp) {
             CIRCLEQ_REMOVE(&exp_list->list, exp, entries);
             exp_list->length--;

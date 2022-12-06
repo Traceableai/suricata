@@ -456,6 +456,16 @@ static int DetectAddressParseString(DetectAddress *dd, const char *str)
                     goto error;
 
                 netmask = in.s_addr;
+
+                /* validate netmask */
+                int cidr = CIDRFromMask(netmask);
+                if (cidr < 0) {
+                    SCLogError(SC_ERR_INVALID_SIGNATURE,
+                            "netmask \"%s\" is not usable. Only netmasks that are compatible with "
+                            "CIDR notation are supported. See ticket #5168.",
+                            mask);
+                    goto error;
+                }
             }
 
             r = inet_pton(AF_INET, ip, &in);
@@ -1280,14 +1290,10 @@ int DetectAddressTestConfVars(void)
             goto error;
         }
 
-        if (gh != NULL) {
-            DetectAddressHeadFree(gh);
-            gh = NULL;
-        }
-        if (ghn != NULL) {
-            DetectAddressHeadFree(ghn);
-            ghn = NULL;
-        }
+        DetectAddressHeadFree(gh);
+        gh = NULL;
+        DetectAddressHeadFree(ghn);
+        ghn = NULL;
     }
 
     return 0;
@@ -1324,8 +1330,7 @@ static char DetectAddressMapCompareFunc(void *data1, uint16_t len1, void *data2,
     DetectAddressMap *map1 = (DetectAddressMap *)data1;
     DetectAddressMap *map2 = (DetectAddressMap *)data2;
 
-
-    int r = (strcmp(map1->string, map2->string) == 0);
+    char r = (strcmp(map1->string, map2->string) == 0);
     return r;
 }
 
@@ -4336,23 +4341,18 @@ static int AddressTestAddressGroupSetup48(void)
 
 static int AddressTestCutIPv401(void)
 {
-    DetectAddress *a, *b, *c;
-    a = DetectAddressParseSingle("1.2.3.0/255.255.255.0");
-    b = DetectAddressParseSingle("1.2.2.0-1.2.3.4");
+    DetectAddress *c;
+    DetectAddress *a = DetectAddressParseSingle("1.2.3.0/255.255.255.0");
+    FAIL_IF_NULL(a);
+    DetectAddress *b = DetectAddressParseSingle("1.2.2.0-1.2.3.4");
+    FAIL_IF_NULL(b);
 
-    if (DetectAddressCut(NULL, a, b, &c) == -1)
-        goto error;
+    FAIL_IF(DetectAddressCut(NULL, a, b, &c) == -1);
 
     DetectAddressFree(a);
     DetectAddressFree(b);
     DetectAddressFree(c);
-    return 1;
-
-error:
-    DetectAddressFree(a);
-    DetectAddressFree(b);
-    DetectAddressFree(c);
-    return 0;
+    PASS;
 }
 
 static int AddressTestCutIPv402(void)

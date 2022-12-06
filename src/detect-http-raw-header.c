@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2019 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -46,6 +46,7 @@
 #include "flow-util.h"
 
 #include "util-debug.h"
+#include "util-profiling.h"
 
 #include "app-layer.h"
 #include "app-layer-parser.h"
@@ -240,10 +241,8 @@ typedef struct PrefilterMpmHttpHeaderRawCtx {
  *  \param txv tx to inspect
  *  \param pectx inspection context
  */
-static void PrefilterMpmHttpHeaderRaw(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterMpmHttpHeaderRaw(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -267,13 +266,12 @@ static void PrefilterMpmHttpHeaderRaw(DetectEngineThreadCtx *det_ctx,
     if (data != NULL && data_len >= mpm_ctx->minlen) {
         (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                 &det_ctx->mtcu, &det_ctx->pmq, data, data_len);
+        PREFILTER_PROFILING_ADD_BYTES(det_ctx, data_len);
     }
 }
 
-static void PrefilterMpmHttpTrailerRaw(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterMpmHttpTrailerRaw(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -285,7 +283,7 @@ static void PrefilterMpmHttpTrailerRaw(DetectEngineThreadCtx *det_ctx,
             ((flags & STREAM_TOCLIENT) && !htud->response_has_trailers))) {
         SCReturn;
     }
-    PrefilterMpmHttpHeaderRaw(det_ctx, pectx, p, f, txv, idx, flags);
+    PrefilterMpmHttpHeaderRaw(det_ctx, pectx, p, f, txv, idx, _txd, flags);
     SCReturn;
 }
 

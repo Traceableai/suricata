@@ -16,6 +16,7 @@
  */
 
 use der_parser::ber::{parse_ber_recursive, BerObject, BerObjectContent, BerTag};
+use nom7::Err;
 use std::convert::TryFrom;
 
 mod parse_rules;
@@ -30,7 +31,7 @@ pub struct Asn1<'a>(Vec<BerObject<'a>>);
 enum Asn1DecodeError {
     InvalidKeywordParameter,
     MaxFrames,
-    BerError(nom::Err<der_parser::error::BerError>),
+    BerError(Err<der_parser::error::BerError>),
 }
 
 /// Enumeration of Asn1 checks
@@ -83,10 +84,13 @@ impl<'a> Asn1<'a> {
 
     /// Checks a BerObject and subnodes against the Asn1 checks
     fn check_object(obj: &BerObject, ad: &DetectAsn1Data) -> Option<Asn1Check> {
+        // get length
+        // Note that if length is indefinite (BER), this will return None
+        let len = obj.header.len.primitive().ok()?;
         // oversize_length will check if a node has a length greater than
         // the user supplied length
         if let Some(oversize_length) = ad.oversize_length {
-            if obj.header.len > oversize_length as u64
+            if len > oversize_length as usize
                 || obj.content.as_slice().unwrap_or(&[]).len() > oversize_length as usize
             {
                 return Some(Asn1Check::OversizeLength);
@@ -101,8 +105,8 @@ impl<'a> Asn1<'a> {
                 && obj.header.is_primitive())
         {
             if let BerObjectContent::BitString(bits, _v) = &obj.content {
-                if obj.header.len > 0
-                    && *bits as u64 > obj.header.len.saturating_mul(8)
+                if len > 0
+                    && *bits as usize > len.saturating_mul(8)
                 {
                     return Some(Asn1Check::BitstringOverflow);
                 }
@@ -118,10 +122,10 @@ impl<'a> Asn1<'a> {
                 && obj.header.is_primitive())
         {
             if let Ok(data) = obj.content.as_slice() {
-                if obj.header.len > 0
+                if len > 0
                     && !data.is_empty()
                     && data[0] & 0xC0 == 0
-                    && (obj.header.len > 256 || data.len() > 256)
+                    && (len > 256 || data.len() > 256)
                 {
                     return Some(Asn1Check::DoubleOverflow);
                 }
@@ -275,8 +279,8 @@ impl From<std::num::TryFromIntError> for Asn1DecodeError {
     }
 }
 
-impl From<nom::Err<der_parser::error::BerError>> for Asn1DecodeError {
-    fn from(e: nom::Err<der_parser::error::BerError>) -> Asn1DecodeError {
+impl From<Err<der_parser::error::BerError>> for Asn1DecodeError {
+    fn from(e: Err<der_parser::error::BerError>) -> Asn1DecodeError {
         Asn1DecodeError::BerError(e)
     }
 }

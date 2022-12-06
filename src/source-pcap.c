@@ -36,10 +36,12 @@
 #include "util-debug.h"
 #include "util-error.h"
 #include "util-privs.h"
+#include "util-datalink.h"
 #include "util-device.h"
 #include "util-optimize.h"
 #include "util-checksum.h"
 #include "util-ioctl.h"
+#include "util-time.h"
 #include "tmqh-packetpool.h"
 
 #define PCAP_STATE_DOWN 0
@@ -207,7 +209,7 @@ static int PcapTryReopen(PcapThreadVars *ptv)
     ptv->pcap_state = PCAP_STATE_DOWN;
 
     int pcap_activate_r = pcap_activate(ptv->pcap_handle);
-    if (pcap_activate_r != 0) {
+    if (pcap_activate_r != 0 && pcap_activate_r != PCAP_ERROR_ACTIVATED) {
         return pcap_activate_r;
     }
 
@@ -309,6 +311,10 @@ static TmEcode ReceivePcapLoop(ThreadVars *tv, void *data, void *slot)
 
     ptv->slot = s->slot_next;
     ptv->cb_result = TM_ECODE_OK;
+
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
 
     while (1) {
         if (suricata_ctl_flags & SURICATA_STOP) {
@@ -540,6 +546,7 @@ static TmEcode ReceivePcapThreadInit(ThreadVars *tv, const void *initdata, void 
     (void)GetIfaceOffloading(pcapconfig->iface, 1, 1);
 
     ptv->datalink = pcap_datalink(ptv->pcap_handle);
+    DatalinkSetGlobalType(ptv->datalink);
 
     pcapconfig->DerefFunc(pcapconfig);
 

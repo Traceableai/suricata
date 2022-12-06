@@ -24,6 +24,13 @@
 #ifndef __UTIL_UNITTEST_HELPER__
 #define __UTIL_UNITTEST_HELPER__
 
+#if defined(UNITTESTS)
+#include "flow.h"
+#include "detect.h"
+#elif defined(FUZZ)
+#include "flow.h"
+#endif
+
 #if defined(UNITTESTS) || defined(FUZZ)
 Flow *TestHelperBuildFlow(int family, const char *src, const char *dst, Port sp, Port dp);
 int TestHelperBufferToFile(const char *name, const uint8_t *data, size_t size);

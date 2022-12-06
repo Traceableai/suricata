@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 #include "detect-engine.h"
@@ -37,6 +36,7 @@
 #include "detect-isdataat.h"
 #include "detect-content.h"
 #include "detect-uricontent.h"
+#include "detect-engine-build.h"
 
 #include "flow.h"
 #include "flow-var.h"

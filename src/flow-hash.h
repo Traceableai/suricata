@@ -24,6 +24,8 @@
 #ifndef __FLOW_HASH_H__
 #define __FLOW_HASH_H__
 
+#include "flow.h"
+
 /** Spinlocks or Mutex for the flow buckets. */
 //#define FBLOCK_SPIN
 #define FBLOCK_MUTEX
@@ -77,11 +79,11 @@ typedef struct FlowBucket_ {
 
 /* prototypes */
 
-Flow *FlowGetFlowFromHash(ThreadVars *tv, FlowLookupStruct *tctx,
-        const Packet *, Flow **);
+Flow *FlowGetFlowFromHash(ThreadVars *tv, FlowLookupStruct *tctx, Packet *, Flow **);
 
 Flow *FlowGetFromFlowKey(FlowKey *key, struct timespec *ttime, const uint32_t hash);
 Flow *FlowGetExistingFlowFromHash(FlowKey * key, uint32_t hash);
+Flow *FlowGetExistingFlowFromFlowId(int64_t flow_id);
 uint32_t FlowKeyGetHash(FlowKey *flow_key);
 
 /** \note f->fb must be locked */

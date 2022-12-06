@@ -26,13 +26,9 @@
 #ifndef MIME_DECODE_H_
 #define MIME_DECODE_H_
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-
-#include "suricata.h"
+#include "conf.h"
 #include "util-base64.h"
-#include "util-debug.h"
+#include "util-file.h"
 
 /* Content Flags */
 #define CTNT_IS_MSG           1
@@ -65,7 +61,6 @@
 
 /* Publicly exposed size constants */
 #define DATA_CHUNK_SIZE  3072  /* Should be divisible by 3 */
-#define LINEREM_SIZE      256
 
 /* Mime Parser Constants */
 #define HEADER_READY    0x01
@@ -86,7 +81,8 @@ typedef enum MimeDecRetCode {
     MIME_DEC_ERR_DATA = -1,
     MIME_DEC_ERR_MEM = -2,
     MIME_DEC_ERR_PARSE = -3,
-    MIME_DEC_ERR_STATE = -4,    /**< parser in error state */
+    MIME_DEC_ERR_STATE = -4, /**< parser in error state */
+    MIME_DEC_ERR_OVERFLOW = -5,
 } MimeDecRetCode;
 
 /**
@@ -137,8 +133,6 @@ typedef struct MimeDecUrl {
 typedef struct MimeDecEntity {
     MimeDecField *field_list;  /**< Pointer to list of header fields */
     MimeDecUrl *url_list;  /**< Pointer to list of URLs */
-    uint32_t body_len;  /**< Length of body (prior to any decoding) */
-    uint32_t decoded_body_len;  /**< Length of body after decoding */
     uint32_t header_flags; /**< Flags indicating header characteristics */
     uint32_t ctnt_flags;  /**< Flags indicating type of content */
     uint32_t anomaly_flags;  /**< Flags indicating an anomaly in the message */
@@ -160,7 +154,7 @@ typedef struct MimeDecEntity {
 typedef struct MimeDecStackNode {
     MimeDecEntity *data;  /**< Pointer to the entity data structure */
     uint8_t *bdef;  /**< Copy of boundary definition for child entity */
-    uint32_t bdef_len;  /**< Boundary length for child entity */
+    uint16_t bdef_len;  /**< Boundary length for child entity */
     bool is_encap;      /**< Flag indicating entity is encapsulated in message */
     struct MimeDecStackNode *next;  /**< Pointer to next item on the stack */
 } MimeDecStackNode;
@@ -196,8 +190,6 @@ typedef struct MimeDecParseState {
     uint32_t hlen;  /**< Length of the last known header name */
     uint32_t hvlen; /**< Total length of value list */
     DataValue *hvalue;  /**< Pointer to the incomplete header value list */
-    uint8_t linerem[LINEREM_SIZE];  /**< Remainder from previous line (for URL extraction) */
-    uint16_t linerem_len;  /**< Length of remainder from previous line */
     uint8_t bvremain[B64_BLOCK];  /**< Remainder from base64-decoded line */
     uint8_t bvr_len;  /**< Length of remainder from base64-decoded line */
     uint8_t data_chunk[DATA_CHUNK_SIZE];  /**< Buffer holding data chunk */

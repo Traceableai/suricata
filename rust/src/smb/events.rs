@@ -27,6 +27,25 @@ pub enum SMBEvent {
     DuplicateNegotiate,
     NegotiateMalformedDialects,
     FileOverlap,
+    /// A request was seen in the to client direction.
+    RequestToClient,
+    /// A response was seen in the to server direction,
+    ResponseToServer,
+
+    /// Negotiated max sizes exceed our limit
+    NegotiateMaxReadSizeTooLarge,
+    NegotiateMaxWriteSizeTooLarge,
+
+    /// READ request asking for more than `max_read_size`
+    ReadRequestTooLarge,
+    /// READ response bigger than `max_read_size`
+    ReadResponseTooLarge,
+    ReadQueueSizeExceeded,
+    ReadQueueCntExceeded,
+    /// WRITE request for more than `max_write_size`
+    WriteRequestTooLarge,
+    WriteQueueSizeExceeded,
+    WriteQueueCntExceeded,
 }
 
 impl SMBTransaction {

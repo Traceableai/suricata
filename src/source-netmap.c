@@ -37,9 +37,11 @@
 #include "suricata.h"
 #include "suricata-common.h"
 #include "tm-threads.h"
+#include "packet.h"
 #include "util-bpf.h"
 #include "util-privs.h"
 #include "util-validate.h"
+#include "util-datalink.h"
 
 #include "source-netmap.h"
 
@@ -88,6 +90,8 @@ void TmModuleDecodeNetmapRegister (void)
 }
 
 #else /* We have NETMAP support */
+
+#include "action-globals.h"
 
 #define POLL_TIMEOUT 100
 
@@ -573,6 +577,8 @@ static TmEcode ReceiveNetmapThreadInit(ThreadVars *tv, const void *initdata, voi
 
     SCLogDebug("thread: %s polling on fd: %d", tv->name, ntv->ifsrc->nmd->fd);
 
+    DatalinkSetGlobalType(LINKTYPE_ETHERNET);
+
     *data = (void *)ntv;
     aconf->DerefFunc(aconf);
     SCReturnInt(TM_ECODE_OK);
@@ -601,7 +607,7 @@ error:
 static TmEcode NetmapWritePacket(NetmapThreadVars *ntv, Packet *p)
 {
     if (ntv->copy_mode == NETMAP_COPY_MODE_IPS) {
-        if (PacketTestAction(p, ACTION_DROP)) {
+        if (PacketCheckAction(p, ACTION_DROP)) {
             return TM_ECODE_OK;
         }
     }
@@ -783,6 +789,11 @@ static TmEcode ReceiveNetmapLoop(ThreadVars *tv, void *data, void *slot)
     fds.events = POLLIN;
 
     SCLogDebug("thread %s polling on %d", tv->name, fds.fd);
+
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
+
     for(;;) {
         if (unlikely(suricata_ctl_flags != 0)) {
             break;

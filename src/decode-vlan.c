@@ -35,15 +35,9 @@
 #include "decode-vlan.h"
 #include "decode-events.h"
 
-#include "flow.h"
-
 #include "util-validate.h"
 #include "util-unittest.h"
 #include "util-debug.h"
-
-#include "pkt-var.h"
-#include "util-profiling.h"
-#include "host.h"
 
 /**
  * \internal
@@ -62,7 +56,7 @@ int DecodeVLAN(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
 {
     DEBUG_VALIDATE_BUG_ON(pkt == NULL);
 
-    uint32_t proto;
+    uint16_t proto;
 
     if (p->vlan_idx == 0)
         StatsIncr(tv, dtv->counter_vlan);
@@ -140,6 +134,9 @@ int DecodeIEEE8021ah(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
 }
 
 #ifdef UNITTESTS
+#include "util-unittest-helper.h"
+#include "packet.h"
+
 /** \todo Must GRE+VLAN and Multi-Vlan packets to
  * create more tests
  */
@@ -252,13 +249,13 @@ static int DecodeVLANtest03 (void)
         goto error;
     }
 
-    PACKET_RECYCLE(p);
+    PacketRecycle(p);
     FlowShutdown();
     SCFree(p);
     return 1;
 
 error:
-    PACKET_RECYCLE(p);
+    PacketRecycle(p);
     FlowShutdown();
     SCFree(p);
     return 0;

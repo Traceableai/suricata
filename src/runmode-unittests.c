@@ -1,4 +1,4 @@
-/* Copyright (C) 2013-2021 Open Information Security Foundation
+/* Copyright (C) 2013-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -21,13 +21,14 @@
  */
 
 #include "suricata-common.h"
-#include "util-unittest.h"
 #include "runmode-unittests.h"
+#include "util-unittest.h"
 
+#include "util-debug.h"
 #ifdef UNITTESTS
-
 #include "detect-parse.h"
 #include "detect-engine.h"
+#include "detect-engine-alert.h"
 #include "detect-engine-address.h"
 #include "detect-engine-proto.h"
 #include "detect-engine-port.h"
@@ -103,6 +104,15 @@
 
 #include "util-streaming-buffer.h"
 #include "util-lua.h"
+#include "util-luajit.h"
+#include "tm-modules.h"
+#include "tmqh-packetpool.h"
+#include "decode-chdlc.h"
+#include "decode-geneve.h"
+#include "decode-nsh.h"
+#include "decode-raw.h"
+#include "decode-vntag.h"
+#include "decode-vxlan.h"
 
 #ifdef OS_WIN32
 #include "win32-syscall.h"
@@ -172,6 +182,7 @@ static void RegisterUnittests(void)
     ThreadMacrosRegisterTests();
     UtilSpmSearchRegistertests();
     UtilActionRegisterTests();
+    Base64RegisterTests();
     SCClassConfRegisterTests();
     SCThresholdConfRegisterTests();
     SCRConfRegisterTests();
@@ -189,6 +200,7 @@ static void RegisterUnittests(void)
     DetectAddressTests();
     DetectProtoTests();
     DetectPortTests();
+    DetectEngineAlertRegisterTests();
     SCAtomicRegisterTests();
     MemrchrRegisterTests();
     AppLayerUnittestsRegister();
@@ -201,6 +213,8 @@ static void RegisterUnittests(void)
 #ifdef WINDIVERT
     SourceWinDivertRegisterTests();
 #endif
+    SCProtoNameRegisterTests();
+    UtilCIDRTests();
 }
 #endif
 

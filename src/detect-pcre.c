@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2021 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -36,10 +35,12 @@
 #include "detect-flowvar.h"
 
 #include "detect-parse.h"
+#include "detect-content.h"
 #include "detect-engine.h"
 #include "detect-engine-sigorder.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-state.h"
+#include "detect-engine-build.h"
 
 #include "util-var-name.h"
 #include "util-unittest-helper.h"
@@ -63,9 +64,6 @@
  * and needs to start with non-numeric. */
 #define PARSE_CAPTURE_REGEX "\\(\\?P\\<([A-z]+)\\_([A-z0-9_]+)\\>"
 #define PARSE_REGEX         "(?<!\\\\)/(.*(?<!(?<!\\\\)\\\\))/([^\"]*)"
-
-#define SC_MATCH_LIMIT_DEFAULT 3500
-#define SC_MATCH_LIMIT_RECURSION_DEFAULT 1500
 
 static int pcre_match_limit = 0;
 static int pcre_match_limit_recursion = 0;
@@ -181,7 +179,7 @@ int DetectPcrePayloadMatch(DetectEngineThreadCtx *det_ctx, const Signature *s,
     SCEnter();
     int ret = 0;
     const uint8_t *ptr = NULL;
-    uint16_t len = 0;
+    uint32_t len = 0;
     PCRE2_SIZE capture_len = 0;
 
     DetectPcreData *pe = (DetectPcreData *)smd->ctx;
@@ -273,22 +271,19 @@ int DetectPcrePayloadMatch(DetectEngineThreadCtx *det_ctx, const Signature *s,
                         memcpy(str_ptr2, pcre2_str_ptr2, capture_len);
                         pcre2_substring_free((PCRE2_UCHAR8 *)pcre2_str_ptr2);
 
-                        (void)DetectVarStoreMatchKeyValue(det_ctx,
-                                (uint8_t *)str_ptr, key_len,
-                                (uint8_t *)str_ptr2, capture_len,
+                        (void)DetectVarStoreMatchKeyValue(det_ctx, (uint8_t *)str_ptr, key_len,
+                                (uint8_t *)str_ptr2, (uint16_t)capture_len,
                                 DETECT_VAR_TYPE_PKT_POSTMATCH);
 
                     } else if (pe->captypes[x] == VAR_TYPE_PKT_VAR) {
-                        (void)DetectVarStoreMatch(det_ctx, pe->capids[x],
-                                (uint8_t *)str_ptr, capture_len,
-                                DETECT_VAR_TYPE_PKT_POSTMATCH);
+                        (void)DetectVarStoreMatch(det_ctx, pe->capids[x], (uint8_t *)str_ptr,
+                                (uint16_t)capture_len, DETECT_VAR_TYPE_PKT_POSTMATCH);
 
                     } else if (pe->captypes[x] == VAR_TYPE_FLOW_VAR && f != NULL) {
-                        (void)DetectVarStoreMatch(det_ctx, pe->capids[x],
-                                (uint8_t *)str_ptr, capture_len,
-                                DETECT_VAR_TYPE_FLOW_POSTMATCH);
+                        (void)DetectVarStoreMatch(det_ctx, pe->capids[x], (uint8_t *)str_ptr,
+                                (uint16_t)capture_len, DETECT_VAR_TYPE_FLOW_POSTMATCH);
                     } else {
-                        BUG_ON("Impossible captype");
+                        BUG_ON(1); // Impossible captype
                         SCFree(str_ptr);
                     }
                 }
@@ -377,8 +372,11 @@ static DetectPcreData *DetectPcreParse (DetectEngineCtx *de_ctx,
             cut_capture = fcap - regexstr;
         else if (pcap && !fcap)
             cut_capture = pcap - regexstr;
-        else
+        else {
+            BUG_ON(pcap == NULL); // added to assist cppcheck
+            BUG_ON(fcap == NULL);
             cut_capture = MIN((pcap - regexstr), (fcap - regexstr));
+        }
 
         SCLogDebug("cut_capture %d", cut_capture);
 
@@ -956,7 +954,7 @@ static void DetectPcreFree(DetectEngineCtx *de_ctx, void *ptr)
 
     DetectPcreData *pd = (DetectPcreData *)ptr;
     DetectParseFreeRegex(&pd->parse_regex);
-    DetectUnregisterThreadCtxFuncs(de_ctx, NULL, pd, "pcre");
+    DetectUnregisterThreadCtxFuncs(de_ctx, pd, "pcre");
 
     SCFree(pd);
 
@@ -964,6 +962,7 @@ static void DetectPcreFree(DetectEngineCtx *de_ctx, void *ptr)
 }
 
 #ifdef UNITTESTS /* UNITTESTS */
+#include "detect-engine-alert.h"
 static int g_file_data_buffer_id = 0;
 static int g_http_header_buffer_id = 0;
 static int g_dce_stub_data_buffer_id = 0;
@@ -1656,401 +1655,13 @@ static int DetectPcreParseTest28(void)
 
 static int DetectPcreTestSig01(void)
 {
-    uint8_t *buf = (uint8_t *)
-        "GET /one/ HTTP/1.1\r\n"
-        "Host: one.example.org\r\n"
-        "\r\n\r\n"
-        "GET /two/ HTTP/1.1\r\n"
-        "Host: two.example.org\r\n"
-        "\r\n\r\n";
+    uint8_t *buf = (uint8_t *)"lalala lalala\\ lala\n";
     uint16_t buflen = strlen((char *)buf);
-    Packet *p = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-
-    StreamTcpInitConfig(true);
-
-    p = UTHBuildPacket(buf, buflen, IPPROTO_TCP);
-    FAIL_IF_NULL(p);
-    p->tcph->th_seq = htonl(1000);
-    Flow *f = UTHBuildFlow(AF_INET, "192.168.1.5", "192.168.1.1", 41424, 80);
-    FAIL_IF_NULL(f);
-    f->proto = IPPROTO_TCP;
-    UTHAddSessionToFlow(f, 1000, 1000);
-    UTHAddStreamToFlow(f, 0, buf, buflen);
-
-    p->flow = f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f->alproto = ALPROTO_HTTP1;
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    de_ctx->sig_list = SigInit(de_ctx,"alert tcp any any -> any any (msg:\"HTTP TEST\"; pcre:\"/^gEt/i\"; pcre:\"/\\/two\\//U\"; pcre:\"/GET \\/two\\//\"; pcre:\"/\\s+HTTP/R\"; sid:1;)");
-    FAIL_IF(de_ctx->sig_list == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOSERVER | STREAM_START, buf, buflen);
-    FAIL_IF(r != 0);
-
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-    FAIL_IF_NOT(PacketAlertCheck(p, 1) == 1);
-
-    AppLayerParserThreadCtxFree(alp_tctx);
-    DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    DetectEngineCtxFree(de_ctx);
-
-    UTHRemoveSessionFromFlow(f);
-    UTHFreeFlow(f);
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-static int DetectPcreTestSig02(void)
-{
-    uint8_t *buf = (uint8_t *)
-        "GET /one/ HTTP/1.1\r\n"
-        "Host: one.example.org\r\n"
-        "\r\n\r\n"
-        "GET /two/ HTTP/1.1\r\n"
-        "Host: two.example.org\r\n"
-        "\r\n\r\n";
-    uint16_t buflen = strlen((char *)buf);
-    Packet *p = NULL;
-    Flow f;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx;
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&f, 0, sizeof(f));
-
-    FLOW_INITIALIZE(&f);
-
-    p = UTHBuildPacket(buf, buflen, IPPROTO_TCP);
-    p->flow = &f;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-
-    pcre_match_limit = 100;
-    pcre_match_limit_recursion = 100;
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    de_ctx->sig_list = SigInit(de_ctx,"alert tcp any any -> any any (msg:\"HTTP TEST\"; pcre:\"/two/O\"; sid:2;)");
-    FAIL_IF(de_ctx->sig_list == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-    FAIL_IF_NOT(PacketAlertCheck(p, 2) == 1);
-
-    SigGroupCleanup(de_ctx);
-    SigCleanSignatures(de_ctx);
-
-    DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    DetectEngineCtxFree(de_ctx);
-    FLOW_DESTROY(&f);
-
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/**
- * \test DetectPcreTestSig03Real negation test ! outside of "" this sig should not match
- */
-static int DetectPcreTestSig03(void)
-{
-    uint8_t *buf = (uint8_t *)
-        "GET /one/ HTTP/1.1\r\n"
-        "Host: one.example.org\r\n"
-        "\r\n\r\n"
-        "GET /two/ HTTP/1.1\r\n"
-        "Host: two.example.org\r\n"
-        "\r\n\r\n";
-    uint16_t buflen = strlen((char *)buf);
-    Packet *p = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx;
-
-    memset(&th_v, 0, sizeof(th_v));
-
-    p = UTHBuildPacket(buf, buflen, IPPROTO_TCP);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    de_ctx->sig_list = SigInit(de_ctx,"alert tcp any any -> any any (msg:\"HTTP TEST\"; content:\"GET\"; pcre:!\"/two/\"; sid:1;)");
-    FAIL_IF(de_ctx->sig_list == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-    FAIL_IF(PacketAlertCheck(p, 1));
-    SigGroupCleanup(de_ctx);
-    SigCleanSignatures(de_ctx);
-
-    DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    DetectEngineCtxFree(de_ctx);
-
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/**
- * \test Check the signature with pcre modifier P (match with L7 to http body data)
- */
-static int DetectPcreModifPTest04(void)
-{
-    uint8_t httpbuf1[] =
-        "GET / HTTP/1.1\r\n"
-        "Host: www.emergingthreats.net\r\n"
-        "User-Agent: Mozilla/5.0 (X11; U; Linux i686; es-ES; rv:1.9.0.13) Gecko/2009080315 Ubuntu/8.10 (intrepid) Firefox/3.0.13\r\n"
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9;q=0.8\r\n"
-        "Accept-Language: es-es,es;q=0.8,en-us;q=0.5,en;q=0.3\r\n"
-        "Accept-Encoding: gzip,deflate\r\n"
-        "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.7\r\n"
-        "Date: Tue, 22 Sep 2009 19:24:48 GMT\r\n"
-        "Server: Apache\r\n"
-        "X-Powered-By: PHP/5.2.5\r\n"
-        "P3P: CP=\"NOI ADM DEV PSAi COM NAV OUR OTRo STP IND DEM\"\r\n"
-        "Expires: Mon, 1 Jan 2001 00:00:00 GMT\r\n"
-        "Last-Modified: Tue, 22 Sep 2009 19:24:48 GMT\r\n"
-        "Cache-Control: no-store, no-cache, must-revalidate, post-check=0, pre-check=0\r\n"
-        "Pragma: no-cache\r\n"
-        "Keep-Alive: timeout=15, max=100\r\n"
-        "Connection: Keep-Alive\r\n"
-        "Transfer-Encoding: chunked\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "\r\n"
-        "15"
-        "\r\n"
-        "<!DOCTYPE html PUBLIC\r\n"
-        "0\r\n\r\n";
-
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Flow f;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"Pcre modifier P\"; pcre:\"/DOCTYPE/P\"; "
-                                   "sid:1;)");
-    FAIL_IF(s == NULL);
-
-    s->next = SigInit(de_ctx,"alert http any any -> any any (msg:\""
-                          "Pcre modifier P (no match)\"; pcre:\"/blah/P\"; sid:2;)");
-    FAIL_IF(s->next == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    HtpState *http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!(PacketAlertCheck(p, 1)));
-    FAIL_IF(PacketAlertCheck(p, 2));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (de_ctx != NULL) SigGroupCleanup(de_ctx);
-    if (de_ctx != NULL) SigCleanSignatures(de_ctx);
-    if (de_ctx != NULL) DetectEngineCtxFree(de_ctx);
-
-    StreamTcpFreeConfig(true);
-    FLOW_DESTROY(&f);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/**
- * \test Check the signature with pcre modifier P (match with L7 to http body data)
- *       over fragmented chunks (DOCTYPE fragmented)
- */
-static int DetectPcreModifPTest05(void)
-{
-    uint8_t httpbuf1[] =
-        "GET / HTTP/1.1\r\n"
-        "Host: www.emergingthreats.net\r\n"
-        "User-Agent: Mozilla/5.0 (X11; U; Linux i686; es-ES; rv:1.9.0.13) Gecko/2009080315 Ubuntu/8.10 (intrepid) Firefox/3.0.13\r\n"
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9;q=0.8\r\n"
-        "Accept-Language: es-es,es;q=0.8,en-us;q=0.5,en;q=0.3\r\n"
-        "Accept-Encoding: gzip,deflate\r\n"
-        "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.7\r\n"
-        "Date: Tue, 22 Sep 2009 19:24:48 GMT\r\n"
-        "Server: Apache\r\n"
-        "X-Powered-By: PHP/5.2.5\r\n"
-        "P3P: CP=\"NOI ADM DEV PSAi COM NAV OUR OTRo STP IND DEM\"\r\n"
-        "Expires: Mon, 1 Jan 2001 00:00:00 GMT\r\n"
-        "Last-Modified: Tue, 22 Sep 2009 19:24:48 GMT\r\n"
-        "Cache-Control: no-store, no-cache, must-revalidate, post-check=0, pre-check=0\r\n"
-        "Pragma: no-cache\r\n"
-        "Keep-Alive: timeout=15, max=100\r\n"
-        "Connection: Keep-Alive\r\n"
-        "Transfer-Encoding: chunked\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "\r\n"
-        "15"
-        "\r\n"
-        "<!DOC";
-
-    uint8_t httpbuf2[] = "<!DOCTYPE html PUBLIC\r\n0\r\n\r\n";
-
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    uint32_t httplen2 = sizeof(httpbuf2) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p1 = NULL;
-    Packet *p2 = NULL;
-    Flow f;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p1 = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-    p2 = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p1->flow = &f;
-    p1->flowflags |= FLOW_PKT_TOSERVER;
-    p1->flowflags |= FLOW_PKT_ESTABLISHED;
-    p1->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    p2->flow = &f;
-    p2->flowflags |= FLOW_PKT_TOSERVER;
-    p2->flowflags |= FLOW_PKT_ESTABLISHED;
-    p2->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"Pcre modifier P\"; pcre:\"/DOC/P\"; "
-                                   "sid:1;)");
-    FAIL_IF(s == NULL);
-
-    s->next = SigInit(de_ctx,"alert http any any -> any any (msg:\""
-                          "Pcre modifier P (no match)\"; pcre:\"/DOCTYPE/P\"; sid:2;)");
-    FAIL_IF(s->next == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    /* do detect for p1 */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p1);
-
-    HtpState *http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    FAIL_IF(PacketAlertCheck(p1, 1));
-
-    FAIL_IF(PacketAlertCheck(p1, 2));
-
-    FLOWLOCK_WRLOCK(&f);
-    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf2, httplen2);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    /* do detect for p2 */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p2);
-
-    FAIL_IF(!(PacketAlertCheck(p2, 1)));
-
-    FAIL_IF(!(PacketAlertCheck(p2, 2)));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (de_ctx != NULL) SigGroupCleanup(de_ctx);
-    if (de_ctx != NULL) SigCleanSignatures(de_ctx);
-    if (de_ctx != NULL) DetectEngineCtxFree(de_ctx);
-
-    StreamTcpFreeConfig(true);
-    FLOW_DESTROY(&f);
-    UTHFreePackets(&p1, 1);
-    UTHFreePackets(&p2, 1);
-    PASS;
-}
-
-static int DetectPcreTestSig06(void)
-{
-    uint8_t *buf = (uint8_t *)
-                    "lalala lalala\\ lala\n";
-    uint16_t buflen = strlen((char *)buf);
-    Packet *p = UTHBuildPacket( buf, buflen, IPPROTO_TCP);
+    Packet *p = UTHBuildPacket(buf, buflen, IPPROTO_TCP);
     int result = 0;
 
-    char sig[] = "alert tcp any any -> any any (msg:\"pcre with an ending slash\"; pcre:\"/ lalala\\\\/\"; sid:1;)";
+    char sig[] = "alert tcp any any -> any any (msg:\"pcre with an ending slash\"; pcre:\"/ "
+                 "lalala\\\\/\"; sid:1;)";
     if (UTHPacketMatchSig(p, sig) == 0) {
         result = 0;
         goto end;
@@ -2063,14 +1674,14 @@ end:
 }
 
 /** \test anchored pcre */
-static int DetectPcreTestSig07(void)
+static int DetectPcreTestSig02(void)
 {
-    uint8_t *buf = (uint8_t *)
-                    "lalala\n";
+    uint8_t *buf = (uint8_t *)"lalala\n";
     uint16_t buflen = strlen((char *)buf);
-    Packet *p = UTHBuildPacket( buf, buflen, IPPROTO_TCP);
+    Packet *p = UTHBuildPacket(buf, buflen, IPPROTO_TCP);
 
-    char sig[] = "alert tcp any any -> any any (msg:\"pcre with an ending slash\"; pcre:\"/^(la)+$/\"; sid:1;)";
+    char sig[] = "alert tcp any any -> any any (msg:\"pcre with an ending slash\"; "
+                 "pcre:\"/^(la)+$/\"; sid:1;)";
     FAIL_IF(UTHPacketMatchSig(p, sig) == 0);
 
     if (p != NULL)
@@ -2079,653 +1690,19 @@ static int DetectPcreTestSig07(void)
 }
 
 /** \test anchored pcre */
-static int DetectPcreTestSig08(void)
+static int DetectPcreTestSig03(void)
 {
     /* test it also without ending in a newline "\n" */
-    uint8_t *buf = (uint8_t *)
-                    "lalala";
+    uint8_t *buf = (uint8_t *)"lalala";
     uint16_t buflen = strlen((char *)buf);
-    Packet *p = UTHBuildPacket( buf, buflen, IPPROTO_TCP);
+    Packet *p = UTHBuildPacket(buf, buflen, IPPROTO_TCP);
 
-    char sig[] = "alert tcp any any -> any any (msg:\"pcre with an ending slash\"; pcre:\"/^(la)+$/\"; sid:1;)";
+    char sig[] = "alert tcp any any -> any any (msg:\"pcre with an ending slash\"; "
+                 "pcre:\"/^(la)+$/\"; sid:1;)";
     FAIL_IF(UTHPacketMatchSig(p, sig) == 0);
 
     if (p != NULL)
         UTHFreePacket(p);
-    PASS;
-}
-
-/** \test Check the signature working to alert when cookie modifier is
- *       passed to pcre
- */
-static int DetectPcreTestSig09(void)
-{
-    Flow f;
-    uint8_t httpbuf1[] = "POST / HTTP/1.0\r\nUser-Agent: Mozilla/1.0\r\n"
-        "Cookie: dummy\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    HtpState *http_state = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"HTTP cookie\"; pcre:\"/dummy/C\"; "
-                                   " sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (det_ctx != NULL) {
-        DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    }
-    if (de_ctx != NULL) {
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/** \test Check the signature working to alert when cookie modifier is
- *       passed to a negated pcre
- */
-static int DetectPcreTestSig10(void)
-{
-    Flow f;
-    uint8_t httpbuf1[] = "POST / HTTP/1.0\r\nUser-Agent: Mozilla/1.0\r\n"
-        "Cookie: dummoOOooooO\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    HtpState *http_state = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"HTTP cookie\"; pcre:!\"/dummy/C\"; "
-                                   " sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (det_ctx != NULL) {
-        DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    }
-    if (de_ctx != NULL) {
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/** \test Check the signature working to alert when method modifier is
- *       passed to pcre
- */
-static int DetectPcreTestSig11(void)
-{
-    Flow f;
-    uint8_t httpbuf1[] = "POST / HTTP/1.0\r\nUser-Agent: Mozilla/1.0\r\n"
-        "Cookie: dummy\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    HtpState *http_state = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"HTTP method\"; pcre:\"/POST/M\"; "
-                                   " sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (det_ctx != NULL) {
-        DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    }
-    if (de_ctx != NULL) {
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/** \test Check the signature working to alert when method modifier is
- *       passed to a negated pcre
- */
-static int DetectPcreTestSig12(void)
-{
-    Flow f;
-    uint8_t httpbuf1[] = "GET / HTTP/1.0\r\nUser-Agent: Mozilla/1.0\r\n"
-        "Cookie: dummoOOooooO\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    HtpState *http_state = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"HTTP method\"; pcre:!\"/POST/M\"; "
-                                   " sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (det_ctx != NULL) {
-        DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    }
-    if (de_ctx != NULL) {
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/** \test Check the signature working to alert when header modifier is
- *       passed to pcre
- */
-static int DetectPcreTestSig13(void)
-{
-    Flow f;
-    uint8_t httpbuf1[] = "POST / HTTP/1.0\r\nUser-Agent: Mozilla/1.0\r\n"
-        "Cookie: dummy\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    HtpState *http_state = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"HTTP header\"; pcre:\"/User[-_]Agent[:]?\\sMozilla/H\"; "
-                                   " sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (det_ctx != NULL) {
-        DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    }
-    if (de_ctx != NULL) {
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/** \test Check the signature working to alert when header modifier is
- *       passed to a negated pcre
- */
-static int DetectPcreTestSig14(void)
-{
-    Flow f;
-    uint8_t httpbuf1[] = "GET / HTTP/1.0\r\nUser-Agent: IEXPLORER/1.0\r\n"
-        "Cookie: dummoOOooooO\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    HtpState *http_state = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"HTTP header\"; pcre:!\"/User-Agent[:]?\\s+Mozilla/H\"; "
-                                   " sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (det_ctx != NULL) {
-        DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    }
-    if (de_ctx != NULL) {
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/** \test Check the signature working to alert when cookie and relative modifiers are
- *       passed to pcre
- */
-static int DetectPcreTestSig15(void)
-{
-    Flow f;
-    uint8_t httpbuf1[] = "POST / HTTP/1.0\r\nUser-Agent: Mozilla/1.0\r\n"
-        "Cookie: dummy 1234\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    HtpState *http_state = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"pcre relative HTTP cookie\"; content:\"dummy\";"
-                                   " http_cookie; pcre:\"/1234/RC\"; "
-                                   " sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (det_ctx != NULL) {
-        DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    }
-    if (de_ctx != NULL) {
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
-
-/** \test Check the signature working to alert when method and relative modifiers are
- *       passed to pcre
- */
-static int DetectPcreTestSig16(void)
-{
-    Flow f;
-    uint8_t httpbuf1[] = "POST / HTTP/1.0\r\nUser-Agent: Mozilla/1.0\r\n"
-        "Cookie: dummy 1234\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p = NULL;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    HtpState *http_state = NULL;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_HTTP1;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = de_ctx->sig_list = SigInit(de_ctx,"alert http any any -> any any (msg:"
-                                   "\"pcre relative HTTP method\"; content:\"PO\";"
-                                   " http_method; pcre:\"/ST/RM\"; "
-                                   " sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (det_ctx != NULL) {
-        DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    }
-    if (de_ctx != NULL) {
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
-
-    StreamTcpFreeConfig(true);
-    UTHFreePackets(&p, 1);
     PASS;
 }
 
@@ -2772,7 +1749,6 @@ static int DetectPcreTxBodyChunksTest01(void)
 
     AppLayerHtpEnableRequestBodyCallback();
 
-    FLOWLOCK_WRLOCK(&f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER | STREAM_START, httpbuf1, httplen1);
     FAIL_IF(r != 0);
@@ -2824,7 +1800,6 @@ static int DetectPcreTxBodyChunksTest01(void)
 
     if (alp_tctx != NULL)
         AppLayerParserThreadCtxFree(alp_tctx);
-    FLOWLOCK_UNLOCK(&f);
     StreamTcpFreeConfig(true);
     FLOW_DESTROY(&f);
     UTHFreePacket(p);
@@ -2888,61 +1863,49 @@ static int DetectPcreTxBodyChunksTest02(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(&f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(PacketAlertCheck(p, 1));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf2, httplen2);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(PacketAlertCheck(p, 1));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf3, httplen3);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(PacketAlertCheck(p, 1));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf4, httplen4);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(!(PacketAlertCheck(p, 1)));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf5, httplen5);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(PacketAlertCheck(p, 1));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf6, httplen6);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
@@ -2951,10 +1914,8 @@ static int DetectPcreTxBodyChunksTest02(void)
 
     SCLogDebug("sending data chunk 7");
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf7, httplen7);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
@@ -3057,61 +2018,49 @@ static int DetectPcreTxBodyChunksTest03(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(&f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(PacketAlertCheck(p, 1));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf2, httplen2);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(PacketAlertCheck(p, 1));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf3, httplen3);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(PacketAlertCheck(p, 1));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf4, httplen4);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(!(PacketAlertCheck(p, 1)));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf5, httplen5);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(PacketAlertCheck(p, 1));
     p->alerts.cnt = 0;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf6, httplen6);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
@@ -3120,10 +2069,8 @@ static int DetectPcreTxBodyChunksTest03(void)
 
     SCLogDebug("sending data chunk 7");
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf7, httplen7);
     FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
 
     /* do detect */
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
@@ -3148,324 +2095,6 @@ static int DetectPcreTxBodyChunksTest03(void)
     StreamTcpFreeConfig(true);
     FLOW_DESTROY(&f);
     UTHFreePacket(p);
-    PASS;
-}
-
-/**
- * \test flowvar capture on http buffer
- */
-static int DetectPcreFlowvarCapture01(void)
-{
-    uint8_t uabuf1[] =
-        "Mozilla/5.0 (X11; U; Linux i686; es-ES; rv:1.9.0.13) Gecko/2009080315 Ubuntu/8.10 (intrepid) Firefox/3.0.13";
-    uint32_t ualen1 = sizeof(uabuf1) - 1; /* minus the \0 */
-    uint8_t httpbuf1[] =
-        "GET / HTTP/1.1\r\n"
-        "Host: www.emergingthreats.net\r\n"
-        "User-Agent: Mozilla/5.0 (X11; U; Linux i686; es-ES; rv:1.9.0.13) Gecko/2009080315 Ubuntu/8.10 (intrepid) Firefox/3.0.13\r\n"
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9;q=0.8\r\n"
-        "Accept-Language: es-es,es;q=0.8,en-us;q=0.5,en;q=0.3\r\n"
-        "Accept-Encoding: gzip,deflate\r\n"
-        "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.7\r\n"
-        "Date: Tue, 22 Sep 2009 19:24:48 GMT\r\n"
-        "Server: Apache\r\n"
-        "\r\n"
-        "<!DOCTYPE html PUBLIC\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p1 = NULL;
-    Flow f;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p1 = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-    f.alproto = ALPROTO_HTTP1;
-
-    p1->flow = &f;
-    p1->flowflags |= FLOW_PKT_TOSERVER;
-    p1->flowflags |= FLOW_PKT_ESTABLISHED;
-    p1->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-    de_ctx->flags |= DE_QUIET;
-
-    s = DetectEngineAppendSig(de_ctx, "alert http any any -> any any (content:\"User-Agent: \"; http_header; pcre:\"/(?P<flow_ua>.*)\\r\\n/HR\"; sid:1;)");
-    FAIL_IF(s == NULL);
-
-    FAIL_IF(s->sm_lists[g_http_header_buffer_id] == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next->type != DETECT_PCRE);
-    DetectPcreData *pd = (DetectPcreData *)s->sm_lists[g_http_header_buffer_id]->next->ctx;
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    HtpState *http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect for p1 */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p1);
-
-    FAIL_IF(!(PacketAlertCheck(p1, 1)));
-
-    FlowVar *fv = FlowVarGet(&f, pd->capids[0]);
-    FAIL_IF(fv == NULL);
-
-    FAIL_IF(fv->data.fv_str.value_len != ualen1);
-
-    if (memcmp(fv->data.fv_str.value, uabuf1, ualen1) != 0) {
-        PrintRawDataFp(stdout, fv->data.fv_str.value, fv->data.fv_str.value_len);
-        PrintRawDataFp(stdout, uabuf1, ualen1);
-
-        printf("buffer mismatch: ");
-        FAIL;
-    }
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (de_ctx != NULL)
-        DetectEngineCtxFree(de_ctx);
-
-    StreamTcpFreeConfig(true);
-    FLOW_DESTROY(&f);
-    UTHFreePackets(&p1, 1);
-    PASS;
-}
-
-/**
- * \test flowvar capture on http buffer, capture overwrite
- */
-static int DetectPcreFlowvarCapture02(void)
-{
-    uint8_t uabuf1[] =
-        "Apache";
-    uint32_t ualen1 = sizeof(uabuf1) - 1; /* minus the \0 */
-    uint8_t httpbuf1[] =
-        "GET / HTTP/1.1\r\n"
-        "Host: www.emergingthreats.net\r\n"
-        "User-Agent: Mozilla/5.0 (X11; U; Linux i686; es-ES; rv:1.9.0.13) Gecko/2009080315 Ubuntu/8.10 (intrepid) Firefox/3.0.13\r\n"
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9;q=0.8\r\n"
-        "Accept-Language: es-es,es;q=0.8,en-us;q=0.5,en;q=0.3\r\n"
-        "Accept-Encoding: gzip,deflate\r\n"
-        "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.7\r\n"
-        "Date: Tue, 22 Sep 2009 19:24:48 GMT\r\n"
-        "Server: Apache\r\n"
-        "\r\n"
-        "<!DOCTYPE html PUBLIC\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p1 = NULL;
-    Flow f;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p1 = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-    f.alproto = ALPROTO_HTTP1;
-
-    p1->flow = &f;
-    p1->flowflags |= FLOW_PKT_TOSERVER;
-    p1->flowflags |= FLOW_PKT_ESTABLISHED;
-    p1->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-    de_ctx->flags |= DE_QUIET;
-
-    s = DetectEngineAppendSig(de_ctx, "alert http any any -> any any (content:\"User-Agent: \"; http_header; pcre:\"/(?P<flow_ua>.*)\\r\\n/HR\"; priority:1; sid:1;)");
-    FAIL_IF(s == NULL);
-
-    FAIL_IF(s->sm_lists[g_http_header_buffer_id] == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next->type != DETECT_PCRE);
-    DetectPcreData *pd1 = (DetectPcreData *)s->sm_lists[g_http_header_buffer_id]->next->ctx;
-
-    s = DetectEngineAppendSig(de_ctx, "alert http any any -> any any (content:\"Server: \"; http_header; pcre:\"/(?P<flow_ua>.*)\\r\\n/HR\"; priority:3; sid:2;)");
-    FAIL_IF(s == NULL);
-
-    FAIL_IF(s->sm_lists[g_http_header_buffer_id] == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next->type != DETECT_PCRE);
-    DetectPcreData *pd2 = (DetectPcreData *)s->sm_lists[g_http_header_buffer_id]->next->ctx;
-
-    FAIL_IF(pd1->capids[0] != pd2->capids[0]);
-
-    SCSigRegisterSignatureOrderingFuncs(de_ctx);
-    SCSigOrderSignatures(de_ctx);
-    SCSigSignatureOrderingModuleCleanup(de_ctx);
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    HtpState *http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect for p1 */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p1);
-
-    FAIL_IF(!(PacketAlertCheck(p1, 1)));
-
-    FlowVar *fv = FlowVarGet(&f, pd1->capids[0]);
-    FAIL_IF(fv == NULL);
-
-    if (fv->data.fv_str.value_len != ualen1) {
-        PrintRawDataFp(stdout, fv->data.fv_str.value, fv->data.fv_str.value_len);
-        PrintRawDataFp(stdout, uabuf1, ualen1);
-        printf("%u != %u: ", fv->data.fv_str.value_len, ualen1);
-        FAIL;
-    }
-
-    if (memcmp(fv->data.fv_str.value, uabuf1, ualen1) != 0) {
-        PrintRawDataFp(stdout, fv->data.fv_str.value, fv->data.fv_str.value_len);
-        PrintRawDataFp(stdout, uabuf1, ualen1);
-
-        printf("buffer mismatch: ");
-        FAIL;
-    }
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (de_ctx != NULL)
-        DetectEngineCtxFree(de_ctx);
-
-    StreamTcpFreeConfig(true);
-    FLOW_DESTROY(&f);
-    UTHFreePackets(&p1, 1);
-    PASS;
-}
-
-/**
- * \test flowvar capture on http buffer, capture overwrite + no matching sigs, so flowvars should not be set.
- */
-static int DetectPcreFlowvarCapture03(void)
-{
-    uint8_t httpbuf1[] =
-        "GET / HTTP/1.1\r\n"
-        "Host: www.emergingthreats.net\r\n"
-        "User-Agent: Mozilla/5.0 (X11; U; Linux i686; es-ES; rv:1.9.0.13) Gecko/2009080315 Ubuntu/8.10 (intrepid) Firefox/3.0.13\r\n"
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9;q=0.8\r\n"
-        "Accept-Language: es-es,es;q=0.8,en-us;q=0.5,en;q=0.3\r\n"
-        "Accept-Encoding: gzip,deflate\r\n"
-        "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.7\r\n"
-        "Date: Tue, 22 Sep 2009 19:24:48 GMT\r\n"
-        "Server: Apache\r\n"
-        "\r\n"
-        "<!DOCTYPE html PUBLIC\r\n\r\n";
-    uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
-    TcpSession ssn;
-    Packet *p1 = NULL;
-    Flow f;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    DetectEngineThreadCtx *det_ctx;
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p1 = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    f.flags |= FLOW_IPV4;
-    f.alproto = ALPROTO_HTTP1;
-
-    p1->flow = &f;
-    p1->flowflags |= FLOW_PKT_TOSERVER;
-    p1->flowflags |= FLOW_PKT_ESTABLISHED;
-    p1->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-
-    StreamTcpInitConfig(true);
-
-    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-    de_ctx->flags |= DE_QUIET;
-
-    s = DetectEngineAppendSig(de_ctx, "alert http any any -> any any (content:\"User-Agent: \"; http_header; pcre:\"/(?P<flow_ua>.*)\\r\\n/HR\"; content:\"xyz\"; http_header; priority:1; sid:1;)");
-    FAIL_IF(s == NULL);
-
-    FAIL_IF(s->sm_lists[g_http_header_buffer_id] == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next->type != DETECT_PCRE);
-    DetectPcreData *pd1 = (DetectPcreData *)s->sm_lists[g_http_header_buffer_id]->next->ctx;
-
-    s = DetectEngineAppendSig(de_ctx, "alert http any any -> any any (content:\"Server: \"; http_header; pcre:\"/(?P<flow_ua>.*)\\r\\n/HR\"; content:\"xyz\"; http_header; priority:3; sid:2;)");
-    FAIL_IF(s == NULL);
-
-    FAIL_IF(s->sm_lists[g_http_header_buffer_id] == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next == NULL ||
-        s->sm_lists[g_http_header_buffer_id]->next->type != DETECT_PCRE);
-    DetectPcreData *pd2 = (DetectPcreData *)s->sm_lists[g_http_header_buffer_id]->next->ctx;
-
-    FAIL_IF(pd1->capids[0] != pd2->capids[0]);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    int r = AppLayerParserParse(
-            NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
-    FAIL_IF(r != 0);
-    FLOWLOCK_UNLOCK(&f);
-
-    HtpState *http_state = f.alstate;
-    FAIL_IF(http_state == NULL);
-
-    /* do detect for p1 */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p1);
-
-    FAIL_IF(PacketAlertCheck(p1, 1));
-
-    FlowVar *fv = FlowVarGet(&f, pd1->capids[0]);
-    FAIL_IF(fv != NULL);
-
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    if (de_ctx != NULL)
-        DetectEngineCtxFree(de_ctx);
-
-    StreamTcpFreeConfig(true);
-    FLOW_DESTROY(&f);
-    UTHFreePackets(&p1, 1);
     PASS;
 }
 
@@ -3576,36 +2205,9 @@ static void DetectPcreRegisterTests(void)
     UtRegisterTest("DetectPcreParseTest27", DetectPcreParseTest27);
     UtRegisterTest("DetectPcreParseTest28", DetectPcreParseTest28);
 
-    UtRegisterTest("DetectPcreTestSig01 -- pcre test", DetectPcreTestSig01);
-    UtRegisterTest("DetectPcreTestSig02 -- pcre test", DetectPcreTestSig02);
-    UtRegisterTest("DetectPcreTestSig03 -- negated pcre test",
-                   DetectPcreTestSig03);
-
-    UtRegisterTest("DetectPcreModifPTest04 -- Modifier P",
-                   DetectPcreModifPTest04);
-    UtRegisterTest("DetectPcreModifPTest05 -- Modifier P fragmented",
-                   DetectPcreModifPTest05);
-    UtRegisterTest("DetectPcreTestSig06", DetectPcreTestSig06);
-    UtRegisterTest("DetectPcreTestSig07 -- anchored pcre",
-                   DetectPcreTestSig07);
-    UtRegisterTest("DetectPcreTestSig08 -- anchored pcre",
-                   DetectPcreTestSig08);
-    UtRegisterTest("DetectPcreTestSig09 -- Cookie modifier",
-                   DetectPcreTestSig09);
-    UtRegisterTest("DetectPcreTestSig10 -- negated Cookie modifier",
-                   DetectPcreTestSig10);
-    UtRegisterTest("DetectPcreTestSig11 -- Method modifier",
-                   DetectPcreTestSig11);
-    UtRegisterTest("DetectPcreTestSig12 -- negated Method modifier",
-                   DetectPcreTestSig12);
-    UtRegisterTest("DetectPcreTestSig13 -- Header modifier",
-                   DetectPcreTestSig13);
-    UtRegisterTest("DetectPcreTestSig14 -- negated Header modifier",
-                   DetectPcreTestSig14);
-    UtRegisterTest("DetectPcreTestSig15 -- relative Cookie modifier",
-                   DetectPcreTestSig15);
-    UtRegisterTest("DetectPcreTestSig16 -- relative Method modifier",
-                   DetectPcreTestSig16);
+    UtRegisterTest("DetectPcreTestSig01", DetectPcreTestSig01);
+    UtRegisterTest("DetectPcreTestSig02 -- anchored pcre", DetectPcreTestSig02);
+    UtRegisterTest("DetectPcreTestSig03 -- anchored pcre", DetectPcreTestSig03);
 
     UtRegisterTest("DetectPcreTxBodyChunksTest01",
                    DetectPcreTxBodyChunksTest01);
@@ -3613,13 +2215,6 @@ static void DetectPcreRegisterTests(void)
                    DetectPcreTxBodyChunksTest02);
     UtRegisterTest("DetectPcreTxBodyChunksTest03 -- modifier P, body chunks per tx",
                    DetectPcreTxBodyChunksTest03);
-
-    UtRegisterTest("DetectPcreFlowvarCapture01 -- capture for http_header",
-                   DetectPcreFlowvarCapture01);
-    UtRegisterTest("DetectPcreFlowvarCapture02 -- capture for http_header",
-                   DetectPcreFlowvarCapture02);
-    UtRegisterTest("DetectPcreFlowvarCapture03 -- capture for http_header",
-                   DetectPcreFlowvarCapture03);
 
     UtRegisterTest("DetectPcreParseHttpHost", DetectPcreParseHttpHost);
     UtRegisterTest("DetectPcreParseCaptureTest", DetectPcreParseCaptureTest);

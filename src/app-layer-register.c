@@ -24,6 +24,7 @@
  */
 
 #include "suricata-common.h"
+#include "suricata.h"
 #include "stream.h"
 #include "conf.h"
 
@@ -149,9 +150,8 @@ int AppLayerRegisterParser(const struct AppLayerParser *p, AppProto alproto)
         AppLayerParserRegisterLocalStorageFunc(p->ip_proto, alproto,
                 p->LocalStorageAlloc, p->LocalStorageFree);
     }
-    if (p->StateGetFiles) {
-        AppLayerParserRegisterGetFilesFunc(p->ip_proto, alproto,
-                p->StateGetFiles);
+    if (p->GetTxFiles) {
+        AppLayerParserRegisterGetTxFilesFunc(p->ip_proto, alproto, p->GetTxFiles);
     }
 
     if (p->GetTxIterator) {
@@ -162,6 +162,10 @@ int AppLayerRegisterParser(const struct AppLayerParser *p, AppProto alproto)
     if (p->GetTxData) {
         AppLayerParserRegisterTxDataFunc(p->ip_proto, alproto,
                 p->GetTxData);
+    }
+
+    if (p->GetStateData) {
+        AppLayerParserRegisterStateDataFunc(p->ip_proto, alproto, p->GetStateData);
     }
 
     if (p->ApplyTxConfig) {

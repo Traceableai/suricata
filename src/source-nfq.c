@@ -27,6 +27,7 @@
 
 #include "suricata-common.h"
 #include "suricata.h"
+#include "packet.h"
 #include "decode.h"
 #include "packet-queue.h"
 
@@ -41,6 +42,7 @@
 #include "source-nfq-prototypes.h"
 #include "action-globals.h"
 
+#include "util-datalink.h"
 #include "util-debug.h"
 #include "util-error.h"
 #include "util-byte.h"
@@ -475,7 +477,7 @@ static int NFQSetupPkt (Packet *p, struct nfq_q_handle *qh, void *data)
 static void NFQReleasePacket(Packet *p)
 {
     if (unlikely(!p->nfq_v.verdicted)) {
-        PacketUpdateAction(p, ACTION_DROP);
+        PacketDrop(p, ACTION_DROP, PKT_DROP_REASON_NFQ_ERROR);
         NFQSetVerdict(p);
     }
     PacketFreeOrRelease(p);
@@ -494,11 +496,11 @@ static int NFQBypassCallback(Packet *p)
          * work for those. Rebuilt packets from IP fragments are fine. */
         if (p->flags & PKT_REBUILT_FRAGMENT) {
             Packet *tp = p->root ? p->root : p;
-            SCMutexLock(&tp->tunnel_mutex);
+            SCSpinLock(&tp->persistent.tunnel_lock);
             tp->nfq_v.mark = (nfq_config.bypass_mark & nfq_config.bypass_mask)
                 | (tp->nfq_v.mark & ~nfq_config.bypass_mask);
             tp->flags |= PKT_MARK_MODIFIED;
-            SCMutexUnlock(&tp->tunnel_mutex);
+            SCSpinUnlock(&tp->persistent.tunnel_lock);
             return 1;
         }
         return 0;
@@ -730,6 +732,8 @@ TmEcode ReceiveNFQThreadInit(ThreadVars *tv, const void *initdata, void **data)
     }
     ntv->datalen = T_DATA_SIZE;
 #undef T_DATA_SIZE
+
+    DatalinkSetGlobalType(DLT_RAW);
 
     *data = (void *)ntv;
 
@@ -1005,6 +1009,10 @@ TmEcode ReceiveNFQLoop(ThreadVars *tv, void *data, void *slot)
 
     ntv->slot = ((TmSlot *) slot)->slot_next;
 
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
+
     while(1) {
         if (unlikely(suricata_ctl_flags != 0)) {
             NFQDestroyQueue(nq);
@@ -1036,7 +1044,7 @@ static inline uint32_t GetVerdict(const Packet *p)
 {
     uint32_t verdict = NF_ACCEPT;
 
-    if (PacketTestAction(p, ACTION_DROP)) {
+    if (PacketCheckAction(p, ACTION_DROP)) {
         verdict = NF_DROP;
     } else {
         switch (nfq_config.mode) {
@@ -1058,7 +1066,7 @@ static inline uint32_t GetVerdict(const Packet *p)
 #ifdef COUNTERS
 static inline void UpdateCounters(NFQQueueVars *t, const Packet *p)
 {
-    if (PacketTestAction(p, ACTION_DROP)) {
+    if (PacketCheckAction(p, ACTION_DROP)) {
         t->dropped++;
     } else {
         if (p->flags & PKT_STREAM_MODIFIED) {

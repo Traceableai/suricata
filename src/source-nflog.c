@@ -37,6 +37,7 @@
 #include "runmodes.h"
 #include "util-error.h"
 #include "util-device.h"
+#include "util-datalink.h"
 
 #ifndef HAVE_NFLOG
 /** Handle the case where no NFLOG support is compiled in.
@@ -326,6 +327,8 @@ TmEcode ReceiveNFLOGThreadInit(ThreadVars *tv, const void *initdata, void **data
     ntv->datalen = T_DATA_SIZE;
 #undef T_DATA_SIZE
 
+    DatalinkSetGlobalType(DLT_RAW);
+
     *data = (void *)ntv;
 
     nflconfig->DerefFunc(nflconfig);
@@ -426,6 +429,10 @@ TmEcode ReceiveNFLOGLoop(ThreadVars *tv, void *data, void *slot)
         SCLogError(SC_ERR_NFLOG_FD, "Can't obtain a file descriptor");
         SCReturnInt(TM_ECODE_FAILED);
     }
+
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
 
     while (1) {
         if (suricata_ctl_flags != 0)

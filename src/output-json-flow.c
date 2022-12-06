@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -41,6 +40,7 @@
 #include "output.h"
 #include "util-privs.h"
 #include "util-buffer.h"
+#include "util-device.h"
 #include "util-proto-name.h"
 #include "util-logopenfile.h"
 #include "util-time.h"
@@ -309,6 +309,12 @@ static void EveFlowLogJSON(OutputJsonThreadCtx *aft, JsonBuilder *jb, Flow *f)
             const char *tcp_state = StreamTcpStateAsString(ssn->state);
             if (tcp_state != NULL)
                 jb_set_string(jb, "state", tcp_state);
+            if (FlowHasGaps(f, STREAM_TOCLIENT)) {
+                JB_SET_TRUE(jb, "tc_gap");
+            }
+            if (FlowHasGaps(f, STREAM_TOSERVER)) {
+                JB_SET_TRUE(jb, "ts_gap");
+            }
         }
 
         /* Close tcp. */

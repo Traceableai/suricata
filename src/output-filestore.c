@@ -1,4 +1,4 @@
-/* Copyright (C) 2018-2021 Open Information Security Foundation
+/* Copyright (C) 2018-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -16,21 +16,19 @@
  */
 
 #include "suricata-common.h"
+#include "output-filestore.h"
 
 #include "stream-tcp.h"
-#include "app-layer-parser.h"
-#include "app-layer-htp.h"
-#include "app-layer-htp-xff.h"
-#include "app-layer-smtp.h"
 
 #include "feature.h"
 
 #include "output.h"
-#include "output-filestore.h"
 #include "output-json-file.h"
 
-#include "util-print.h"
+#include "util-conf.h"
 #include "util-misc.h"
+#include "util-path.h"
+#include "util-print.h"
 
 #define MODULE_NAME "OutputFilestore"
 
@@ -88,15 +86,6 @@ static uint32_t FileGetMaxOpenFiles(void)
     return g_file_store_max_open_files;
 }
 
-static void PrintHexString(char *str, size_t size, uint8_t *buf, size_t buf_len)
-{
-    int i = 0;
-    size_t x = 0;
-    for (i = 0, x = 0; x < buf_len; x++) {
-        i += snprintf(&str[i], size - i, "%02x", buf[x]);
-    }
-}
-
 /**
  * \brief Update the timestamps on a file to match those of another
  *     file.
@@ -122,9 +111,10 @@ static void OutputFilestoreUpdateFileTime(const char *src_filename,
     }
 }
 
-static void OutputFilestoreFinalizeFiles(ThreadVars *tv,
-        const OutputFilestoreLogThread *oft, const OutputFilestoreCtx *ctx,
-        const Packet *p, File *ff, uint8_t dir) {
+static void OutputFilestoreFinalizeFiles(ThreadVars *tv, const OutputFilestoreLogThread *oft,
+        const OutputFilestoreCtx *ctx, const Packet *p, File *ff, void *tx, const uint64_t tx_id,
+        uint8_t dir)
+{
     /* Stringify the SHA256 which will be used in the final
      * filename. */
     char sha256string[(SC_SHA256_LEN * 2) + 1];
@@ -169,7 +159,7 @@ static void OutputFilestoreFinalizeFiles(ThreadVars *tv,
                 "Failed to write file info record. Output filename truncated.");
         } else {
             JsonBuilder *js_fileinfo =
-                    JsonBuildFileInfoRecord(p, ff, true, dir, ctx->xff_cfg, NULL);
+                    JsonBuildFileInfoRecord(p, ff, tx, tx_id, true, dir, ctx->xff_cfg, NULL);
             if (likely(js_fileinfo != NULL)) {
                 jb_close(js_fileinfo);
                 FILE *out = fopen(js_metadata_filename, "w");
@@ -184,24 +174,15 @@ static void OutputFilestoreFinalizeFiles(ThreadVars *tv,
     }
 }
 
-static int OutputFilestoreLogger(ThreadVars *tv, void *thread_data,
-        const Packet *p, File *ff, const uint8_t *data, uint32_t data_len,
-        uint8_t flags, uint8_t dir)
+static int OutputFilestoreLogger(ThreadVars *tv, void *thread_data, const Packet *p, File *ff,
+        void *tx, const uint64_t tx_id, const uint8_t *data, uint32_t data_len, uint8_t flags,
+        uint8_t dir)
 {
     SCEnter();
     OutputFilestoreLogThread *aft = (OutputFilestoreLogThread *)thread_data;
     OutputFilestoreCtx *ctx = aft->ctx;
     char filename[PATH_MAX] = "";
     int file_fd = -1;
-
-    /* no flow, no files */
-    if (p->flow == NULL) {
-        SCReturnInt(TM_ECODE_OK);
-    }
-
-    if (!(PKT_IS_IPV4(p) || PKT_IS_IPV6(p))) {
-        return 0;
-    }
 
     SCLogDebug("ff %p, data %p, data_len %u", ff, data, data_len);
 
@@ -269,7 +250,7 @@ static int OutputFilestoreLogger(ThreadVars *tv, void *thread_data,
             ff->fd = -1;
             SC_ATOMIC_SUB(filestore_open_file_cnt, 1);
         }
-        OutputFilestoreFinalizeFiles(tv, aft, ctx, p, ff, dir);
+        OutputFilestoreFinalizeFiles(tv, aft, ctx, p, ff, tx, tx_id, dir);
     }
 
     return 0;

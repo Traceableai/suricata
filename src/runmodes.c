@@ -36,6 +36,21 @@
 #include "conf.h"
 #include "queue.h"
 #include "runmodes.h"
+#include "runmode-af-packet.h"
+#include "runmode-af-xdp.h"
+#include "runmode-dpdk.h"
+#include "runmode-erf-dag.h"
+#include "runmode-erf-file.h"
+#include "runmode-ipfw.h"
+#include "runmode-napatech.h"
+#include "runmode-netmap.h"
+#include "runmode-nflog.h"
+#include "runmode-nfq.h"
+#include "runmode-pcap.h"
+#include "runmode-pcap-file.h"
+#include "runmode-pfring.h"
+#include "runmode-unix-socket.h"
+#include "runmode-windivert.h"
 #include "util-unittest.h"
 #include "util-misc.h"
 #include "util-plugin.h"
@@ -143,6 +158,8 @@ static const char *RunModeTranslateModeToName(int runmode)
             return "UNITTEST";
         case RUNMODE_AFP_DEV:
             return "AF_PACKET_DEV";
+        case RUNMODE_AFXDP_DEV:
+            return "AF_XDP_DEV";
         case RUNMODE_NETMAP:
 #ifdef HAVE_NETMAP
             return "NETMAP";
@@ -231,6 +248,7 @@ void RunModeRegisterRunModes(void)
     RunModeErfDagRegister();
     RunModeNapatechRegister();
     RunModeIdsAFPRegister();
+    RunModeIdsAFXDPRegister();
     RunModeIdsNetmapRegister();
     RunModeIdsNflogRegister();
     RunModeUnixSocketRegister();
@@ -343,6 +361,9 @@ void RunModeDispatch(int runmode, const char *custom_mode,
                 break;
             case RUNMODE_AFP_DEV:
                 custom_mode = RunModeAFPGetDefaultMode();
+                break;
+            case RUNMODE_AFXDP_DEV:
+                custom_mode = RunModeAFXDPGetDefaultMode();
                 break;
             case RUNMODE_NETMAP:
                 custom_mode = RunModeNetmapGetDefaultMode();
@@ -615,7 +636,7 @@ static void SetupOutput(const char *name, OutputModule *module, OutputCtx *outpu
                 module->ThreadExitPrintStats);
         /* Not used with wild card loggers */
         if (module->alproto != ALPROTO_UNKNOWN) {
-            logger_bits[module->alproto] |= (1<<module->logger_id);
+            logger_bits[module->alproto] |= BIT_U32(module->logger_id);
         }
     } else if (module->FiledataLogFunc) {
         SCLogDebug("%s is a filedata logger", module->name);
@@ -743,6 +764,9 @@ static void RunModeInitializeLuaOutput(ConfNode *conf, OutputCtx *parent_ctx)
     }
 }
 
+extern bool g_file_logger_enabled;
+extern bool g_filedata_logger_enabled;
+
 /**
  * Initialize the output modules.
  */
@@ -780,18 +804,16 @@ void RunModeInitializeOutputs(void)
         }
 
         if (strcmp(output->val, "file-log") == 0) {
-            SCLogWarning(SC_ERR_NOT_SUPPORTED,
-                    "file-log is no longer supported,"
-                    " use eve.files instead "
-                    "(see https://redmine.openinfosecfoundation.org/issues/2376"
-                    " for an explanation)");
+            SCLogWarning(SC_ERR_NOT_SUPPORTED, "file-log is no longer supported,"
+                                               " use eve.files instead "
+                                               "(see ticket #2376"
+                                               " for an explanation)");
             continue;
         } else if (strncmp(output->val, "unified-", sizeof("unified-") - 1) == 0) {
-            SCLogWarning(SC_ERR_NOT_SUPPORTED,
-                    "Unified1 is no longer supported,"
-                    " use Unified2 instead "
-                    "(see https://redmine.openinfosecfoundation.org/issues/353"
-                    " for an explanation)");
+            SCLogWarning(SC_ERR_NOT_SUPPORTED, "Unified1 is no longer supported,"
+                                               " use Unified2 instead "
+                                               "(see ticket #353"
+                                               " for an explanation)");
             continue;
         } else if (strncmp(output->val, "unified2-", sizeof("unified2-") - 1) == 0) {
             SCLogWarning(SC_ERR_NOT_SUPPORTED,
@@ -903,13 +925,33 @@ void RunModeInitializeOutputs(void)
     }
 
     /* register the logger bits to the app-layer */
-    int a;
+    AppProto a;
     for (a = 0; a < ALPROTO_MAX; a++) {
+        if (AppLayerParserSupportsFiles(IPPROTO_TCP, a)) {
+            if (g_file_logger_enabled)
+                logger_bits[a] |= BIT_U32(LOGGER_FILE);
+            if (g_filedata_logger_enabled)
+                logger_bits[a] |= BIT_U32(LOGGER_FILEDATA);
+            SCLogDebug("IPPROTO_TCP::%s: g_file_logger_enabled %d g_filedata_logger_enabled %d -> "
+                       "%08x",
+                    AppProtoToString(a), g_file_logger_enabled, g_filedata_logger_enabled,
+                    logger_bits[a]);
+        }
+        if (AppLayerParserSupportsFiles(IPPROTO_UDP, a)) {
+            if (g_file_logger_enabled)
+                logger_bits[a] |= BIT_U32(LOGGER_FILE);
+            if (g_filedata_logger_enabled)
+                logger_bits[a] |= BIT_U32(LOGGER_FILEDATA);
+        }
+
         if (logger_bits[a] == 0)
             continue;
 
-        const int tcp = AppLayerParserProtocolHasLogger(IPPROTO_TCP, a);
-        const int udp = AppLayerParserProtocolHasLogger(IPPROTO_UDP, a);
+        const int tcp = AppLayerParserProtocolHasLogger(IPPROTO_TCP, a) | (g_file_logger_enabled) |
+                        (g_filedata_logger_enabled);
+        const int udp = AppLayerParserProtocolHasLogger(IPPROTO_UDP, a) | (g_file_logger_enabled) |
+                        (g_filedata_logger_enabled);
+        SCLogDebug("tcp %d udp %d", tcp, udp);
 
         SCLogDebug("logger for %s: %s %s", AppProtoToString(a),
                 tcp ? "true" : "false", udp ? "true" : "false");
@@ -952,7 +994,7 @@ void RunModeInitialize(void)
      * in case the default per-thread stack size is to be adjusted
      */
     const char *ss = NULL;
-    if ((ConfGetValue("threading.stack-size", &ss)) == 1) {
+    if ((ConfGet("threading.stack-size", &ss)) == 1) {
         if (ss != NULL) {
             if (ParseSizeStringU64(ss, &threading_set_stack_size) < 0) {
                 FatalError(SC_ERR_INVALID_ARGUMENT,

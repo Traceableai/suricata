@@ -16,7 +16,7 @@ jobs:
     container: ubuntu:20.04
     steps:
       - name: Caching ~/.cargo
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
           path: ~/.cargo
           key: commit-check-cargo
@@ -28,6 +28,7 @@ jobs:
                 build-essential \
                 autoconf \
                 automake \
+                cargo \
                 curl \
                 git \
                 jq \
@@ -68,11 +69,13 @@ jobs:
       - name: Install cbindgen
         run: |
           cd $HOME/.cargo/bin
-          curl -OL https://github.com/eqrion/cbindgen/releases/download/v0.15.0/cbindgen
+          curl -OL https://github.com/eqrion/cbindgen/releases/download/v0.24.3/cbindgen
           chmod 755 cbindgen
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+      - uses: actions/checkout@v3.1.0
         with:
           fetch-depth: 0
+      # The action above is supposed to do this for us, but it doesn't appear to stick.
+      - run: /usr/bin/git config --global --add safe.directory /__w/suricata/suricata
       - run: git fetch
       - run: git clone https://github.com/OISF/libhtp -b 0.5.x
       - name: Building all commits
@@ -91,7 +94,7 @@ jobs:
               make -ik distclean > /dev/null
           done
       - run: sccache -s
-      - uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+      - uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb
         name: Uploading build log
         if: always()
         with:

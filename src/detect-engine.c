@@ -23,7 +23,6 @@
 
 #include "suricata-common.h"
 #include "suricata.h"
-#include "debug.h"
 #include "detect.h"
 #include "flow.h"
 #include "flow-private.h"
@@ -39,6 +38,7 @@
 #include "detect-parse.h"
 #include "detect-engine-sigorder.h"
 
+#include "detect-engine-build.h"
 #include "detect-engine-siggroup.h"
 #include "detect-engine-address.h"
 #include "detect-engine-port.h"
@@ -46,6 +46,7 @@
 #include "detect-engine-mpm.h"
 #include "detect-engine-iponly.h"
 #include "detect-engine-tag.h"
+#include "detect-engine-frame.h"
 
 #include "detect-engine-file.h"
 
@@ -78,6 +79,9 @@
 #include "util-var-name.h"
 #include "util-profiling.h"
 #include "util-validate.h"
+#include "util-hash-string.h"
+#include "util-enum.h"
+#include "util-conf.h"
 
 #include "tm-threads.h"
 #include "runmodes.h"
@@ -113,12 +117,11 @@ SCEnumCharMap det_ctx_event_table[] = {
     { "Z_STREAM_ERROR", FILE_DECODER_EVENT_Z_STREAM_ERROR },
     { "Z_BUF_ERROR", FILE_DECODER_EVENT_Z_BUF_ERROR },
     { "Z_UNKNOWN_ERROR", FILE_DECODER_EVENT_Z_UNKNOWN_ERROR },
+    { "LZMA_IO_ERROR", FILE_DECODER_EVENT_LZMA_IO_ERROR },
+    { "LZMA_HEADER_TOO_SHORT_ERROR", FILE_DECODER_EVENT_LZMA_HEADER_TOO_SHORT_ERROR },
     { "LZMA_DECODER_ERROR", FILE_DECODER_EVENT_LZMA_DECODER_ERROR },
     { "LZMA_MEMLIMIT_ERROR", FILE_DECODER_EVENT_LZMA_MEMLIMIT_ERROR },
-    { "LZMA_OPTIONS_ERROR", FILE_DECODER_EVENT_LZMA_OPTIONS_ERROR },
-    { "LZMA_FORMAT_ERROR", FILE_DECODER_EVENT_LZMA_FORMAT_ERROR },
-    { "LZMA_DATA_ERROR", FILE_DECODER_EVENT_LZMA_DATA_ERROR },
-    { "LZMA_BUF_ERROR", FILE_DECODER_EVENT_LZMA_BUF_ERROR },
+    { "LZMA_XZ_ERROR", FILE_DECODER_EVENT_LZMA_XZ_ERROR },
     { "LZMA_UNKNOWN_ERROR", FILE_DECODER_EVENT_LZMA_UNKNOWN_ERROR },
     {
             "TOO_MANY_BUFFERS",
@@ -153,8 +156,8 @@ void DetectPktInspectEngineRegister(const char *name,
         FatalError(SC_ERR_INITIALIZATION,
             "failed to register inspect engine %s: %s", name, strerror(errno));
     }
-    new_engine->sm_list = sm_list;
-    new_engine->sm_list_base = sm_list;
+    new_engine->sm_list = (uint16_t)sm_list;
+    new_engine->sm_list_base = (uint16_t)sm_list;
     new_engine->v1.Callback = Callback;
     new_engine->v1.GetData = GetPktData;
 
@@ -187,7 +190,7 @@ void DetectFrameInspectEngineRegister(const char *name, int dir,
         BUG_ON(1);
     }
 
-    int direction;
+    uint8_t direction;
     if (dir == SIG_FLAG_TOSERVER) {
         direction = 0;
     } else {
@@ -199,8 +202,8 @@ void DetectFrameInspectEngineRegister(const char *name, int dir,
         FatalError(SC_ERR_INITIALIZATION, "failed to register inspect engine %s: %s", name,
                 strerror(errno));
     }
-    new_engine->sm_list = sm_list;
-    new_engine->sm_list_base = sm_list;
+    new_engine->sm_list = (uint16_t)sm_list;
+    new_engine->sm_list_base = (uint16_t)sm_list;
     new_engine->dir = direction;
     new_engine->v1.Callback = Callback;
     new_engine->alproto = alproto;
@@ -249,7 +252,7 @@ void DetectAppLayerInspectEngineRegister2(const char *name,
         BUG_ON(1);
     }
 
-    int direction;
+    uint8_t direction;
     if (dir == SIG_FLAG_TOSERVER) {
         direction = 0;
     } else {
@@ -263,9 +266,9 @@ void DetectAppLayerInspectEngineRegister2(const char *name,
     memset(new_engine, 0, sizeof(*new_engine));
     new_engine->alproto = alproto;
     new_engine->dir = direction;
-    new_engine->sm_list = sm_list;
-    new_engine->sm_list_base = sm_list;
-    new_engine->progress = progress;
+    new_engine->sm_list = (uint16_t)sm_list;
+    new_engine->sm_list_base = (uint16_t)sm_list;
+    new_engine->progress = (int16_t)progress;
     new_engine->v2.Callback = Callback2;
     new_engine->v2.GetData = GetData;
 
@@ -296,8 +299,10 @@ static void DetectAppLayerInspectEngineCopy(
             }
             new_engine->alproto = t->alproto;
             new_engine->dir = t->dir;
-            new_engine->sm_list = new_list;         /* use new list id */
-            new_engine->sm_list_base = sm_list;
+            DEBUG_VALIDATE_BUG_ON(new_list < 0 || new_list > UINT16_MAX);
+            new_engine->sm_list = (uint16_t)new_list; /* use new list id */
+            DEBUG_VALIDATE_BUG_ON(sm_list < 0 || sm_list > UINT16_MAX);
+            new_engine->sm_list_base = (uint16_t)sm_list;
             new_engine->progress = t->progress;
             new_engine->v2 = t->v2;
             new_engine->v2.transforms = transforms; /* assign transforms */
@@ -321,6 +326,7 @@ static void DetectAppLayerInspectEngineCopy(
 static void DetectAppLayerInspectEngineCopyListToDetectCtx(DetectEngineCtx *de_ctx)
 {
     const DetectEngineAppInspectionEngine *t = g_app_inspect_engines;
+    DetectEngineAppInspectionEngine *list = de_ctx->app_inspect_engines;
     while (t) {
         DetectEngineAppInspectionEngine *new_engine = SCCalloc(1, sizeof(DetectEngineAppInspectionEngine));
         if (unlikely(new_engine == NULL)) {
@@ -333,16 +339,12 @@ static void DetectAppLayerInspectEngineCopyListToDetectCtx(DetectEngineCtx *de_c
         new_engine->progress = t->progress;
         new_engine->v2 = t->v2;
 
-        if (de_ctx->app_inspect_engines == NULL) {
+        if (list == NULL) {
             de_ctx->app_inspect_engines = new_engine;
         } else {
-            DetectEngineAppInspectionEngine *list = de_ctx->app_inspect_engines;
-            while (list->next != NULL) {
-                list = list->next;
-            }
-
             list->next = new_engine;
         }
+        list = new_engine;
 
         t = t->next;
     }
@@ -361,8 +363,10 @@ static void DetectPktInspectEngineCopy(
             if (unlikely(new_engine == NULL)) {
                 exit(EXIT_FAILURE);
             }
-            new_engine->sm_list = new_list;         /* use new list id */
-            new_engine->sm_list_base = sm_list;
+            DEBUG_VALIDATE_BUG_ON(new_list < 0 || new_list > UINT16_MAX);
+            new_engine->sm_list = (uint16_t)new_list; /* use new list id */
+            DEBUG_VALIDATE_BUG_ON(sm_list < 0 || sm_list > UINT16_MAX);
+            new_engine->sm_list_base = (uint16_t)sm_list;
             new_engine->v1 = t->v1;
             new_engine->v1.transforms = transforms; /* assign transforms */
 
@@ -426,7 +430,7 @@ void DetectEngineFrameInspectEngineRegister(DetectEngineCtx *de_ctx, const char 
         BUG_ON(1);
     }
 
-    int direction;
+    uint8_t direction;
     if (dir == SIG_FLAG_TOSERVER) {
         direction = 0;
     } else {
@@ -438,8 +442,8 @@ void DetectEngineFrameInspectEngineRegister(DetectEngineCtx *de_ctx, const char 
         FatalError(SC_ERR_INITIALIZATION, "failed to register inspect engine %s: %s", name,
                 strerror(errno));
     }
-    new_engine->sm_list = sm_list;
-    new_engine->sm_list_base = sm_list;
+    new_engine->sm_list = (uint16_t)sm_list;
+    new_engine->sm_list_base = (uint16_t)sm_list;
     new_engine->dir = direction;
     new_engine->v1.Callback = Callback;
     new_engine->alproto = alproto;
@@ -471,8 +475,10 @@ static void DetectFrameInspectEngineCopy(DetectEngineCtx *de_ctx, int sm_list, i
             if (unlikely(new_engine == NULL)) {
                 exit(EXIT_FAILURE);
             }
-            new_engine->sm_list = new_list; /* use new list id */
-            new_engine->sm_list_base = sm_list;
+            DEBUG_VALIDATE_BUG_ON(new_list < 0 || new_list > UINT16_MAX);
+            new_engine->sm_list = (uint16_t)new_list; /* use new list id */
+            DEBUG_VALIDATE_BUG_ON(sm_list < 0 || sm_list > UINT16_MAX);
+            new_engine->sm_list_base = (uint16_t)sm_list;
             new_engine->dir = t->dir;
             new_engine->alproto = t->alproto;
             new_engine->type = t->type;
@@ -486,7 +492,6 @@ static void DetectFrameInspectEngineCopy(DetectEngineCtx *de_ctx, int sm_list, i
             }
 
             list->next = new_engine;
-            break;
         }
         t = t->next;
     }
@@ -530,7 +535,8 @@ static void DetectFrameInspectEngineCopyListToDetectCtx(DetectEngineCtx *de_ctx)
  *
  *  If stream inspection is MPM, then prepend it.
  */
-static void AppendStreamInspectEngine(Signature *s, SigMatchData *stream, int direction, uint32_t id)
+static void AppendStreamInspectEngine(
+        Signature *s, SigMatchData *stream, uint8_t direction, uint8_t id)
 {
     bool prepend = false;
 
@@ -538,7 +544,7 @@ static void AppendStreamInspectEngine(Signature *s, SigMatchData *stream, int di
     if (unlikely(new_engine == NULL)) {
         exit(EXIT_FAILURE);
     }
-    if (SigMatchListSMBelongsTo(s, s->init_data->mpm_sm) == DETECT_SM_LIST_PMATCH) {
+    if (s->init_data->mpm_sm_list == DETECT_SM_LIST_PMATCH) {
         SCLogDebug("stream is mpm");
         prepend = true;
         new_engine->mpm = true;
@@ -583,9 +589,7 @@ int DetectEngineAppInspectionEngine2Signature(DetectEngineCtx *de_ctx, Signature
     SigMatchData *ptrs[nlists];
     memset(&ptrs, 0, (nlists * sizeof(SigMatchData *)));
 
-    const int mpm_list = s->init_data->mpm_sm ?
-        SigMatchListSMBelongsTo(s, s->init_data->mpm_sm) :
-        -1;
+    const int mpm_list = s->init_data->mpm_sm ? s->init_data->mpm_sm_list : -1;
 
     const int files_id = DetectBufferTypeGetByName("files");
 
@@ -699,7 +703,7 @@ int DetectEngineAppInspectionEngine2Signature(DetectEngineCtx *de_ctx, Signature
     }
 
     bool head_is_mpm = false;
-    uint32_t last_id = DE_STATE_FLAG_BASE;
+    uint8_t last_id = DE_STATE_FLAG_BASE;
     const DetectEngineAppInspectionEngine *t = de_ctx->app_inspect_engines;
     while (t != NULL) {
         bool prepend = false;
@@ -941,7 +945,7 @@ static char DetectBufferTypeCompareNameFunc(void *data1, uint16_t len1, void *da
     DetectBufferType *map1 = (DetectBufferType *)data1;
     DetectBufferType *map2 = (DetectBufferType *)data2;
 
-    int r = (strcmp(map1->name, map2->name) == 0);
+    char r = (strcmp(map1->name, map2->name) == 0);
     r &= (memcmp((uint8_t *)&map1->transforms, (uint8_t *)&map2->transforms, sizeof(map2->transforms)) == 0);
     return r;
 }
@@ -1411,7 +1415,7 @@ InspectionBuffer *InspectionBufferMultipleForListGet(
 
     fb->max = MAX(fb->max, local_id);
     InspectionBuffer *buffer = &fb->inspection_buffers[local_id];
-    SCLogDebug("using file_data buffer %p", buffer);
+    SCLogDebug("using buffer %p", buffer);
 #ifdef DEBUG_VALIDATION
     buffer->multi = true;
 #endif
@@ -1830,9 +1834,10 @@ static int DetectEnginePktInspectionAppend(Signature *s, InspectionBufferPktInsp
     if (e == NULL)
         return -1;
 
-    e->mpm = (SigMatchListSMBelongsTo(s, s->init_data->mpm_sm) == list_id);
-    e->sm_list = list_id;
-    e->sm_list_base = list_id;
+    e->mpm = s->init_data->mpm_sm_list == list_id;
+    DEBUG_VALIDATE_BUG_ON(list_id < 0 || list_id > UINT16_MAX);
+    e->sm_list = (uint16_t)list_id;
+    e->sm_list_base = (uint16_t)list_id;
     e->v1.Callback = Callback;
     e->smd = data;
 
@@ -1942,10 +1947,11 @@ int DetectEngineReloadIsIdle(void)
  *  \retval 0 no match
  *  \retval 1 match
  */
-int DetectEngineInspectGenericList(const DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const Signature *s, const SigMatchData *smd, Flow *f, const uint8_t flags, void *alstate,
-        void *txv, uint64_t tx_id)
+uint8_t DetectEngineInspectGenericList(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+        const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
+        uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
 {
+    SigMatchData *smd = engine->smd;
     SCLogDebug("running match functions, sm %p", smd);
     if (smd != NULL) {
         while (1) {
@@ -1984,11 +1990,9 @@ int DetectEngineInspectGenericList(const DetectEngineCtx *de_ctx, DetectEngineTh
  * \retval 1 match.
  * \retval 2 Sig can't match.
  */
-int DetectEngineInspectBufferGeneric(
-        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const DetectEngineAppInspectionEngine *engine,
-        const Signature *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
+uint8_t DetectEngineInspectBufferGeneric(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+        const DetectEngineAppInspectionEngine *engine, const Signature *s, Flow *f, uint8_t flags,
+        void *alstate, void *txv, uint64_t tx_id)
 {
     const int list_id = engine->sm_list;
     SCLogDebug("running inspect on %d", list_id);
@@ -2363,14 +2367,17 @@ static DetectEngineCtx *DetectEngineCtxInitReal(enum DetectEngineType type, cons
     /* init iprep... ignore errors for now */
     (void)SRepInit(de_ctx);
 
-    SCClassConfLoadClassficationConfigFile(de_ctx, NULL);
-    if (SCRConfLoadReferenceConfigFile(de_ctx, NULL) < 0) {
+    if (!SCClassConfLoadClassficationConfigFile(de_ctx, NULL)) {
         if (RunmodeGetCurrent() == RUNMODE_CONF_TEST)
             goto error;
     }
 
     if (ActionInitConfig() < 0) {
         goto error;
+    }
+    if (SCRConfLoadReferenceConfigFile(de_ctx, NULL) < 0) {
+        if (RunmodeGetCurrent() == RUNMODE_CONF_TEST)
+            goto error;
     }
 
     de_ctx->version = DetectEngineGetVersion();
@@ -2410,13 +2417,7 @@ DetectEngineCtx *DetectEngineCtxInitWithPrefix(const char *prefix)
 
 static void DetectEngineCtxFreeThreadKeywordData(DetectEngineCtx *de_ctx)
 {
-    DetectEngineThreadKeywordCtxItem *item = de_ctx->keyword_list;
-    while (item) {
-        DetectEngineThreadKeywordCtxItem *next = item->next;
-        SCFree(item);
-        item = next;
-    }
-    de_ctx->keyword_list = NULL;
+    HashListTableFree(de_ctx->keyword_hash);
 }
 
 static void DetectEngineCtxFreeFailedSigs(DetectEngineCtx *de_ctx)
@@ -2648,9 +2649,8 @@ static int DetectEngineCtxLoadConf(DetectEngineCtx *de_ctx)
             }
             if (max_uniq_toclient_groups_str != NULL) {
                 if (StringParseUint16(&de_ctx->max_uniq_toclient_groups, 10,
-                    strlen(max_uniq_toclient_groups_str),
-                    (const char *)max_uniq_toclient_groups_str) <= 0)
-                {
+                            (uint16_t)strlen(max_uniq_toclient_groups_str),
+                            (const char *)max_uniq_toclient_groups_str) <= 0) {
                     de_ctx->max_uniq_toclient_groups = 20;
 
                     SCLogWarning(SC_ERR_SIZE_PARSE, "parsing '%s' for "
@@ -2665,9 +2665,8 @@ static int DetectEngineCtxLoadConf(DetectEngineCtx *de_ctx)
 
             if (max_uniq_toserver_groups_str != NULL) {
                 if (StringParseUint16(&de_ctx->max_uniq_toserver_groups, 10,
-                    strlen(max_uniq_toserver_groups_str),
-                    (const char *)max_uniq_toserver_groups_str) <= 0)
-                {
+                            (uint16_t)strlen(max_uniq_toserver_groups_str),
+                            (const char *)max_uniq_toserver_groups_str) <= 0) {
                     de_ctx->max_uniq_toserver_groups = 40;
 
                     SCLogWarning(SC_ERR_SIZE_PARSE, "parsing '%s' for "
@@ -2779,8 +2778,10 @@ static int DetectEngineCtxLoadConf(DetectEngineCtx *de_ctx)
 
     }
     if (DetectPortParse(de_ctx, &de_ctx->udp_whitelist, ports) != 0) {
-        SCLogWarning(SC_ERR_INVALID_YAML_CONF_ENTRY, "'%s' is not a valid value "
-                "forr detect.grouping.udp-whitelist", ports);
+        SCLogWarning(SC_ERR_INVALID_YAML_CONF_ENTRY,
+                "'%s' is not a valid value "
+                "for detect.grouping.udp-whitelist",
+                ports);
     }
     for (x = de_ctx->udp_whitelist; x != NULL;  x = x->next) {
         if (x->port != x->port2) {
@@ -2890,15 +2891,16 @@ static int DetectEngineThreadCtxInitKeywords(DetectEngineCtx *de_ctx, DetectEngi
 
         det_ctx->keyword_ctxs_size = de_ctx->keyword_id;
 
-        DetectEngineThreadKeywordCtxItem *item = de_ctx->keyword_list;
-        while (item) {
+        HashListTableBucket *hb = HashListTableGetListHead(de_ctx->keyword_hash);
+        for (; hb != NULL; hb = HashListTableGetListNext(hb)) {
+            DetectEngineThreadKeywordCtxItem *item = HashListTableGetListData(hb);
+
             det_ctx->keyword_ctxs_array[item->id] = item->InitFunc(item->data);
             if (det_ctx->keyword_ctxs_array[item->id] == NULL) {
                 SCLogError(SC_ERR_DETECT_PREPARE, "setting up thread local detect ctx "
                         "for keyword \"%s\" failed", item->name);
                 return TM_ECODE_FAILED;
             }
-            item = item->next;
         }
     }
     return TM_ECODE_OK;
@@ -2907,12 +2909,12 @@ static int DetectEngineThreadCtxInitKeywords(DetectEngineCtx *de_ctx, DetectEngi
 static void DetectEngineThreadCtxDeinitKeywords(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx)
 {
     if (de_ctx->keyword_id > 0) {
-        DetectEngineThreadKeywordCtxItem *item = de_ctx->keyword_list;
-        while (item) {
+        HashListTableBucket *hb = HashListTableGetListHead(de_ctx->keyword_hash);
+        for (; hb != NULL; hb = HashListTableGetListNext(hb)) {
+            DetectEngineThreadKeywordCtxItem *item = HashListTableGetListData(hb);
+
             if (det_ctx->keyword_ctxs_array[item->id] != NULL)
                 item->FreeFunc(det_ctx->keyword_ctxs_array[item->id]);
-
-            item = item->next;
         }
         det_ctx->keyword_ctxs_size = 0;
         SCFree(det_ctx->keyword_ctxs_array);
@@ -3075,6 +3077,9 @@ static TmEcode ThreadCtxDoInit (DetectEngineCtx *de_ctx, DetectEngineThreadCtx *
         RuleMatchCandidateTxArrayInit(det_ctx, de_ctx->sig_array_len);
     }
 
+    /* Alert processing queue */
+    AlertQueueInit(det_ctx);
+
     /* byte_extract storage */
     det_ctx->byte_values = SCMalloc(sizeof(*det_ctx->byte_values) *
                                   (de_ctx->byte_extract_max_local_id + 1));
@@ -3179,6 +3184,8 @@ TmEcode DetectEngineThreadCtxInit(ThreadVars *tv, void *initdata, void **data)
 
     /** alert counter setup */
     det_ctx->counter_alerts = StatsRegisterCounter("detect.alert", tv);
+    det_ctx->counter_alerts_overflow = StatsRegisterCounter("detect.alert_queue_overflow", tv);
+    det_ctx->counter_alerts_suppressed = StatsRegisterCounter("detect.alerts_suppressed", tv);
 #ifdef PROFILING
     det_ctx->counter_mpm_list = StatsRegisterAvgCounter("detect.mpm_list", tv);
     det_ctx->counter_nonmpm_list = StatsRegisterAvgCounter("detect.nonmpm_list", tv);
@@ -3237,6 +3244,8 @@ DetectEngineThreadCtx *DetectEngineThreadCtxInitForReload(
 
     /** alert counter setup */
     det_ctx->counter_alerts = StatsRegisterCounter("detect.alert", tv);
+    det_ctx->counter_alerts_overflow = StatsRegisterCounter("detect.alert_queue_overflow", tv);
+    det_ctx->counter_alerts_suppressed = StatsRegisterCounter("detect.alerts_suppressed", tv);
 #ifdef PROFILING
     uint16_t counter_mpm_list = StatsRegisterAvgCounter("detect.mpm_list", tv);
     uint16_t counter_nonmpm_list = StatsRegisterAvgCounter("detect.nonmpm_list", tv);
@@ -3305,6 +3314,8 @@ static void DetectEngineThreadCtxFree(DetectEngineThreadCtx *det_ctx)
         SCFree(det_ctx->match_array);
 
     RuleMatchCandidateTxArrayFree(det_ctx);
+
+    AlertQueueFree(det_ctx);
 
     if (det_ctx->byte_values != NULL)
         SCFree(det_ctx->byte_values);
@@ -3378,6 +3389,29 @@ void DetectEngineThreadCtxInfo(ThreadVars *t, DetectEngineThreadCtx *det_ctx)
     PatternMatchThreadPrint(&det_ctx->mtcu, det_ctx->de_ctx->mpm_matcher);
 }
 
+static uint32_t DetectKeywordCtxHashFunc(HashListTable *ht, void *data, uint16_t datalen)
+{
+    DetectEngineThreadKeywordCtxItem *ctx = data;
+    const char *name = ctx->name;
+    uint64_t hash = StringHashDjb2((const uint8_t *)name, strlen(name)) + (uint64_t)ctx->data;
+    hash %= ht->array_size;
+    return hash;
+}
+
+static char DetectKeywordCtxCompareFunc(void *data1, uint16_t len1, void *data2, uint16_t len2)
+{
+    DetectEngineThreadKeywordCtxItem *ctx1 = data1;
+    DetectEngineThreadKeywordCtxItem *ctx2 = data2;
+    const char *name1 = ctx1->name;
+    const char *name2 = ctx2->name;
+    return (strcmp(name1, name2) == 0 && ctx1->data == ctx2->data);
+}
+
+static void DetectKeywordCtxFreeFunc(void *ptr)
+{
+    SCFree(ptr);
+}
+
 /** \brief Register Thread keyword context Funcs
  *
  *  \param de_ctx detection engine to register in
@@ -3398,31 +3432,37 @@ int DetectRegisterThreadCtxFuncs(DetectEngineCtx *de_ctx, const char *name, void
 {
     BUG_ON(de_ctx == NULL || InitFunc == NULL || FreeFunc == NULL);
 
-    if (mode) {
-        DetectEngineThreadKeywordCtxItem *item = de_ctx->keyword_list;
-        while (item != NULL) {
-            if (strcmp(name, item->name) == 0) {
-                return item->id;
-            }
-
-            item = item->next;
-        }
+    if (de_ctx->keyword_hash == NULL) {
+        de_ctx->keyword_hash = HashListTableInit(4096, // TODO
+                DetectKeywordCtxHashFunc, DetectKeywordCtxCompareFunc, DetectKeywordCtxFreeFunc);
+        BUG_ON(de_ctx->keyword_hash == NULL);
     }
 
-    DetectEngineThreadKeywordCtxItem *item = SCMalloc(sizeof(DetectEngineThreadKeywordCtxItem));
+    if (mode) {
+        DetectEngineThreadKeywordCtxItem search = { .data = data, .name = name };
+
+        DetectEngineThreadKeywordCtxItem *item =
+                HashListTableLookup(de_ctx->keyword_hash, (void *)&search, 0);
+        if (item)
+            return item->id;
+
+        /* fall through */
+    }
+
+    DetectEngineThreadKeywordCtxItem *item = SCCalloc(1, sizeof(DetectEngineThreadKeywordCtxItem));
     if (unlikely(item == NULL))
         return -1;
-    memset(item, 0x00, sizeof(DetectEngineThreadKeywordCtxItem));
 
     item->InitFunc = InitFunc;
     item->FreeFunc = FreeFunc;
     item->data = data;
     item->name = name;
-
-    item->next = de_ctx->keyword_list;
-    de_ctx->keyword_list = item;
     item->id = de_ctx->keyword_id++;
 
+    if (HashListTableAdd(de_ctx->keyword_hash, (void *)item, 0) < 0) {
+        SCFree(item);
+        return -1;
+    }
     return item->id;
 }
 
@@ -3440,27 +3480,14 @@ int DetectRegisterThreadCtxFuncs(DetectEngineCtx *de_ctx, const char *name, void
  *        recommended to store it in the keywords global ctx so that
  *        it's freed when the de_ctx is freed.
  */
-int DetectUnregisterThreadCtxFuncs(DetectEngineCtx *de_ctx,
-        DetectEngineThreadCtx *det_ctx, void *data, const char *name)
+int DetectUnregisterThreadCtxFuncs(DetectEngineCtx *de_ctx, void *data, const char *name)
 {
-    BUG_ON(de_ctx == NULL);
-
-    DetectEngineThreadKeywordCtxItem *item = de_ctx->keyword_list;
-    DetectEngineThreadKeywordCtxItem *prev_item = NULL;
-    while (item != NULL) {
-        if (strcmp(name, item->name) == 0 && (data == item->data)) {
-            if (prev_item == NULL)
-                de_ctx->keyword_list = item->next;
-            else
-                prev_item->next = item->next;
-            if (det_ctx)
-                item->FreeFunc(det_ctx->keyword_ctxs_array[item->id]);
-            SCFree(item);
-            return 1;
-        }
-        prev_item = item;
-        item = item->next;
-    }
+    /* might happen if we call this before a call to *Register* */
+    if (de_ctx->keyword_hash == NULL)
+        return 1;
+    DetectEngineThreadKeywordCtxItem remove = { .data = data, .name = name };
+    if (HashListTableRemove(de_ctx->keyword_hash, (void *)&remove, 0) == 0)
+        return 1;
     return 0;
 }
 /** \brief Retrieve thread local keyword ctx by id
@@ -3633,7 +3660,7 @@ static int DetectEngineMultiTenantLoadTenant(uint32_t tenant_id, const char *fil
     DetectEngineCtx *de_ctx = NULL;
     char prefix[64];
 
-    snprintf(prefix, sizeof(prefix), "multi-detect.%d", tenant_id);
+    snprintf(prefix, sizeof(prefix), "multi-detect.%u", tenant_id);
 
 #ifdef OS_WIN32
     struct _stat st;
@@ -3697,7 +3724,7 @@ static int DetectEngineMultiTenantReloadTenant(uint32_t tenant_id, const char *f
     }
 
     char prefix[64];
-    snprintf(prefix, sizeof(prefix), "multi-detect.%d.reload.%d", tenant_id, reload_cnt);
+    snprintf(prefix, sizeof(prefix), "multi-detect.%u.reload.%d", tenant_id, reload_cnt);
     reload_cnt++;
     SCLogDebug("prefix %s", prefix);
 
@@ -3848,9 +3875,8 @@ static int DetectEngineMultiTenantSetupLoadLivedevMappings(const ConfNode *mappi
                 goto bad_mapping;
 
             uint32_t tenant_id = 0;
-            if (StringParseUint32(&tenant_id, 10, strlen(tenant_id_node->val),
-                        tenant_id_node->val) < 0)
-            {
+            if (StringParseUint32(&tenant_id, 10, (uint16_t)strlen(tenant_id_node->val),
+                        tenant_id_node->val) < 0) {
                 SCLogError(SC_ERR_INVALID_ARGUMENT, "tenant-id  "
                         "of %s is invalid", tenant_id_node->val);
                 goto bad_mapping;
@@ -3908,18 +3934,16 @@ static int DetectEngineMultiTenantSetupLoadVlanMappings(const ConfNode *mappings
                 goto bad_mapping;
 
             uint32_t tenant_id = 0;
-            if (StringParseUint32(&tenant_id, 10, strlen(tenant_id_node->val),
-                        tenant_id_node->val) < 0)
-            {
+            if (StringParseUint32(&tenant_id, 10, (uint16_t)strlen(tenant_id_node->val),
+                        tenant_id_node->val) < 0) {
                 SCLogError(SC_ERR_INVALID_ARGUMENT, "tenant-id  "
                         "of %s is invalid", tenant_id_node->val);
                 goto bad_mapping;
             }
 
             uint16_t vlan_id = 0;
-            if (StringParseUint16(&vlan_id, 10, strlen(vlan_id_node->val),
-                        vlan_id_node->val) < 0)
-            {
+            if (StringParseUint16(
+                        &vlan_id, 10, (uint16_t)strlen(vlan_id_node->val), vlan_id_node->val) < 0) {
                 SCLogError(SC_ERR_INVALID_ARGUMENT, "vlan-id  "
                         "of %s is invalid", vlan_id_node->val);
                 goto bad_mapping;
@@ -3930,7 +3954,7 @@ static int DetectEngineMultiTenantSetupLoadVlanMappings(const ConfNode *mappings
                 goto bad_mapping;
             }
 
-            if (DetectEngineTentantRegisterVlanId(tenant_id, (uint32_t)vlan_id) != 0) {
+            if (DetectEngineTentantRegisterVlanId(tenant_id, vlan_id) != 0) {
                 goto error;
             }
             SCLogConfig("vlan %u connected to tenant-id %u", vlan_id, tenant_id);
@@ -4064,9 +4088,8 @@ int DetectEngineMultiTenantSetup(void)
                 }
 
                 uint32_t tenant_id = 0;
-                if (StringParseUint32(&tenant_id, 10, strlen(id_node->val),
-                            id_node->val) < 0)
-                {
+                if (StringParseUint32(
+                            &tenant_id, 10, (uint16_t)strlen(id_node->val), id_node->val) < 0) {
                     SCLogError(SC_ERR_INVALID_ARGUMENT, "tenant_id  "
                             "of %s is invalid", id_node->val);
                     goto bad_tenant;
@@ -4076,7 +4099,7 @@ int DetectEngineMultiTenantSetup(void)
                 /* setup the yaml in this loop so that it's not done by the loader
                  * threads. ConfYamlLoadFileWithPrefix is not thread safe. */
                 char prefix[64];
-                snprintf(prefix, sizeof(prefix), "multi-detect.%d", tenant_id);
+                snprintf(prefix, sizeof(prefix), "multi-detect.%u", tenant_id);
                 if (ConfYamlLoadFileWithPrefix(yaml_node->val, prefix) != 0) {
                     SCLogError(SC_ERR_CONF_YAML_ERROR, "failed to load yaml %s", yaml_node->val);
                     goto bad_tenant;

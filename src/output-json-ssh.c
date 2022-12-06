@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -86,7 +85,7 @@ static OutputInitResult OutputSshLogInitSub(ConfNode *conf, OutputCtx *parent_ct
 void JsonSshLogRegister (void)
 {
     /* register as child of eve-log */
-    OutputRegisterTxSubModuleWithCondition(LOGGER_JSON_SSH, "eve-log", "JsonSshLog", "eve-log.ssh",
+    OutputRegisterTxSubModuleWithCondition(LOGGER_JSON_TX, "eve-log", "JsonSshLog", "eve-log.ssh",
             OutputSshLogInitSub, ALPROTO_SSH, JsonSshLogger, SSHTxLogCondition, JsonLogThreadInit,
             JsonLogThreadDeinit, NULL);
 }

@@ -25,10 +25,14 @@
  */
 
 #include "suricata-common.h" /* errno.h, string.h, etc. */
+#include "util-logopenfile.h"
+#include "suricata.h"
 #include "conf.h"            /* ConfNode, etc. */
 #include "output.h"          /* DEFAULT_LOG_* */
 #include "util-byte.h"
-#include "util-logopenfile.h"
+#include "util-conf.h"
+#include "util-path.h"
+#include "util-time.h"
 
 #if defined(HAVE_SYS_UN_H) && defined(HAVE_SYS_SOCKET_H) && defined(HAVE_SYS_TYPES_H)
 #define BUILD_WITH_UNIXSOCKET
@@ -401,7 +405,11 @@ SCLogOpenFileFp(const char *path, const char *append_setting, uint32_t mode)
                    filename, strerror(errno));
     } else {
         if (mode != 0) {
-            int r = chmod(filename, mode);
+#ifdef OS_WIN32
+            int r = _chmod(filename, (mode_t)mode);
+#else
+            int r = fchmod(fileno(ret), (mode_t)mode);
+#endif
             if (r < 0) {
                 SCLogWarning(SC_WARN_CHMOD, "Could not chmod %s to %o: %s",
                              filename, mode, strerror(errno));
@@ -494,9 +502,7 @@ SCConfLogOpenGeneric(ConfNode *conf,
 
     const char *filemode = ConfNodeLookupChildValue(conf, "filemode");
     uint32_t mode = 0;
-    if (filemode != NULL &&
-            StringParseUint32(&mode, 8, strlen(filemode),
-                                    filemode) > 0) {
+    if (filemode != NULL && StringParseUint32(&mode, 8, (uint16_t)strlen(filemode), filemode) > 0) {
         log_ctx->filemode = mode;
     }
 
@@ -713,6 +719,11 @@ LogFileCtx *LogFileEnsureExists(LogFileCtx *parent_ctx, int thread_id)
 static bool LogFileThreadedName(
         const char *original_name, char *threaded_name, size_t len, uint32_t unique_id)
 {
+    if (strcmp("/dev/null", original_name) == 0) {
+        strlcpy(threaded_name, original_name, len);
+        return true;
+    }
+
     const char *base = SCBasename(original_name);
     if (!base) {
         FatalError(SC_ERR_FATAL,
@@ -737,7 +748,7 @@ static bool LogFileThreadedName(
         tname[dotpos] = '\0';
         char *ext = tname + dotpos + 1;
         if (strlen(tname) && strlen(ext)) {
-            snprintf(threaded_name, len, "%s.%d.%s", tname, unique_id, ext);
+            snprintf(threaded_name, len, "%s.%u.%s", tname, unique_id, ext);
         } else {
             FatalError(SC_ERR_FATAL,
                     "Invalid filename for threaded mode \"%s\"; "
@@ -746,7 +757,7 @@ static bool LogFileThreadedName(
         }
         SCFree(tname);
     } else {
-        snprintf(threaded_name, len, "%s.%d", original_name, unique_id);
+        snprintf(threaded_name, len, "%s.%u", original_name, unique_id);
     }
     return true;
 }

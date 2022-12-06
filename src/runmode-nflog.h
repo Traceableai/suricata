@@ -1,4 +1,4 @@
-/* Copyright (C) 2014 Open Information Security Foundation
+/* Copyright (C) 2014-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -23,9 +23,6 @@
 #ifndef __RUNMODE_NFLOG_H__
 #define __RUNMODE_NFLOG_H__
 
-int RunModeIdsNflogAutoFp(void);
-int RunModeIdsNflogSingle(void);
-int RunModeIdsNflogWorkers(void);
 void RunModeIdsNflogRegister(void);
 const char *RunModeIdsNflogGetDefaultMode(void);
 

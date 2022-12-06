@@ -41,6 +41,7 @@
 #include "detect-engine-threshold.h"
 #include "detect-threshold.h"
 #include "detect-parse.h"
+#include "detect-engine-build.h"
 
 #include "conf.h"
 #include "util-threshold-config.h"
@@ -67,7 +68,9 @@ static FILE *g_ut_threshold_fp = NULL;
 /* common base for all options */
 #define DETECT_BASE_REGEX "^\\s*(event_filter|threshold|rate_filter|suppress)\\s*gen_id\\s*(\\d+)\\s*,\\s*sig_id\\s*(\\d+)\\s*(.*)\\s*$"
 
-#define DETECT_THRESHOLD_REGEX "^,\\s*type\\s*(limit|both|threshold)\\s*,\\s*track\\s*(by_dst|by_src)\\s*,\\s*count\\s*(\\d+)\\s*,\\s*seconds\\s*(\\d+)\\s*$"
+#define DETECT_THRESHOLD_REGEX                                                                     \
+    "^,\\s*type\\s*(limit|both|threshold)\\s*,\\s*track\\s*(by_dst|by_src|by_both|by_rule)\\s*,"   \
+    "\\s*count\\s*(\\d+)\\s*,\\s*seconds\\s*(\\d+)\\s*$"
 
 /* TODO: "apply_to" */
 #define DETECT_RATE_REGEX "^,\\s*track\\s*(by_dst|by_src|by_both|by_rule)\\s*,\\s*count\\s*(\\d+)\\s*,\\s*seconds\\s*(\\d+)\\s*,\\s*new_action\\s*(alert|drop|pass|log|sdrop|reject)\\s*,\\s*timeout\\s*(\\d+)\\s*$"
@@ -625,12 +628,10 @@ error:
     return -1;
 }
 
-static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
-    uint32_t *ret_id, uint32_t *ret_gid,
-    uint8_t *ret_parsed_type, uint8_t *ret_parsed_track,
-    uint32_t *ret_parsed_count, uint32_t *ret_parsed_seconds, uint32_t *ret_parsed_timeout,
-    uint8_t *ret_parsed_new_action,
-    char **ret_th_ip)
+static int ParseThresholdRule(const DetectEngineCtx *de_ctx, char *rawstr, uint32_t *ret_id,
+        uint32_t *ret_gid, uint8_t *ret_parsed_type, uint8_t *ret_parsed_track,
+        uint32_t *ret_parsed_count, uint32_t *ret_parsed_seconds, uint32_t *ret_parsed_timeout,
+        uint8_t *ret_parsed_new_action, char **ret_th_ip)
 {
     char th_rule_type[32];
     char th_gid[16];
@@ -856,7 +857,7 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
 
                 /* TODO: implement option "apply_to" */
 
-                if (StringParseUint32(&parsed_timeout, 10, strlen(th_timeout), th_timeout) <= 0) {
+                if (StringParseUint32(&parsed_timeout, 10, sizeof(th_timeout), th_timeout) <= 0) {
                     goto error;
                 }
 
@@ -904,7 +905,7 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
                 goto error;
             }
 
-            if (StringParseUint32(&parsed_count, 10, strlen(th_count), th_count) <= 0) {
+            if (StringParseUint32(&parsed_count, 10, sizeof(th_count), th_count) <= 0) {
                 goto error;
             }
             if (parsed_count == 0) {
@@ -912,7 +913,7 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
                 goto error;
             }
 
-            if (StringParseUint32(&parsed_seconds, 10, strlen(th_seconds), th_seconds) <= 0) {
+            if (StringParseUint32(&parsed_seconds, 10, sizeof(th_seconds), th_seconds) <= 0) {
                 goto error;
             }
 
@@ -935,11 +936,11 @@ static int ParseThresholdRule(DetectEngineCtx *de_ctx, char *rawstr,
             break;
     }
 
-    if (StringParseUint32(&id, 10, strlen(th_sid), th_sid) <= 0) {
+    if (StringParseUint32(&id, 10, sizeof(th_sid), th_sid) <= 0) {
         goto error;
     }
 
-    if (StringParseUint32(&gid, 10, strlen(th_gid), th_gid) <= 0) {
+    if (StringParseUint32(&gid, 10, sizeof(th_gid), th_gid) <= 0) {
         goto error;
     }
 
@@ -1116,6 +1117,9 @@ int SCThresholdConfParseFile(DetectEngineCtx *de_ctx, FILE *fp)
 }
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
+#include "packet.h"
+#include "action-globals.h"
 
 /**
  * \brief Creates a dummy threshold file, with all valid options, for testing purposes.

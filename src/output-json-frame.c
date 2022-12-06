@@ -25,7 +25,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "flow.h"
 #include "conf.h"
@@ -313,11 +312,11 @@ static int FrameJson(ThreadVars *tv, JsonFrameLogThread *aft, const Packet *p)
         frames = &frames_container->toserver;
         SCLogDebug("TOSERVER base %" PRIu64 ", app %" PRIu64, STREAM_BASE_OFFSET(stream),
                 STREAM_APP_PROGRESS(stream));
-        eof = AppLayerParserStateIssetFlag(p->flow->alparser, APP_LAYER_PARSER_EOF_TS) != 0;
+        eof |= AppLayerParserStateIssetFlag(p->flow->alparser, APP_LAYER_PARSER_EOF_TS) != 0;
     } else {
         stream = &ssn->server;
         frames = &frames_container->toclient;
-        eof = AppLayerParserStateIssetFlag(p->flow->alparser, APP_LAYER_PARSER_EOF_TC) != 0;
+        eof |= AppLayerParserStateIssetFlag(p->flow->alparser, APP_LAYER_PARSER_EOF_TC) != 0;
     }
     eof |= last_pseudo;
     SCLogDebug("eof %s", eof ? "true" : "false");
@@ -330,9 +329,9 @@ static int FrameJson(ThreadVars *tv, JsonFrameLogThread *aft, const Packet *p)
 
             int64_t abs_offset = (int64_t)frame->rel_offset + (int64_t)STREAM_BASE_OFFSET(stream);
             int64_t win = STREAM_APP_PROGRESS(stream) - abs_offset;
-            SCLogDebug("abs_offset %" PRIi64 ", frame->rel_offset %" PRIi64
-                       ", frames->progress_rel %d win %" PRIi64,
-                    abs_offset, frame->rel_offset, frames->progress_rel, win);
+            //            SCLogDebug("abs_offset %" PRIi64 ", frame->rel_offset %" PRIi64
+            //                       ", frames->progress_rel %d win %" PRIi64,
+            //                    abs_offset, frame->rel_offset, frames->progress_rel, win);
 
             if (!eof && win < frame->len && win < 2500) {
                 SCLogDebug("frame id %" PRIi64 " len %" PRIi64 ", win %" PRIi64
@@ -368,7 +367,7 @@ static int JsonFrameLogger(ThreadVars *tv, void *thread_data, const Packet *p)
     return FrameJson(tv, aft, p);
 }
 
-static int JsonFrameLogCondition(ThreadVars *tv, const Packet *p)
+static int JsonFrameLogCondition(ThreadVars *tv, void *thread_data, const Packet *p)
 {
     if (p->flow == NULL || p->flow->alproto == ALPROTO_UNKNOWN)
         return FALSE;

@@ -22,6 +22,10 @@
  *
  */
 
+#include "detect-engine-build.h"
+#include "detect-engine-alert.h"
+#include "app-layer-parser.h"
+
 /**
  * \test Test that a signature containing tls.certs is correctly parsed
  *       and that the keyword is registred.

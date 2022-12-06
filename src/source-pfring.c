@@ -41,6 +41,7 @@
 #include "util-debug.h"
 #include "util-checksum.h"
 #include "util-privs.h"
+#include "util-datalink.h"
 #include "util-device.h"
 #include "util-host-info.h"
 #include "runmodes.h"
@@ -261,7 +262,7 @@ static inline void PfringProcessPacket(void *user, struct pfring_pkthdr *h, Pack
 
         if (!ptv->vlan_hdr_warned) {
             SCLogWarning(SC_ERR_PF_RING_VLAN, "no VLAN header in the raw "
-                    "packet. See #2355.");
+                                              "packet. See ticket #2355.");
             ptv->vlan_hdr_warned = true;
         }
     }
@@ -359,6 +360,10 @@ TmEcode ReceivePfringLoop(ThreadVars *tv, void *data, void *slot)
         SCLogError(SC_ERR_PF_RING_OPEN, "pfring_enable_ring failed returned %d ", rc);
         SCReturnInt(TM_ECODE_FAILED);
     }
+
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
 
     while(1) {
         if (suricata_ctl_flags & SURICATA_STOP) {
@@ -643,6 +648,8 @@ TmEcode ReceivePfringThreadInit(ThreadVars *tv, const void *initdata, void **dat
             return TM_ECODE_FAILED;
         }
     }
+
+    DatalinkSetGlobalType(LINKTYPE_ETHERNET);
 
     *data = (void *)ptv;
     pfconf->DerefFunc(pfconf);

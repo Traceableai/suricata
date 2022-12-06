@@ -25,18 +25,22 @@ use crate::conf::*;
 use crate::core::{AppProto, Flow, ALPROTO_FAILED, ALPROTO_UNKNOWN, IPPROTO_TCP};
 use nom7::{Err, IResult};
 use std;
+use std::collections::VecDeque;
 use std::ffi::CString;
 
 pub const PGSQL_CONFIG_DEFAULT_STREAM_DEPTH: u32 = 0;
 
 static mut ALPROTO_PGSQL: AppProto = ALPROTO_UNKNOWN;
 
+static mut PGSQL_MAX_TX: usize = 1024;
+
 #[repr(u8)]
-#[derive(Copy, Clone, PartialOrd, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialOrd, PartialEq, Eq, Debug)]
 pub enum PgsqlTransactionState {
     Init = 0,
     RequestReceived,
     ResponseDone,
+    FlushedOut,
 }
 
 #[derive(Debug)]
@@ -72,7 +76,7 @@ impl PgsqlTransaction {
     }
 
     pub fn incr_row_cnt(&mut self) {
-        self.data_row_cnt = self.data_row_cnt + 1;
+        self.data_row_cnt += 1;
     }
 
     pub fn get_row_cnt(&self) -> u16 {
@@ -80,11 +84,11 @@ impl PgsqlTransaction {
     }
 
     pub fn sum_data_size(&mut self, row_size: u64) {
-        self.data_size = self.data_size + row_size;
+        self.data_size += row_size;
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PgsqlStateProgress {
     IdleState,
     SSLRequestReceived,
@@ -115,31 +119,39 @@ pub enum PgsqlStateProgress {
 
 #[derive(Debug)]
 pub struct PgsqlState {
+    state_data: AppLayerStateData,
     tx_id: u64,
-    transactions: Vec<PgsqlTransaction>,
+    transactions: VecDeque<PgsqlTransaction>,
     request_gap: bool,
     response_gap: bool,
     backend_secret_key: u32,
     backend_pid: u32,
     state_progress: PgsqlStateProgress,
+    tx_index_completed: usize,
 }
 
 impl State<PgsqlTransaction> for PgsqlState {
-    fn get_transactions(&self) -> &[PgsqlTransaction] {
-        &self.transactions
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&PgsqlTransaction> {
+        self.transactions.get(index)
     }
 }
 
 impl PgsqlState {
     pub fn new() -> Self {
         Self {
+            state_data: AppLayerStateData::new(),
             tx_id: 0,
-            transactions: Vec::new(),
+            transactions: VecDeque::new(),
             request_gap: false,
             response_gap: false,
             backend_secret_key: 0,
             backend_pid: 0,
             state_progress: PgsqlStateProgress::IdleState,
+            tx_index_completed: 0,
         }
     }
 
@@ -157,6 +169,7 @@ impl PgsqlState {
             }
         }
         if found {
+            self.tx_index_completed = 0;
             self.transactions.remove(index);
         }
     }
@@ -175,6 +188,21 @@ impl PgsqlState {
         self.tx_id += 1;
         tx.tx_id = self.tx_id;
         SCLogDebug!("Creating new transaction. tx_id: {}", tx.tx_id);
+        if self.transactions.len() > unsafe { PGSQL_MAX_TX } + self.tx_index_completed {
+            // If there are too many open transactions,
+            // mark the earliest ones as completed, and take care
+            // to avoid quadratic complexity
+            let mut index = self.tx_index_completed;
+            for tx_old in &mut self.transactions.range_mut(self.tx_index_completed..) {
+                index += 1;
+                if tx_old.tx_state < PgsqlTransactionState::ResponseDone {
+                    tx_old.tx_state = PgsqlTransactionState::FlushedOut;
+                    //TODO set event
+                    break;
+                }
+            }
+            self.tx_index_completed = index;
+        }
         return tx;
     }
 
@@ -196,11 +224,11 @@ impl PgsqlState {
             || self.state_progress == PgsqlStateProgress::ConnectionTerminated
         {
             let tx = self.new_tx();
-            self.transactions.push(tx);
+            self.transactions.push_back(tx);
         }
         // If we don't need a new transaction, just return the current one
         SCLogDebug!("find_or_create state is {:?}", &self.state_progress);
-        return self.transactions.last_mut();
+        return self.transactions.back_mut();
     }
 
     /// Process State progress to decide if PgsqlTransaction is finished
@@ -273,7 +301,7 @@ impl PgsqlState {
 
     fn parse_request(&mut self, input: &[u8]) -> AppLayerResult {
         // We're not interested in empty requests.
-        if input.len() == 0 {
+        if input.is_empty() {
             return AppLayerResult::ok();
         }
 
@@ -292,7 +320,7 @@ impl PgsqlState {
         }
 
         let mut start = input;
-        while start.len() > 0 {
+        while !start.is_empty() {
             SCLogDebug!(
                 "In 'parse_request' State Progress is: {:?}",
                 &self.state_progress
@@ -381,7 +409,7 @@ impl PgsqlState {
             PgsqlBEMessage::RowDescription(_) => Some(PgsqlStateProgress::RowDescriptionReceived),
             PgsqlBEMessage::ConsolidatedDataRow(msg) => {
                 // Increment tx.data_size here, since we know msg type, so that we can later on log that info
-                self.transactions.last_mut()?.sum_data_size(msg.data_size);
+                self.transactions.back_mut()?.sum_data_size(msg.data_size);
                 Some(PgsqlStateProgress::DataRowReceived)
             }
             PgsqlBEMessage::CommandComplete(_) => {
@@ -409,7 +437,7 @@ impl PgsqlState {
 
     fn parse_response(&mut self, input: &[u8], flow: *const Flow) -> AppLayerResult {
         // We're not interested in empty responses.
-        if input.len() == 0 {
+        if input.is_empty() {
             return AppLayerResult::ok();
         }
 
@@ -425,7 +453,7 @@ impl PgsqlState {
         }
 
         let mut start = input;
-        while start.len() > 0 {
+        while !start.is_empty() {
             match PgsqlState::state_based_resp_parsing(self.state_progress, start) {
                 Ok((rem, response)) => {
                     start = rem;
@@ -521,9 +549,9 @@ fn probe_tc(input: &[u8]) -> bool {
 pub unsafe extern "C" fn rs_pgsql_probing_parser_ts(
     _flow: *const Flow, _direction: u8, input: *const u8, input_len: u32, _rdir: *mut u8,
 ) -> AppProto {
-    if input_len >= 1 && input != std::ptr::null_mut() {
-        let slice: &[u8];
-        slice = build_slice!(input, input_len as usize);
+    if input_len >= 1 && !input.is_null() {
+
+        let slice: &[u8] = build_slice!(input, input_len as usize);
         if probe_ts(slice) {
             return ALPROTO_PGSQL;
         }
@@ -536,9 +564,9 @@ pub unsafe extern "C" fn rs_pgsql_probing_parser_ts(
 pub unsafe extern "C" fn rs_pgsql_probing_parser_tc(
     _flow: *const Flow, _direction: u8, input: *const u8, input_len: u32, _rdir: *mut u8,
 ) -> AppProto {
-    if input_len >= 1 && input != std::ptr::null_mut() {
-        let slice: &[u8];
-        slice = build_slice!(input, input_len as usize);
+    if input_len >= 1 && !input.is_null() {
+
+        let slice: &[u8] = build_slice!(input, input_len as usize);
 
         if parser::parse_ssl_response(slice).is_ok() {
             return ALPROTO_PGSQL;
@@ -551,7 +579,7 @@ pub unsafe extern "C" fn rs_pgsql_probing_parser_tc(
             Err(Err::Incomplete(_)) => {
                 return ALPROTO_UNKNOWN;
             }
-            Err(_) => {
+            Err(_e) => {
                 return ALPROTO_FAILED;
             }
         }
@@ -597,8 +625,8 @@ pub unsafe extern "C" fn rs_pgsql_parse_request(
         }
     }
 
-    let state_safe: &mut PgsqlState;
-    state_safe = cast_pointer!(state, PgsqlState);
+
+    let state_safe: &mut PgsqlState = cast_pointer!(state, PgsqlState);
 
     if stream_slice.is_gap() {
         state_safe.on_request_gap(stream_slice.gap_size());
@@ -613,13 +641,9 @@ pub unsafe extern "C" fn rs_pgsql_parse_response(
     flow: *const Flow, state: *mut std::os::raw::c_void, pstate: *mut std::os::raw::c_void,
     stream_slice: StreamSlice, _data: *const std::os::raw::c_void,
 ) -> AppLayerResult {
-    let _eof = if AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF_TC) > 0 {
-        true
-    } else {
-        false
-    };
-    let state_safe: &mut PgsqlState;
-    state_safe = cast_pointer!(state, PgsqlState);
+    let _eof = AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF_TC) > 0;
+
+    let state_safe: &mut PgsqlState = cast_pointer!(state, PgsqlState);
 
     if stream_slice.is_gap() {
         state_safe.on_response_gap(stream_slice.gap_size());
@@ -670,9 +694,10 @@ pub extern "C" fn rs_pgsql_tx_get_alstate_progress(
 }
 
 export_tx_data_get!(rs_pgsql_get_tx_data, PgsqlTransaction);
+export_state_data_get!(rs_pgsql_get_state_data, PgsqlState);
 
 // Parser name as a C style string.
-const PARSER_NAME: &'static [u8] = b"pgsql\0";
+const PARSER_NAME: &[u8] = b"pgsql\0";
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_pgsql_register_parser() {
@@ -700,11 +725,12 @@ pub unsafe extern "C" fn rs_pgsql_register_parser() {
         get_eventinfo_byid: None,
         localstorage_new: None,
         localstorage_free: None,
-        get_files: None,
+        get_tx_files: None,
         get_tx_iterator: Some(
             crate::applayer::state_get_tx_iterator::<PgsqlState, PgsqlTransaction>,
         ),
         get_tx_data: rs_pgsql_get_tx_data,
+        get_state_data: rs_pgsql_get_state_data,
         apply_tx_config: None,
         flags: APP_LAYER_PARSER_OPT_ACCEPT_GAPS,
         truncate: None,
@@ -731,7 +757,14 @@ pub unsafe extern "C" fn rs_pgsql_register_parser() {
                     SCLogError!("Invalid depth value");
                 }
             }
-            AppLayerParserSetStreamDepth(IPPROTO_TCP as u8, ALPROTO_PGSQL, stream_depth)
+            AppLayerParserSetStreamDepth(IPPROTO_TCP, ALPROTO_PGSQL, stream_depth)
+        }
+        if let Some(val) = conf_get("app-layer.protocols.pgsql.max-tx") {
+            if let Ok(v) = val.parse::<usize>() {
+                PGSQL_MAX_TX = v;
+            } else {
+                SCLogError!("Invalid value for pgsql.max-tx");
+            }
         }
     } else {
         SCLogDebug!("Protocol detector and parser disabled for PGSQL.");

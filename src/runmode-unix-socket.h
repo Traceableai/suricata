@@ -30,9 +30,14 @@ int RunModeUnixSocketIsActive(void);
 
 TmEcode UnixSocketPcapFile(TmEcode tm, struct timespec *last_processed);
 
+float MemcapsGetPressure(void);
+
 #ifdef BUILD_UNIX_SOCKET
 TmEcode UnixSocketDatasetAdd(json_t *cmd, json_t* answer, void *data);
 TmEcode UnixSocketDatasetRemove(json_t *cmd, json_t* answer, void *data);
+TmEcode UnixSocketDatasetDump(json_t *cmd, json_t *answer, void *data);
+TmEcode UnixSocketDatasetClear(json_t *cmd, json_t *answer, void *data);
+TmEcode UnixSocketDatasetLookup(json_t *cmd, json_t *answer, void *data);
 TmEcode UnixSocketRegisterTenantHandler(json_t *cmd, json_t* answer, void *data);
 TmEcode UnixSocketUnregisterTenantHandler(json_t *cmd, json_t* answer, void *data);
 TmEcode UnixSocketRegisterTenant(json_t *cmd, json_t* answer, void *data);
@@ -44,6 +49,7 @@ TmEcode UnixSocketHostbitList(json_t *cmd, json_t* answer, void *data);
 TmEcode UnixSocketSetMemcap(json_t *cmd, json_t* answer, void *data);
 TmEcode UnixSocketShowMemcap(json_t *cmd, json_t *answer, void *data);
 TmEcode UnixSocketShowAllMemcap(json_t *cmd, json_t *answer, void *data);
+TmEcode UnixSocketGetFlowStatsById(json_t *cmd, json_t *answer, void *data);
 #endif
 
 #endif /* __RUNMODE_UNIX_SOCKET_H__ */

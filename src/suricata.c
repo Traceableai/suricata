@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2021 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -30,153 +30,116 @@
 #if HAVE_SIGNAL_H
 #include <signal.h>
 #endif
+#ifndef OS_WIN32
+#ifdef HAVE_SYS_RESOURCE_H
+// setrlimit
+#include <sys/resource.h>
+#endif
+#endif
+
+#if HAVE_LIBSYSTEMD
+#include <systemd/sd-daemon.h>
+#endif
 
 #include "suricata.h"
-#include "decode.h"
-#include "feature.h"
-#include "detect.h"
-#include "packet-queue.h"
-#include "threads.h"
-#include "threadvars.h"
-#include "flow-worker.h"
-
-#include "util-atomic.h"
-#include "util-spm.h"
-#include "util-cpu.h"
-#include "util-action.h"
-#include "util-pidfile.h"
-#include "util-ioctl.h"
-#include "util-device.h"
-#include "util-misc.h"
-#include "util-running-modes.h"
-
-#include "detect-engine.h"
-#include "detect-parse.h"
-#include "detect-fast-pattern.h"
-#include "detect-engine-tag.h"
-#include "detect-engine-threshold.h"
-#include "detect-engine-address.h"
-#include "detect-engine-port.h"
-#include "detect-engine-mpm.h"
-
-#include "tm-queuehandlers.h"
-#include "tm-queues.h"
-#include "tm-threads.h"
-
-#include "tmqh-flow.h"
 
 #include "conf.h"
 #include "conf-yaml-loader.h"
 
-#include "app-layer-htp-range.h"
+#include "decode.h"
+#include "defrag.h"
+#include "flow.h"
+#include "stream-tcp.h"
+#include "ippair.h"
+
+#include "detect.h"
+#include "detect-parse.h"
+#include "detect-engine.h"
+#include "detect-engine-address.h"
+#include "detect-engine-alert.h"
+#include "detect-engine-port.h"
+#include "detect-engine-tag.h"
+#include "detect-engine-threshold.h"
+#include "detect-fast-pattern.h"
+
 #include "datasets.h"
 
-#include "stream-tcp.h"
+#include "feature.h"
 
-#include "source-nfq.h"
-#include "source-nfq-prototypes.h"
-
-#include "source-nflog.h"
-
-#include "source-ipfw.h"
-
-#include "source-pcap.h"
-#include "source-pcap-file.h"
-
-#include "source-pfring.h"
-
-#include "source-erf-file.h"
-#include "source-erf-dag.h"
-#include "source-napatech.h"
-
-#include "source-af-packet.h"
-#include "source-netmap.h"
-
-#include "source-dpdk.h"
-
-#include "source-windivert.h"
-#include "source-windivert-prototypes.h"
-
-#include "respond-reject.h"
-
-#include "flow.h"
-#include "flow-timeout.h"
-#include "flow-manager.h"
 #include "flow-bypass.h"
-#include "flow-var.h"
+#include "flow-manager.h"
+#include "flow-timeout.h"
+#include "flow-worker.h"
+
 #include "flow-bit.h"
-#include "pkt-var.h"
 #include "host-bit.h"
-
-#include "ippair.h"
 #include "ippair-bit.h"
-
-#include "host.h"
-#include "unix-manager.h"
 
 #include "app-layer.h"
 #include "app-layer-parser.h"
-#include "app-layer-register.h"
 #include "app-layer-htp.h"
-#include "app-layer-ssl.h"
-#include "app-layer-ssh.h"
-#include "app-layer-ftp.h"
-#include "app-layer-smtp.h"
-#include "app-layer-enip.h"
-#include "app-layer-dnp3.h"
-#include "app-layer-smb.h"
-#include "app-layer-htp-file.h"
+#include "app-layer-htp-range.h"
 
+#include "output.h"
 #include "output-filestore.h"
 
-#include "util-ebpf.h"
-#include "util-radix-tree.h"
-#include "util-host-os-info.h"
-#include "util-cidr.h"
-#include "util-unittest.h"
-#include "util-unittest-helper.h"
-#include "util-time.h"
-#include "util-rule-vars.h"
+#include "respond-reject.h"
+
+#include "runmode-af-packet.h"
+#include "runmode-af-xdp.h"
+#include "runmode-netmap.h"
+#include "runmode-unittests.h"
+
+#include "source-nfq.h"
+#include "source-nfq-prototypes.h"
+#include "source-nflog.h"
+#include "source-ipfw.h"
+#include "source-pcap.h"
+#include "source-pcap-file.h"
+#include "source-pcap-file-helper.h"
+#include "source-pfring.h"
+#include "source-erf-file.h"
+#include "source-erf-dag.h"
+#include "source-napatech.h"
+#include "source-af-packet.h"
+#include "source-af-xdp.h"
+#include "source-netmap.h"
+#include "source-dpdk.h"
+#include "source-windivert.h"
+#include "source-windivert-prototypes.h"
+
+#include "unix-manager.h"
+
 #include "util-classification-config.h"
 #include "util-threshold-config.h"
 #include "util-reference-config.h"
-#include "util-profiling.h"
-#include "util-magic.h"
-#include "util-signal.h"
-
-#include "util-coredump-config.h"
-
-#include "util-decode-mime.h"
-
-#include "defrag.h"
-
-#include "runmodes.h"
-#include "runmode-unittests.h"
-
-#include "util-debug.h"
-#include "util-error.h"
-#include "util-daemon.h"
-#include "util-byte.h"
-#include "reputation.h"
-
-#include "output.h"
-
-#include "util-privs.h"
 
 #include "tmqh-packetpool.h"
+#include "tm-queuehandlers.h"
 
-#include "util-proto-name.h"
-#include "util-mpm-hs.h"
-#include "util-storage.h"
-#include "host-storage.h"
-
-#include "util-lua.h"
-
-#include "util-plugin.h"
-
+#include "util-byte.h"
+#include "util-conf.h"
+#include "util-coredump-config.h"
+#include "util-cpu.h"
+#include "util-daemon.h"
+#include "util-device.h"
 #include "util-dpdk.h"
-
-#include "rust.h"
+#include "util-ebpf.h"
+#include "util-host-os-info.h"
+#include "util-ioctl.h"
+#include "util-landlock.h"
+#include "util-luajit.h"
+#include "util-macset.h"
+#include "util-misc.h"
+#include "util-mpm-hs.h"
+#include "util-pidfile.h"
+#include "util-plugin.h"
+#include "util-privs.h"
+#include "util-profiling.h"
+#include "util-proto-name.h"
+#include "util-running-modes.h"
+#include "util-signal.h"
+#include "util-time.h"
 
 /*
  * we put this here, because we only use it here in main.
@@ -342,7 +305,7 @@ static void SignalHandlerUnexpected(int sig_num, siginfo_t *info, void *context)
 
 terminate:
     // Propagate signal to watchers, if any
-    kill(0, sig_num);
+    kill(getpid(), sig_num);
 }
 #undef UNW_LOCAL_ONLY
 #endif /* HAVE_LIBUNWIND */
@@ -375,6 +338,7 @@ void GlobalsInitPreConfig(void)
     TimeInit();
     SupportFastPatternForSigMatchTypes();
     SCThresholdConfGlobalInit();
+    SCProtoNameInit();
 }
 
 static void GlobalsDestroy(SCInstance *suri)
@@ -402,6 +366,7 @@ static void GlobalsDestroy(SCInstance *suri)
     LiveDeviceListClean();
     OutputDeregisterAll();
     FeatureTrackingRelease();
+    SCProtoNameRelease();
     TimeDeinit();
     if (!suri->disabled_detect) {
         SCReferenceConfDeinit();
@@ -438,6 +403,23 @@ static void GlobalsDestroy(SCInstance *suri)
     SCPidfileRemove(suri->pid_filename);
     SCFree(suri->pid_filename);
     suri->pid_filename = NULL;
+}
+
+/**
+ * \brief Used to send OS specific notification of running threads
+ *
+ * \retval TmEcode TM_ECODE_OK on success; TM_ECODE_FAILED on failure.
+ */
+static void OnNotifyRunning(void)
+{
+#if HAVE_LIBSYSTEMD
+    if (sd_notify(0, "READY=1") < 0) {
+        SCLogWarning(SC_ERR_SYSCALL, "failed to notify systemd");
+        /* Please refer to:
+         * https://www.freedesktop.org/software/systemd/man/sd_notify.html#Return%20Value
+         * for discussion on why failure should not be considered an error */
+    }
+#endif
 }
 
 /** \brief make sure threads can stop the engine by calling this
@@ -528,24 +510,23 @@ static void SetBpfStringFromFile(char *filename)
                               " Use firewall filtering if possible.");
     }
 
+    fp = fopen(filename, "r");
+    if (fp == NULL) {
+        SCLogError(SC_ERR_FOPEN, "Failed to open file %s", filename);
+        exit(EXIT_FAILURE);
+    }
+
 #ifdef OS_WIN32
-    if(_stat(filename, &st) != 0) {
+    if (_fstat(_fileno(fp), &st) != 0) {
 #else
-    if(stat(filename, &st) != 0) {
+    if (fstat(fileno(fp), &st) != 0) {
 #endif /* OS_WIN32 */
         SCLogError(SC_ERR_FOPEN, "Failed to stat file %s", filename);
         exit(EXIT_FAILURE);
     }
     bpf_len = st.st_size + 1;
 
-    // coverity[toctou : FALSE]
-    fp = fopen(filename,"r");
-    if (fp == NULL) {
-        SCLogError(SC_ERR_FOPEN, "Failed to open file %s", filename);
-        exit(EXIT_FAILURE);
-    }
-
-    bpf_filter = SCMalloc(bpf_len * sizeof(char));
+    bpf_filter = SCMalloc(bpf_len);
     if (unlikely(bpf_filter == NULL)) {
         SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate buffer for bpf filter in file %s", filename);
         exit(EXIT_FAILURE);
@@ -665,6 +646,10 @@ static void PrintUsage(const char *progname)
 #ifdef HAVE_AF_PACKET
     printf("\t--af-packet[=<dev>]                  : run in af-packet mode, no value select interfaces from suricata.yaml\n");
 #endif
+#ifdef HAVE_AF_XDP
+    printf("\t--af-xdp[=<dev>]                     : run in af-xdp mode, no value select "
+           "interfaces from suricata.yaml\n");
+#endif
 #ifdef HAVE_NETMAP
     printf("\t--netmap[=<dev>]                     : run in netmap mode, no value select interfaces from suricata.yaml\n");
 #endif
@@ -712,7 +697,6 @@ static void PrintBuildInfo(void)
     const char *tls;
 
     printf("This is %s version %s\n", PROG_NAME, GetProgramVersion());
-
 #ifdef DEBUG
     strlcat(features, "DEBUG ", sizeof(features));
 #endif
@@ -787,6 +771,9 @@ static void PrintBuildInfo(void)
     strlcat(features, "MAGIC ", sizeof(features));
 #endif
     strlcat(features, "RUST ", sizeof(features));
+#if defined(SC_ADDRESS_SANITIZER)
+    strlcat(features, "ASAN ", sizeof(features));
+#endif
     if (strlen(features) == 0) {
         strlcat(features, "none", sizeof(features));
     }
@@ -922,6 +909,9 @@ void RegisterAllModules(void)
     /* af-packet */
     TmModuleReceiveAFPRegister();
     TmModuleDecodeAFPRegister();
+    /* af-xdp */
+    TmModuleReceiveAFXDPRegister();
+    TmModuleDecodeAFXDPRegister();
     /* netmap */
     TmModuleReceiveNetmapRegister();
     TmModuleDecodeNetmapRegister();
@@ -1024,6 +1014,22 @@ static TmEcode ParseInterfacesList(const int runmode, char *pcap_dev)
             int ret = LiveBuildDeviceList("af-packet");
             if (ret == 0) {
                 SCLogError(SC_ERR_INITIALIZATION, "No interface found in config for af-packet");
+                SCReturnInt(TM_ECODE_FAILED);
+            }
+        }
+#endif
+#ifdef HAVE_AF_XDP
+    } else if (runmode == RUNMODE_AFXDP_DEV) {
+        /* iface has been set on command line */
+        if (strlen(pcap_dev)) {
+            if (ConfSetFinal("af-xdp.live-interface", pcap_dev) != 1) {
+                SCLogError(SC_ERR_INITIALIZATION, "Failed to set af-xdp.live-interface");
+                SCReturnInt(TM_ECODE_FAILED);
+            }
+        } else {
+            int ret = LiveBuildDeviceList("af-xdp");
+            if (ret == 0) {
+                SCLogError(SC_ERR_INITIALIZATION, "No interface found in config for af-xdp");
                 SCReturnInt(TM_ECODE_FAILED);
             }
         }
@@ -1190,6 +1196,37 @@ static int ParseCommandLineAfpacket(SCInstance *suri, const char *in_arg)
 #endif
 }
 
+static int ParseCommandLineAfxdp(SCInstance *suri, const char *in_arg)
+{
+#ifdef HAVE_AF_XDP
+    if (suri->run_mode == RUNMODE_UNKNOWN) {
+        suri->run_mode = RUNMODE_AFXDP_DEV;
+        if (in_arg) {
+            LiveRegisterDeviceName(in_arg);
+            memset(suri->pcap_dev, 0, sizeof(suri->pcap_dev));
+            strlcpy(suri->pcap_dev, in_arg, sizeof(suri->pcap_dev));
+        }
+    } else if (suri->run_mode == RUNMODE_AFXDP_DEV) {
+        if (in_arg) {
+            LiveRegisterDeviceName(in_arg);
+        } else {
+            SCLogInfo("Multiple af-xdp options without interface on each is useless");
+        }
+    } else {
+        SCLogError(SC_ERR_MULTIPLE_RUN_MODE, "more than one run mode "
+                                             "has been specified");
+        PrintUsage(suri->progname);
+        return TM_ECODE_FAILED;
+    }
+    return TM_ECODE_OK;
+#else
+    SCLogError(SC_ERR_NO_AF_XDP, "AF_XDP not enabled. On Linux "
+                                 "host, make sure correct libraries are installed,"
+                                 " see documentation for information.");
+    return TM_ECODE_FAILED;
+#endif
+}
+
 static int ParseCommandLineDpdk(SCInstance *suri, const char *in_arg)
 {
 #ifdef HAVE_DPDK
@@ -1298,6 +1335,7 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         {"dpdk", 0, 0, 0},
 #endif
         {"af-packet", optional_argument, 0, 0},
+        {"af-xdp", optional_argument, 0, 0},
         {"netmap", optional_argument, 0, 0},
         {"pcap", optional_argument, 0, 0},
         {"pcap-file-continuous", 0, 0, 0},
@@ -1350,6 +1388,15 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
 #ifdef HAVE_NFLOG
         {"nflog", optional_argument, 0, 0},
 #endif
+        {"simulate-packet-flow-memcap", required_argument, 0, 0},
+        {"simulate-applayer-error-at-offset-ts", required_argument, 0, 0},
+        {"simulate-applayer-error-at-offset-tc", required_argument, 0, 0},
+        {"simulate-packet-loss", required_argument, 0, 0},
+        {"simulate-packet-tcp-reassembly-memcap", required_argument, 0, 0},
+        {"simulate-packet-tcp-ssn-memcap", required_argument, 0, 0},
+        {"simulate-packet-defrag-memcap", required_argument, 0, 0},
+        {"simulate-alert-queue-realloc-failure", 0, 0, 0},
+
         {NULL, 0, NULL, 0}
     };
     // clang-format on
@@ -1415,6 +1462,10 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 }
             } else if (strcmp((long_opts[option_index]).name, "af-packet") == 0) {
                 if (ParseCommandLineAfpacket(suri, optarg) != TM_ECODE_OK) {
+                    return TM_ECODE_FAILED;
+                }
+            } else if (strcmp((long_opts[option_index]).name, "af-xdp") == 0) {
+                if (ParseCommandLineAfxdp(suri, optarg) != TM_ECODE_OK) {
                     return TM_ECODE_FAILED;
                 }
             } else if (strcmp((long_opts[option_index]).name, "netmap") == 0) {
@@ -1718,6 +1769,11 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 if (suri->strict_rule_parsing_string == NULL) {
                     FatalError(SC_ERR_MEM_ALLOC, "failed to duplicate 'strict' string");
                 }
+            } else {
+                int r = ExceptionSimulationCommandlineParser(
+                        (long_opts[option_index]).name, optarg);
+                if (r < 0)
+                    return TM_ECODE_FAILED;
             }
             break;
         case 'c':
@@ -2380,6 +2436,7 @@ static int ConfigGetCaptureValue(SCInstance *suri)
                 /* fall through */
             case RUNMODE_PCAP_DEV:
             case RUNMODE_AFP_DEV:
+            case RUNMODE_AFXDP_DEV:
             case RUNMODE_PFRING:
                 nlive = LiveGetDeviceNameCount();
                 for (lthread = 0; lthread < nlive; lthread++) {
@@ -2514,7 +2571,7 @@ static void PostConfLoadedSetupHostMode(void)
 {
     const char *hostmode = NULL;
 
-    if (ConfGetValue("host-mode", &hostmode) == 1) {
+    if (ConfGet("host-mode", &hostmode) == 1) {
         if (!strcmp(hostmode, "router")) {
             host_mode = SURI_HOST_IS_ROUTER;
         } else if (!strcmp(hostmode, "sniffer-only")) {
@@ -2540,7 +2597,6 @@ static void PostConfLoadedSetupHostMode(void)
                       "default setting 'sniffer-only'");
         }
     }
-
 }
 
 static void SetupUserMode(SCInstance *suri)
@@ -2590,7 +2646,7 @@ int PostConfLoadedSetup(SCInstance *suri)
 
     if (suri->checksum_validation == -1) {
         const char *cv = NULL;
-        if (ConfGetValue("capture.checksum-validation", &cv) == 1) {
+        if (ConfGet("capture.checksum-validation", &cv) == 1) {
             if (strcmp(cv, "none") == 0) {
                 suri->checksum_validation = 0;
             } else if (strcmp(cv, "all") == 0) {
@@ -2629,8 +2685,7 @@ int PostConfLoadedSetup(SCInstance *suri)
     const char *custom_umask;
     if (ConfGet("umask", &custom_umask) == 1) {
         uint16_t mask;
-        if (StringParseUint16(&mask, 8, strlen(custom_umask),
-                                    custom_umask) > 0) {
+        if (StringParseUint16(&mask, 8, (uint16_t)strlen(custom_umask), custom_umask) > 0) {
             umask((mode_t)mask);
         }
     }
@@ -2786,27 +2841,8 @@ static void SuricataMainLoop(SCInstance *suri)
  * This can be used by fuzz targets.
  */
 
-int InitGlobal(void) {
-    suricata_context.SCLogMessage = SCLogMessage;
-    suricata_context.DetectEngineStateFree = DetectEngineStateFree;
-    suricata_context.AppLayerDecoderEventsSetEventRaw = AppLayerDecoderEventsSetEventRaw;
-    suricata_context.AppLayerDecoderEventsFreeEvents = AppLayerDecoderEventsFreeEvents;
-    suricata_context.AppLayerParserTriggerRawStreamReassembly =
-            AppLayerParserTriggerRawStreamReassembly;
-
-    suricata_context.HttpRangeFreeBlock = HttpRangeFreeBlock;
-    suricata_context.HTPFileCloseHandleRange = HTPFileCloseHandleRange;
-
-    suricata_context.FileOpenFileWithId = FileOpenFileWithId;
-    suricata_context.FileCloseFileById = FileCloseFileById;
-    suricata_context.FileAppendDataById = FileAppendDataById;
-    suricata_context.FileAppendGAPById = FileAppendGAPById;
-    suricata_context.FileContainerRecycle = FileContainerRecycle;
-    suricata_context.FilePrune = FilePrune;
-    suricata_context.FileSetTx = FileContainerSetTx;
-
-    suricata_context.AppLayerRegisterParser = AppLayerRegisterParser;
-
+int InitGlobal(void)
+{
     rs_init(&suricata_context);
 
     SC_ATOMIC_INIT(engine_stage);
@@ -2814,7 +2850,7 @@ int InitGlobal(void) {
     /* initialize the logging subsys */
     SCLogInitLogModule(NULL);
 
-    (void)SCSetThreadName("Suricata-Main");
+    SCSetThreadName("Suricata-Main");
 
     /* Ignore SIGUSR2 as early as possble. We redeclare interest
      * once we're done launching threads. The goal is to either die
@@ -2912,6 +2948,8 @@ int SuricataMain(int argc, char **argv)
 
     PreRunPostPrivsDropInit(suricata.run_mode);
 
+    LandlockSandboxing(&suricata);
+
     PostConfLoadedDetectSetup(&suricata);
     if (suricata.run_mode == RUNMODE_ENGINE_ANALYSIS) {
         goto out;
@@ -2936,11 +2974,48 @@ int SuricataMain(int argc, char **argv)
                    "aborting...");
     }
 
+    int limit_nproc = 0;
+    if (ConfGetBool("security.limit-noproc", &limit_nproc) == 0) {
+        limit_nproc = 0;
+    }
+
+#if defined(SC_ADDRESS_SANITIZER)
+    if (limit_nproc) {
+        SCLogWarning(SC_ERR_SYSCONF,
+                "\"security.limit-noproc\" (setrlimit()) not set when using address sanitizer");
+        limit_nproc = 0;
+    }
+#endif
+
+    if (limit_nproc) {
+#if defined(HAVE_SYS_RESOURCE_H)
+#ifdef linux
+        if (geteuid() == 0) {
+            SCLogWarning(SC_ERR_SYSCONF, "setrlimit has no effet when running as root.");
+        }
+#endif
+        struct rlimit r = { 0, 0 };
+        if (setrlimit(RLIMIT_NPROC, &r) != 0) {
+            SCLogWarning(SC_ERR_SYSCONF, "setrlimit failed to prevent process creation.");
+        }
+#else
+        SCLogWarning(SC_ERR_SYSCONF, "setrlimit unavailable.");
+#endif
+    }
+
     SC_ATOMIC_SET(engine_stage, SURICATA_RUNTIME);
     PacketPoolPostRunmodes();
 
     /* Un-pause all the paused threads */
     TmThreadContinueThreads();
+
+    /* Must ensure all threads are fully operational before continuing with init process */
+    if (TmThreadWaitOnThreadRunning() != TM_ECODE_OK) {
+        exit(EXIT_FAILURE);
+    }
+
+    /* Print notice and send OS specific notification of threads in running state */
+    OnNotifyRunning();
 
     PostRunStartedDetectSetup(&suricata);
 

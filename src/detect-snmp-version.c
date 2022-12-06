@@ -28,39 +28,17 @@
 #include "detect-engine.h"
 #include "detect-engine-content-inspection.h"
 #include "detect-snmp-version.h"
+#include "detect-engine-uint.h"
 #include "app-layer-parser.h"
 #include "rust.h"
 
-/**
- *   [snmp.version]:[<|>|<=|>=]<version>;
- */
-#define PARSE_REGEX "^\\s*(<=|>=|<|>)?\\s*([0-9]+)\\s*$"
-static DetectParseRegex parse_regex;
 
-enum DetectSNMPVersionMode {
-    PROCEDURE_EQ = 1, /* equal */
-    PROCEDURE_LT, /* less than */
-    PROCEDURE_LE, /* less than or equal */
-    PROCEDURE_GT, /* greater than */
-    PROCEDURE_GE, /* greater than or equal */
-};
-
-typedef struct DetectSNMPVersionData_ {
-    uint32_t version;
-    enum DetectSNMPVersionMode mode;
-} DetectSNMPVersionData;
-
-static DetectSNMPVersionData *DetectSNMPVersionParse (const char *);
 static int DetectSNMPVersionSetup (DetectEngineCtx *, Signature *s, const char *str);
 static void DetectSNMPVersionFree(DetectEngineCtx *, void *);
 #ifdef UNITTESTS
 static void DetectSNMPVersionRegisterTests(void);
 #endif
 static int g_snmp_version_buffer_id = 0;
-
-static int DetectEngineInspectSNMPRequestGeneric(DetectEngineCtx *de_ctx,
-        DetectEngineThreadCtx *det_ctx, const struct DetectEngineAppInspectionEngine_ *engine,
-        const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
 
 static int DetectSNMPVersionMatch (DetectEngineThreadCtx *, Flow *,
                                    uint8_t, void *, void *, const Signature *,
@@ -82,52 +60,13 @@ void DetectSNMPVersionRegister (void)
     sigmatch_table[DETECT_AL_SNMP_VERSION].RegisterTests = DetectSNMPVersionRegisterTests;
 #endif
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
-
     DetectAppLayerInspectEngineRegister2("snmp.version", ALPROTO_SNMP, SIG_FLAG_TOSERVER, 0,
-            DetectEngineInspectSNMPRequestGeneric, NULL);
+            DetectEngineInspectGenericList, NULL);
 
     DetectAppLayerInspectEngineRegister2("snmp.version", ALPROTO_SNMP, SIG_FLAG_TOCLIENT, 0,
-            DetectEngineInspectSNMPRequestGeneric, NULL);
+            DetectEngineInspectGenericList, NULL);
 
     g_snmp_version_buffer_id = DetectBufferTypeGetByName("snmp.version");
-}
-
-static int DetectEngineInspectSNMPRequestGeneric(DetectEngineCtx *de_ctx,
-        DetectEngineThreadCtx *det_ctx, const struct DetectEngineAppInspectionEngine_ *engine,
-        const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
-{
-    return DetectEngineInspectGenericList(
-            de_ctx, det_ctx, s, engine->smd, f, flags, alstate, txv, tx_id);
-}
-
-static inline int
-VersionMatch(const uint32_t version,
-        enum DetectSNMPVersionMode mode, uint32_t ref_version)
-{
-    switch (mode) {
-        case PROCEDURE_EQ:
-            if (version == ref_version)
-                SCReturnInt(1);
-            break;
-        case PROCEDURE_LT:
-            if (version < ref_version)
-                SCReturnInt(1);
-            break;
-        case PROCEDURE_LE:
-            if (version <= ref_version)
-                SCReturnInt(1);
-            break;
-        case PROCEDURE_GT:
-            if (version > ref_version)
-                SCReturnInt(1);
-            break;
-        case PROCEDURE_GE:
-            if (version >= ref_version)
-                SCReturnInt(1);
-            break;
-    }
-    SCReturnInt(0);
 }
 
 /**
@@ -141,7 +80,7 @@ VersionMatch(const uint32_t version,
  * \param state   App layer state.
  * \param s       Pointer to the Signature.
  * \param m       Pointer to the sigmatch that we will cast into
- *                DetectSNMPVersionData.
+ *                DetectU32Data.
  *
  * \retval 0 no match.
  * \retval 1 match.
@@ -153,12 +92,11 @@ static int DetectSNMPVersionMatch (DetectEngineThreadCtx *det_ctx,
 {
     SCEnter();
 
-    const DetectSNMPVersionData *dd = (const DetectSNMPVersionData *)ctx;
+    const DetectU32Data *dd = (const DetectU32Data *)ctx;
     uint32_t version;
     rs_snmp_tx_get_version(txv, &version);
-    SCLogDebug("version %u mode %u ref_version %d",
-            version, dd->mode, dd->version);
-    if (VersionMatch(version, dd->mode, dd->version))
+    SCLogDebug("version %u mode %u ref_version %d", version, dd->mode, dd->arg1);
+    if (DetectU32Match(version, dd))
         SCReturnInt(1);
     SCReturnInt(0);
 }
@@ -169,72 +107,12 @@ static int DetectSNMPVersionMatch (DetectEngineThreadCtx *det_ctx,
  *
  * \param rawstr Pointer to the user provided options.
  *
- * \retval dd pointer to DetectSNMPVersionData on success.
+ * \retval dd pointer to DetectU32Data on success.
  * \retval NULL on failure.
  */
-static DetectSNMPVersionData *DetectSNMPVersionParse (const char *rawstr)
+static DetectU32Data *DetectSNMPVersionParse(const char *rawstr)
 {
-    DetectSNMPVersionData *dd = NULL;
-    int ret = 0, res = 0;
-    size_t pcre2len;
-    char mode[2] = "";
-    char value1[20] = "";
-    char *endptr = NULL;
-
-    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0);
-    if (ret < 3 || ret > 5) {
-        SCLogError(SC_ERR_PCRE_MATCH, "Parse error %s", rawstr);
-        goto error;
-    }
-
-    pcre2len = sizeof(mode);
-    res = SC_Pcre2SubstringCopy(parse_regex.match, 1, (PCRE2_UCHAR8 *)mode, &pcre2len);
-    if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_copy_bynumber failed");
-        goto error;
-    }
-
-    pcre2len = sizeof(value1);
-    res = pcre2_substring_copy_bynumber(parse_regex.match, 2, (PCRE2_UCHAR8 *)value1, &pcre2len);
-    if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_copy_bynumber failed");
-        goto error;
-    }
-
-    dd = SCCalloc(1, sizeof(DetectSNMPVersionData));
-    if (unlikely(dd == NULL))
-        goto error;
-
-    if (strlen(mode) == 1) {
-        if (mode[0] == '<')
-            dd->mode = PROCEDURE_LT;
-        else if (mode[0] == '>')
-            dd->mode = PROCEDURE_GT;
-    } else if (strlen(mode) == 2) {
-        if (strcmp(mode, "<=") == 0)
-            dd->mode = PROCEDURE_LE;
-        if (strcmp(mode, ">=") == 0)
-            dd->mode = PROCEDURE_GE;
-    }
-
-    if (dd->mode == 0) {
-        dd->mode = PROCEDURE_EQ;
-    }
-
-    /* set the first value */
-    dd->version = strtoul(value1, &endptr, 10);
-    if (endptr == NULL || *endptr != '\0') {
-        SCLogError(SC_ERR_INVALID_SIGNATURE, "invalid character as arg "
-                   "to snmp.version keyword");
-        goto error;
-    }
-
-    return dd;
-
-error:
-    if (dd)
-        SCFree(dd);
-    return NULL;
+    return DetectU32Parse(rawstr);
 }
 
 
@@ -253,7 +131,7 @@ error:
 static int DetectSNMPVersionSetup (DetectEngineCtx *de_ctx, Signature *s,
                                    const char *rawstr)
 {
-    DetectSNMPVersionData *dd = NULL;
+    DetectU32Data *dd = NULL;
     SigMatch *sm = NULL;
 
     if (DetectSignatureSetAppProto(s, ALPROTO_SNMP) != 0)
@@ -274,7 +152,7 @@ static int DetectSNMPVersionSetup (DetectEngineCtx *de_ctx, Signature *s,
     sm->type = DETECT_AL_SNMP_VERSION;
     sm->ctx = (void *)dd;
 
-    SCLogDebug("snmp.version %d", dd->version);
+    SCLogDebug("snmp.version %d", dd->arg1);
     SigMatchAppendSMToList(s, sm, g_snmp_version_buffer_id);
     return 0;
 
@@ -285,13 +163,13 @@ error:
 
 /**
  * \internal
- * \brief Function to free memory associated with DetectSNMPVersionData.
+ * \brief Function to free memory associated with DetectU32Data.
  *
- * \param de_ptr Pointer to DetectSNMPVersionData.
+ * \param de_ptr Pointer to DetectU32Data.
  */
 static void DetectSNMPVersionFree(DetectEngineCtx *de_ctx, void *ptr)
 {
-    SCFree(ptr);
+    rs_detect_u32_free(ptr);
 }
 
 

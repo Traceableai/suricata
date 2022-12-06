@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -187,7 +186,7 @@ void JsonPgsqlLogRegister(void)
     }
     /* PGSQL_END_REMOVE */
     /* Register as an eve sub-module. */
-    OutputRegisterTxSubModule(LOGGER_JSON_PGSQL, "eve-log", "JsonPgsqlLog", "eve-log.pgsql",
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonPgsqlLog", "eve-log.pgsql",
             OutputPgsqlLogInitSub, ALPROTO_PGSQL, JsonPgsqlLogger, JsonPgsqlLogThreadInit,
             JsonPgsqlLogThreadDeinit, NULL);
 

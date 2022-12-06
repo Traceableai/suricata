@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -87,7 +86,7 @@ static OutputInitResult OutputKRB5LogInitSub(ConfNode *conf,
 void JsonKRB5LogRegister(void)
 {
     /* Register as an eve sub-module. */
-    OutputRegisterTxSubModule(LOGGER_JSON_KRB5, "eve-log", "JsonKRB5Log", "eve-log.krb5",
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonKRB5Log", "eve-log.krb5",
             OutputKRB5LogInitSub, ALPROTO_KRB5, JsonKRB5Logger, JsonLogThreadInit,
             JsonLogThreadDeinit, NULL);
 

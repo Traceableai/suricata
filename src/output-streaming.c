@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "tm-modules.h"
 #include "output.h"
 #include "output-streaming.h"
 #include "app-layer.h"
@@ -253,7 +252,8 @@ struct StreamLogData {
     Flow *f;
 };
 
-static int StreamLogFunc(void *cb_data, const uint8_t *data, const uint32_t data_len)
+static int StreamLogFunc(
+        void *cb_data, const uint8_t *data, const uint32_t data_len, const uint64_t _offset)
 {
     struct StreamLogData *log = cb_data;
 

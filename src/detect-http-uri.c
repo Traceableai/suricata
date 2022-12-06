@@ -31,7 +31,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -55,7 +54,6 @@
 
 #include "app-layer-htp.h"
 #include "detect-http-uri.h"
-#include "detect-uricontent.h"
 #include "stream-tcp.h"
 
 #ifdef UNITTESTS

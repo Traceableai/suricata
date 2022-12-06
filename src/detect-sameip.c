@@ -24,13 +24,13 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
 #include "detect-parse.h"
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
+#include "detect-engine-build.h"
 
 #include "detect-sameip.h"
 
@@ -115,6 +115,7 @@ error:
 }
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 
 /* NOTE: No parameters, so no parse tests */
 

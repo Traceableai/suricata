@@ -153,7 +153,7 @@ void HttpRangeContainersInit(void)
     const char *str = NULL;
     uint64_t memcap = HTTP_RANGE_DEFAULT_MEMCAP;
     uint32_t timeout = HTTP_RANGE_DEFAULT_TIMEOUT;
-    if (ConfGetValue("app-layer.protocols.http.byterange.memcap", &str) == 1) {
+    if (ConfGet("app-layer.protocols.http.byterange.memcap", &str) == 1) {
         if (ParseSizeStringU64(str, &memcap) < 0) {
             SCLogWarning(SC_ERR_INVALID_VALUE,
                     "memcap value cannot be deduced: %s,"
@@ -162,7 +162,7 @@ void HttpRangeContainersInit(void)
             memcap = 0;
         }
     }
-    if (ConfGetValue("app-layer.protocols.http.byterange.timeout", &str) == 1) {
+    if (ConfGet("app-layer.protocols.http.byterange.timeout", &str) == 1) {
         size_t slen = strlen(str);
         if (slen > UINT16_MAX || StringParseUint32(&timeout, 10, (uint16_t)slen, str) <= 0) {
             SCLogWarning(SC_ERR_INVALID_VALUE,
@@ -493,11 +493,17 @@ File *HttpRangeClose(HttpRangeContainerBlock *c, uint16_t flags)
                 (void)SC_ATOMIC_SUB(ContainerUrlRangeList.ht->memuse, c->current->buflen);
                 SCFree(c->current->buffer);
                 SCFree(c->current);
+                c->current = NULL;
+                return NULL;
             }
             SCLogDebug("inserted range fragment");
             c->current = NULL;
             if (c->container->files == NULL) {
                 // we have to wait for the flow owning the file
+                return NULL;
+            }
+            if (c->container->files->tail == NULL) {
+                // file has already been closed meanwhile
                 return NULL;
             }
             // keep on going, maybe this out of order chunk

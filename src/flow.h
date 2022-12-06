@@ -28,12 +28,10 @@
 typedef struct FlowStorageId FlowStorageId;
 
 #include "decode.h"
+#include "util-exception-policy.h"
 #include "util-var.h"
-#include "util-atomic.h"
-#include "util-device.h"
-#include "detect-tag.h"
-#include "util-macset.h"
 #include "util-optimize.h"
+#include "app-layer-protos.h"
 
 /* Part of the flow structure, so we declare it here.
  * The actual declaration is in app-layer-parser.c */
@@ -140,6 +138,9 @@ typedef struct AppLayerParserState_ AppLayerParserState;
 /** no size tracking of files in this flow */
 #define FLOWFILE_NO_SIZE_TS             BIT_U16(10)
 #define FLOWFILE_NO_SIZE_TC             BIT_U16(11)
+
+/** store all files in the flow */
+#define FLOWFILE_STORE BIT_U16(12)
 
 #define FLOWFILE_NONE_TS (FLOWFILE_NO_MAGIC_TS | \
                           FLOWFILE_NO_STORE_TS | \
@@ -298,6 +299,8 @@ typedef struct FlowCnf_
     uint32_t emerg_timeout_new;
     uint32_t emerg_timeout_est;
     uint32_t emergency_recovery;
+
+    enum ExceptionPolicy memcap_policy;
 
     SC_ATOMIC_DECLARE(uint64_t, memcap);
 } FlowConfig;
@@ -514,6 +517,11 @@ enum FlowState {
     FLOW_STATE_CAPTURE_BYPASSED,
 #endif
 };
+#ifdef CAPTURE_OFFLOAD
+#define FLOW_STATE_SIZE 5
+#else
+#define FLOW_STATE_SIZE 4
+#endif
 
 typedef struct FlowProtoTimeout_ {
     uint32_t new_timeout;
@@ -560,6 +568,7 @@ void FlowShutdown(void);
 void FlowSetIPOnlyFlag(Flow *, int);
 void FlowSetHasAlertsFlag(Flow *);
 int FlowHasAlerts(const Flow *);
+bool FlowHasGaps(const Flow *, uint8_t way);
 void FlowSetChangeProtoFlag(Flow *);
 void FlowUnsetChangeProtoFlag(Flow *);
 int FlowChangeProto(Flow *);
@@ -682,9 +691,8 @@ static inline void FlowDeReference(Flow **d)
  */
 static inline int64_t FlowGetId(const Flow *f)
 {
-    int64_t id = (int64_t)f->flow_hash << 31 |
-        (int64_t)(f->startts.tv_sec & 0x0000FFFF) << 16 |
-        (int64_t)(f->startts.tv_usec & 0x0000FFFF);
+    int64_t id = (uint64_t)(f->startts.tv_sec & 0x0000FFFF) << 48 |
+                 (uint64_t)(f->startts.tv_usec & 0x0000FFFF) << 32 | (int64_t)f->flow_hash;
     /* reduce to 51 bits as Javascript and even JSON often seem to
      * max out there. */
     id &= 0x7ffffffffffffLL;

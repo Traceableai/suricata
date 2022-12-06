@@ -16,46 +16,48 @@
  */
 
 use digest::Digest;
+use digest::Update;
 use md5::Md5;
 use nom7::branch::alt;
-use nom7::bytes::streaming::{is_not, tag, take};
+use nom7::bytes::streaming::{is_not, tag, take, take_while};
 use nom7::character::streaming::char;
-use nom7::combinator::{complete, rest, verify};
+use nom7::combinator::{complete, eof, not, rest, verify};
 use nom7::multi::length_data;
 use nom7::number::streaming::{be_u32, be_u8};
+use nom7::sequence::terminated;
 use nom7::IResult;
 use std::fmt;
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum MessageCode {
-	SshMsgDisconnect,
-	SshMsgIgnore,
-	SshMsgUnimplemented,
-	SshMsgDebug,
-	SshMsgServiceRequest,
-	SshMsgServiceAccept,
-	SshMsgKexinit,
-	SshMsgNewKeys,
-	SshMsgKexdhInit,
-	SshMsgKexdhReply,
+	Disconnect,
+	Ignore,
+	Unimplemented,
+	Debug,
+	ServiceRequest,
+	ServiceAccept,
+	Kexinit,
+	NewKeys,
+	KexdhInit,
+	KexdhReply,
 	
-	SshMsgUndefined(u8),
+	Undefined(u8),
 }
 
 impl MessageCode {
     fn from_u8(value: u8) -> MessageCode {
         match value {
-            1 => MessageCode::SshMsgDisconnect,
-            2 => MessageCode::SshMsgIgnore,
-            3 => MessageCode::SshMsgUnimplemented,
-            4 => MessageCode::SshMsgDebug,
-            5 => MessageCode::SshMsgServiceRequest,
-            6 => MessageCode::SshMsgServiceAccept,
-            20 => MessageCode::SshMsgKexinit,
-            21 => MessageCode::SshMsgNewKeys,
-            30 => MessageCode::SshMsgKexdhInit,
-            31 => MessageCode::SshMsgKexdhReply,
-            _ => MessageCode::SshMsgUndefined(value),
+            1 => MessageCode::Disconnect,
+            2 => MessageCode::Ignore,
+            3 => MessageCode::Unimplemented,
+            4 => MessageCode::Debug,
+            5 => MessageCode::ServiceRequest,
+            6 => MessageCode::ServiceAccept,
+            20 => MessageCode::Kexinit,
+            21 => MessageCode::NewKeys,
+            30 => MessageCode::KexdhInit,
+            31 => MessageCode::KexdhReply,
+            _ => MessageCode::Undefined(value),
         }
     }
 }
@@ -69,19 +71,20 @@ fn is_not_lineend(b: u8) -> bool {
 }
 
 //may leave \r at the end to be removed
-named!(pub ssh_parse_line<&[u8], &[u8]>,
-    terminated!(
-        take_while!(is_not_lineend),
-        alt!( tag!("\n") | tag!("\r\n") |
-              do_parse!(
-                    bytes: tag!("\r") >>
-                    not!(eof!()) >> (bytes)
-                )
-            )
-    )
-);
+pub fn ssh_parse_line(i: &[u8]) -> IResult<&[u8], &[u8]> {
+    fn parser(i: &[u8]) -> IResult<&[u8], &[u8]> {
+        let (i, bytes) = tag("\r")(i)?;
+        let (i, _) = not(eof)(i)?;
+        Ok((i, bytes))
+    }
+    terminated(
+        take_while(is_not_lineend),
+        alt(( tag("\n"), tag("\r\n"), parser
+            ))
+        )(i)
+}
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct SshBanner<'a> {
     pub protover: &'a [u8],
     pub swver: &'a [u8],
@@ -98,7 +101,7 @@ pub fn ssh_parse_banner(i: &[u8]) -> IResult<&[u8], SshBanner> {
     Ok((i, SshBanner { protover, swver }))
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct SshRecordHeader {
     pub pkt_len: u32,
     padding_len: u8,
@@ -145,7 +148,7 @@ pub fn ssh_parse_record(i: &[u8]) -> IResult<&[u8], SshRecordHeader> {
     ))
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SshPacketKeyExchange<'a> {
     pub cookie: &'a [u8],
     pub kex_algs: &'a [u8],
@@ -315,7 +318,7 @@ mod tests {
             Ok((_, _)) => {
                 panic!("Expected incomplete result");
             }
-            Err(nom::Err::Incomplete(_)) => {
+            Err(Err::Incomplete(_)) => {
                 //OK
                 assert_eq!(1, 1);
             }

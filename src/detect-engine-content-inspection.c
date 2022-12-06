@@ -42,6 +42,7 @@
 #include "detect-engine-content-inspection.h"
 #include "detect-uricontent.h"
 #include "detect-urilen.h"
+#include "detect-engine-uint.h"
 #include "detect-bsize.h"
 #include "detect-lua.h"
 #include "detect-base64-decode.h"
@@ -52,10 +53,13 @@
 #include "util-spm.h"
 #include "util-debug.h"
 #include "util-print.h"
+#include "util-validate.h"
 
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-profiling.h"
+
+#include "rust.h"
 
 #ifdef HAVE_LUA
 #include "util-lua.h"
@@ -99,12 +103,9 @@
  *  \retval 0 no match
  *  \retval 1 match
  */
-int DetectEngineContentInspection(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-                                  const Signature *s, const SigMatchData *smd,
-                                  Packet *p, Flow *f,
-                                  const uint8_t *buffer, uint32_t buffer_len,
-                                  uint32_t stream_start_offset, uint8_t flags,
-                                  uint8_t inspection_mode)
+uint8_t DetectEngineContentInspection(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+        const Signature *s, const SigMatchData *smd, Packet *p, Flow *f, const uint8_t *buffer,
+        uint32_t buffer_len, uint32_t stream_start_offset, uint8_t flags, uint8_t inspection_mode)
 {
     SCEnter();
     KEYWORD_PROFILING_START;
@@ -296,16 +297,18 @@ int DetectEngineContentInspection(DetectEngineCtx *de_ctx, DetectEngineThreadCtx
              * negation flag. */
             SCLogDebug("found %p cd negated %s", found, cd->flags & DETECT_CONTENT_NEGATED ? "true" : "false");
 
-            if (found == NULL && !(cd->flags & DETECT_CONTENT_NEGATED)) {
-                if ((cd->flags & (DETECT_CONTENT_DISTANCE|DETECT_CONTENT_WITHIN)) == 0) {
-                    /* independent match from previous matches, so failure is fatal */
-                    det_ctx->discontinue_matching = 1;
-                }
+            if (found == NULL) {
+                if (!(cd->flags & DETECT_CONTENT_NEGATED)) {
+                    if ((cd->flags & (DETECT_CONTENT_DISTANCE | DETECT_CONTENT_WITHIN)) == 0) {
+                        /* independent match from previous matches, so failure is fatal */
+                        det_ctx->discontinue_matching = 1;
+                    }
 
-                goto no_match;
-            } else if (found == NULL && (cd->flags & DETECT_CONTENT_NEGATED)) {
-                goto match;
-            } else if (found != NULL && (cd->flags & DETECT_CONTENT_NEGATED)) {
+                    goto no_match;
+                } else {
+                    goto match;
+                }
+            } else if (cd->flags & DETECT_CONTENT_NEGATED) {
                 SCLogDebug("content %"PRIu32" matched at offset %"PRIu32", but negated so no match", cd->id, match_offset);
                 /* don't bother carrying recursive matches now, for preceding
                  * relative keywords */
@@ -340,9 +343,8 @@ int DetectEngineContentInspection(DetectEngineCtx *de_ctx, DetectEngineThreadCtx
                     /* see if the next buffer keywords match. If not, we will
                      * search for another occurrence of this content and see
                      * if the others match then until we run out of matches */
-                    int r = DetectEngineContentInspection(de_ctx, det_ctx, s, smd+1,
-                            p, f, buffer, buffer_len, stream_start_offset, flags,
-                            inspection_mode);
+                    uint8_t r = DetectEngineContentInspection(de_ctx, det_ctx, s, smd + 1, p, f,
+                            buffer, buffer_len, stream_start_offset, flags, inspection_mode);
                     if (r == 1) {
                         SCReturnInt(1);
                     }
@@ -525,10 +527,8 @@ int DetectEngineContentInspection(DetectEngineCtx *de_ctx, DetectEngineThreadCtx
                        DETECT_BYTE_EXTRACT_ENDIAN_LITTLE : DETECT_BYTE_EXTRACT_ENDIAN_BIG);
         }
 
-        if (DetectByteExtractDoMatch(det_ctx, smd, s, buffer,
-                                     buffer_len,
-                                     &det_ctx->byte_values[bed->local_id],
-                                     endian) != 1) {
+        if (DetectByteExtractDoMatch(det_ctx, smd, s, buffer, buffer_len,
+                    &det_ctx->byte_values[bed->local_id], endian) != 1) {
             goto no_match;
         }
 
@@ -543,28 +543,23 @@ int DetectEngineContentInspection(DetectEngineCtx *de_ctx, DetectEngineThreadCtx
 
         /* if we have dce enabled we will have to use the endianness
          * specified by the dce header */
-        if ((bmd->flags & DETECT_BYTEMATH_FLAG_ENDIAN) &&
-            endian == DETECT_BYTEMATH_ENDIAN_DCE &&
-            flags & (DETECT_CI_FLAGS_DCE_LE|DETECT_CI_FLAGS_DCE_BE)) {
+        if ((bmd->flags & DETECT_BYTEMATH_FLAG_ENDIAN) && endian == (int)EndianDCE &&
+                flags & (DETECT_CI_FLAGS_DCE_LE | DETECT_CI_FLAGS_DCE_BE)) {
 
             /* enable the endianness flag temporarily.  once we are done
              * processing we reset the flags to the original value*/
-            endian |= ((flags & DETECT_CI_FLAGS_DCE_LE) ?
-                       DETECT_BYTEMATH_ENDIAN_LITTLE : DETECT_BYTEMATH_ENDIAN_BIG);
+            endian |= (uint8_t)((flags & DETECT_CI_FLAGS_DCE_LE) ? LittleEndian : BigEndian);
         }
         uint64_t rvalue;
-        if (bmd->flags & DETECT_BYTEMATH_RVALUE_VAR) {
-             rvalue = det_ctx->byte_values[bmd->local_id];
+        if (bmd->flags & DETECT_BYTEMATH_FLAG_RVALUE_VAR) {
+            rvalue = det_ctx->byte_values[bmd->local_id];
         } else {
-             rvalue = bmd->rvalue;
+            rvalue = bmd->rvalue;
         }
 
-
-        if (DetectByteMathDoMatch(det_ctx, smd, s, buffer,
-                                     buffer_len,
-                                     rvalue,
-                                     &det_ctx->byte_values[bmd->local_id],
-                                     endian) != 1) {
+        DEBUG_VALIDATE_BUG_ON(buffer_len > UINT16_MAX);
+        if (DetectByteMathDoMatch(det_ctx, smd, s, buffer, (uint16_t)buffer_len, rvalue,
+                    &det_ctx->byte_values[bmd->local_id], endian) != 1) {
             goto no_match;
         }
 
@@ -613,26 +608,10 @@ int DetectEngineContentInspection(DetectEngineCtx *de_ctx, DetectEngineThreadCtx
 
         int r = 0;
         DetectUrilenData *urilend = (DetectUrilenData *) smd->ctx;
-
-        switch (urilend->mode) {
-            case DETECT_URILEN_EQ:
-                if (buffer_len == urilend->urilen1)
-                    r = 1;
-                break;
-            case DETECT_URILEN_LT:
-                if (buffer_len < urilend->urilen1)
-                    r = 1;
-                break;
-            case DETECT_URILEN_GT:
-                if (buffer_len > urilend->urilen1)
-                    r = 1;
-                break;
-            case DETECT_URILEN_RA:
-                if (buffer_len > urilend->urilen1 &&
-                    buffer_len < urilend->urilen2) {
-                    r = 1;
-                }
-                break;
+        if (buffer_len > UINT16_MAX) {
+            r = DetectU16Match(UINT16_MAX, &urilend->du16);
+        } else {
+            r = DetectU16Match((uint16_t)buffer_len, &urilend->du16);
         }
 
         if (r == 1) {
@@ -682,9 +661,8 @@ match:
      * the buffer portion of the signature matched. */
     if (!smd->is_last) {
         KEYWORD_PROFILING_END(det_ctx, smd->type, 1);
-        int r = DetectEngineContentInspection(de_ctx, det_ctx, s, smd+1,
-                p, f, buffer, buffer_len, stream_start_offset, flags,
-                inspection_mode);
+        uint8_t r = DetectEngineContentInspection(de_ctx, det_ctx, s, smd + 1, p, f, buffer,
+                buffer_len, stream_start_offset, flags, inspection_mode);
         SCReturnInt(r);
     }
 final_match:

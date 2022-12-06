@@ -17,9 +17,10 @@
 
 // Author: Zach Kelly <zach.kelly@lmco.com>
 // Author: Pierre Chifflier <chifflier@wzdftpd.net>
-use nom::error::{ErrorKind, ParseError};
+use nom7::error::{Error, ErrorKind, ParseError};
+use nom7::ErrorConvert;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum RdpError {
     UnimplementedLengthDeterminant,
     NotX224Class0Error,
@@ -35,7 +36,13 @@ impl<I> ParseError<I> for RdpError {
     }
 }
 
-impl nom::ErrorConvert<RdpError> for ((&[u8], usize), ErrorKind) {
+impl From<Error<&[u8]>> for RdpError {
+    fn from(e: Error<&[u8]>) -> Self {
+        RdpError::NomError(e.code)
+    }
+}
+
+impl ErrorConvert<RdpError> for ((&[u8], usize), ErrorKind) {
     fn convert(self) -> RdpError {
         RdpError::NomError(self.1)
     }

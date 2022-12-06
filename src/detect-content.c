@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2019 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -30,6 +30,7 @@
 #include "detect-uricontent.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine.h"
+#include "detect-engine-build.h"
 #include "detect-engine-state.h"
 #include "detect-parse.h"
 #include "detect-pcre.h"
@@ -99,7 +100,7 @@ int DetectContentDataParse(const char *keyword, const char *contentstr,
     char converted = 0;
 
     {
-        uint16_t i, x;
+        size_t i, x;
         uint8_t bin = 0;
         uint8_t escape = 0;
         uint8_t binstr[3] = "";
@@ -111,6 +112,12 @@ int DetectContentDataParse(const char *keyword, const char *contentstr,
             if (str[i] == '|') {
                 bin_count++;
                 if (bin) {
+                    if (binpos > 0) {
+                        SCLogError(SC_ERR_INVALID_SIGNATURE,
+                                "Incomplete hex code in content - %s. Invalidating signature.",
+                                contentstr);
+                        goto error;
+                    }
                     bin = 0;
                 } else {
                     bin = 1;
@@ -213,13 +220,11 @@ DetectContentData *DetectContentParse(SpmGlobalThreadCtx *spm_global_thread_ctx,
         return NULL;
     }
 
-    cd = SCMalloc(sizeof(DetectContentData) + len);
+    cd = SCCalloc(1, sizeof(DetectContentData) + len);
     if (unlikely(cd == NULL)) {
         SCFree(content);
         exit(EXIT_FAILURE);
     }
-
-    memset(cd, 0, sizeof(DetectContentData) + len);
 
     cd->content = (uint8_t *)cd + sizeof(DetectContentData);
     memcpy(cd->content, content, len);
@@ -385,9 +390,78 @@ void DetectContentFree(DetectEngineCtx *de_ctx, void *ptr)
     SCReturn;
 }
 
+/*
+ *  \brief Determine the size needed to accommodate the content
+ *  elements of a signature
+ *  \param s signature to get dsize value from
+ *  \param max_size Maximum buffer/data size allowed.
+ *  \param list signature match list.
+ *  \param len Maximum length required
+ *  \param offset Maximum offset encounted
+ *
+ *  Note that negated content does not contribute to the maximum
+ *  required size value. However, each negated content's values
+ *  must not exceed the size value.
+ *
+ *  Values from negated content blocks are used to determine if the
+ *  negated content block requires a value that exceeds "max_size". The
+ *  distance and within values from negated content blocks are added to
+ *  the running total of required content size to see if the max_size
+ *  would be exceeded.
+ *
+ *  - Non-negated content contributes to the required size (content length, distance)
+ *  - Negated content values are checked but not accumulated for the required size.
+ */
+void SigParseRequiredContentSize(
+        const Signature *s, const int max_size, int list, int *len, int *offset)
+{
+    if (list > (int)s->init_data->smlists_array_size) {
+        return;
+    }
+
+    SigMatch *sm = s->init_data->smlists[list];
+    int max_offset = 0, total_len = 0;
+    bool first = true;
+    for (; sm != NULL; sm = sm->next) {
+        if (sm->type != DETECT_CONTENT || sm->ctx == NULL) {
+            continue;
+        }
+
+        DetectContentData *cd = (DetectContentData *)sm->ctx;
+        SCLogDebug("content_len %d; negated: %s; distance: %d, offset: %d, depth: %d",
+                cd->content_len, cd->flags & DETECT_CONTENT_NEGATED ? "yes" : "no", cd->distance,
+                cd->offset, cd->depth);
+
+        if (!first) {
+            /* only count content with relative modifiers */
+            if (!((cd->flags & DETECT_CONTENT_DISTANCE) || (cd->flags & DETECT_CONTENT_WITHIN)))
+                continue;
+
+            if (cd->flags & DETECT_CONTENT_NEGATED) {
+                /* Check if distance/within cause max to be exceeded */
+                int check = total_len + cd->distance + cd->within;
+                if (max_size < check) {
+                    *len = check;
+                    return;
+                }
+
+                continue;
+            }
+        }
+        SCLogDebug("content_len %d; distance: %d, offset: %d, depth: %d", cd->content_len,
+                cd->distance, cd->offset, cd->depth);
+        total_len += cd->content_len + cd->distance;
+        max_offset = MAX(max_offset, cd->offset);
+        first = false;
+    }
+
+    *len = total_len;
+    *offset = max_offset;
+}
+
 /**
- *  \retval 1 valid
- *  \retval 0 invalid
+ *  \retval true valid
+ *  \retval false invalid
  */
 bool DetectContentPMATCHValidateCallback(const Signature *s)
 {
@@ -402,25 +476,17 @@ bool DetectContentPMATCHValidateCallback(const Signature *s)
 
     uint32_t max_right_edge = (uint32_t)max_right_edge_i;
 
-    const SigMatch *sm = s->init_data->smlists[DETECT_SM_LIST_PMATCH];
-    for ( ; sm != NULL; sm = sm->next) {
-        if (sm->type != DETECT_CONTENT)
-            continue;
-        const DetectContentData *cd = (const DetectContentData *)sm->ctx;
-        uint32_t right_edge = cd->content_len + cd->offset;
-        if (cd->content_len > max_right_edge) {
+    int min_dsize_required = SigParseMaxRequiredDsize(s);
+    if (min_dsize_required >= 0) {
+        SCLogDebug("min_dsize %d; max_right_edge %d", min_dsize_required, max_right_edge);
+        if ((uint32_t)min_dsize_required > max_right_edge) {
             SCLogError(SC_ERR_INVALID_SIGNATURE,
-                    "signature can't match as content length %u is bigger than dsize %u.",
-                    cd->content_len, max_right_edge);
-            return false;
-        }
-        if (right_edge > max_right_edge) {
-            SCLogError(SC_ERR_INVALID_SIGNATURE,
-                    "signature can't match as content length %u with offset %u (=%u) is bigger than dsize %u.",
-                    cd->content_len, cd->offset, right_edge, max_right_edge);
+                    "signature can't match as required content length %d exceeds dsize value %d",
+                    min_dsize_required, max_right_edge);
             return false;
         }
     }
+
     return true;
 }
 
@@ -439,6 +505,10 @@ bool DetectContentPMATCHValidateCallback(const Signature *s)
  */
 void DetectContentPropagateLimits(Signature *s)
 {
+#define VALIDATE(e)                                                                                \
+    if (!(e)) {                                                                                    \
+        return;                                                                                    \
+    }
     BUG_ON(s == NULL || s->init_data == NULL);
 
     uint32_t list = 0;
@@ -446,13 +516,11 @@ void DetectContentPropagateLimits(Signature *s)
         uint16_t offset = 0;
         uint16_t offset_plus_pat = 0;
         uint16_t depth = 0;
-        bool last_reset = false; // TODO really last reset 'depth'
+        bool has_active_depth_chain = false;
 
         bool has_depth = false;
         bool has_ends_with = false;
         uint16_t ends_with_depth = 0;
-
-        bool have_anchor = false;
 
         SigMatch *sm = s->init_data->smlists[list];
         for ( ; sm != NULL; sm = sm->next) {
@@ -463,32 +531,30 @@ void DetectContentPropagateLimits(Signature *s)
                         offset = depth = 0;
                         offset_plus_pat = cd->content_len;
                         SCLogDebug("reset");
-                        last_reset = true;
-                        have_anchor = false;
+                        has_active_depth_chain = false;
                         continue;
                     }
                     if (cd->flags & DETECT_CONTENT_NEGATED) {
                         offset = depth = 0;
                         offset_plus_pat = 0;
                         SCLogDebug("reset because of negation");
-                        last_reset = true;
-                        have_anchor = false;
+                        has_active_depth_chain = false;
                         continue;
                     }
 
                     if (cd->depth) {
                         has_depth = true;
-                        have_anchor = true;
+                        has_active_depth_chain = true;
                     }
 
                     SCLogDebug("sm %p depth %u offset %u distance %d within %d", sm, cd->depth, cd->offset, cd->distance, cd->within);
-
                     SCLogDebug("stored: offset %u depth %u offset_plus_pat %u", offset, depth, offset_plus_pat);
 
-                    if ((cd->flags & DETECT_CONTENT_WITHIN) == 0) {
+                    if ((cd->flags & (DETECT_DEPTH | DETECT_CONTENT_WITHIN)) == 0) {
                         if (depth)
                             SCLogDebug("no within, reset depth");
                         depth = 0;
+                        has_active_depth_chain = false;
                     }
                     if ((cd->flags & DETECT_CONTENT_DISTANCE) == 0) {
                         if (offset_plus_pat)
@@ -496,48 +562,58 @@ void DetectContentPropagateLimits(Signature *s)
                         offset_plus_pat = offset = 0;
                     }
 
-                    SCLogDebug("stored: offset %u depth %u offset_plus_pat %u", offset, depth, offset_plus_pat);
-
+                    SCLogDebug("stored: offset %u depth %u offset_plus_pat %u "
+                               "has_active_depth_chain %s",
+                            offset, depth, offset_plus_pat,
+                            has_active_depth_chain ? "true" : "false");
                     if (cd->flags & DETECT_CONTENT_DISTANCE && cd->distance >= 0) {
-                        if ((uint32_t)offset_plus_pat + cd->distance <= UINT16_MAX) {
-                            offset = cd->offset = offset_plus_pat + cd->distance;
-                        } else {
-                            SCLogDebug("not updated content offset as it would overflow : %u + %d", offset_plus_pat, cd->distance);
-                        }
+                        VALIDATE((uint32_t)offset_plus_pat + cd->distance <= UINT16_MAX);
+                        offset = cd->offset = (uint16_t)(offset_plus_pat + cd->distance);
                         SCLogDebug("updated content to have offset %u", cd->offset);
                     }
-                    if (have_anchor && !last_reset && offset_plus_pat && cd->flags & DETECT_CONTENT_WITHIN && cd->within >= 0) {
-                        if (depth && depth > offset_plus_pat) {
-                            uint16_t dist = 0;
-                            if (cd->flags & DETECT_CONTENT_DISTANCE && cd->distance > 0) {
-                                dist = cd->distance;
-                                SCLogDebug("distance to add: %u. depth + dist %u", dist, depth + dist);
-                            }
-                            SCLogDebug("depth %u + cd->within %u", depth, cd->within);
-                            depth = cd->depth = depth + cd->within + dist;
-                        } else {
-                            SCLogDebug("offset %u + cd->within %u", offset, cd->within);
-                            depth = cd->depth = offset + cd->within;
-                        }
-                        SCLogDebug("updated content to have depth %u", cd->depth);
-                    } else {
-                        if (cd->depth == 0 && depth != 0) {
-                            if (cd->within > 0) {
-                                SCLogDebug("within %d distance %d", cd->within, cd->distance);
-                                if (cd->flags & DETECT_CONTENT_DISTANCE && cd->distance >= 0) {
-                                    cd->offset = offset_plus_pat + cd->distance;
-                                    SCLogDebug("updated content to have offset %u", cd->offset);
+                    if (has_active_depth_chain) {
+                        if (offset_plus_pat && cd->flags & DETECT_CONTENT_WITHIN &&
+                                cd->within >= 0) {
+                            if (depth && depth > offset_plus_pat) {
+                                int32_t dist = 0;
+                                if (cd->flags & DETECT_CONTENT_DISTANCE && cd->distance > 0) {
+                                    dist = cd->distance;
+                                    SCLogDebug("distance to add: %u. depth + dist %u", dist,
+                                            depth + dist);
                                 }
+                                SCLogDebug("depth %u + cd->within %u", depth, cd->within);
+                                VALIDATE(depth + cd->within + dist >= 0 &&
+                                         depth + cd->within + dist <= UINT16_MAX);
+                                depth = cd->depth = (uint16_t)(depth + cd->within + dist);
+                            } else {
+                                SCLogDebug("offset %u + cd->within %u", offset, cd->within);
+                                VALIDATE(depth + cd->within >= 0 &&
+                                         depth + cd->within <= UINT16_MAX);
+                                depth = cd->depth = (uint16_t)(offset + cd->within);
+                            }
+                            SCLogDebug("updated content to have depth %u", cd->depth);
+                        } else {
+                            if (cd->depth == 0 && depth != 0) {
+                                if (cd->within > 0) {
+                                    SCLogDebug("within %d distance %d", cd->within, cd->distance);
+                                    if (cd->flags & DETECT_CONTENT_DISTANCE && cd->distance >= 0) {
+                                        VALIDATE(offset_plus_pat + cd->distance >= 0 &&
+                                                 offset_plus_pat + cd->distance <= UINT16_MAX);
+                                        cd->offset = (uint16_t)(offset_plus_pat + cd->distance);
+                                        SCLogDebug("updated content to have offset %u", cd->offset);
+                                    }
 
-                                cd->depth = cd->within + depth;
-                                depth = cd->depth;
-                                SCLogDebug("updated content to have depth %u", cd->depth);
+                                    VALIDATE(depth + cd->within >= 0 &&
+                                             depth + cd->within <= UINT16_MAX);
+                                    depth = cd->depth = (uint16_t)(cd->within + depth);
+                                    SCLogDebug("updated content to have depth %u", cd->depth);
 
-                                if (cd->flags & DETECT_CONTENT_ENDS_WITH) {
-                                    has_ends_with = true;
-                                    if (ends_with_depth == 0)
-                                        ends_with_depth = depth;
-                                    ends_with_depth = MIN(ends_with_depth, depth);
+                                    if (cd->flags & DETECT_CONTENT_ENDS_WITH) {
+                                        has_ends_with = true;
+                                        if (ends_with_depth == 0)
+                                            ends_with_depth = depth;
+                                        ends_with_depth = MIN(ends_with_depth, depth);
+                                    }
                                 }
                             }
                         }
@@ -553,11 +629,8 @@ void DetectContentPropagateLimits(Signature *s)
                             (cd->flags & (DETECT_CONTENT_DEPTH|DETECT_CONTENT_OFFSET|DETECT_CONTENT_WITHIN|DETECT_CONTENT_DISTANCE)) == (DETECT_CONTENT_DISTANCE)) {
                         if (cd->distance >= 0) {
                             // only distance
-                            if ((uint32_t)offset_plus_pat + cd->distance <= UINT16_MAX) {
-                                offset = cd->offset = offset_plus_pat + cd->distance;
-                            } else {
-                                SCLogDebug("not updated content offset as it would overflow : %u + %d", offset_plus_pat, cd->distance);
-                            }
+                            VALIDATE((uint32_t)offset_plus_pat + cd->distance <= UINT16_MAX);
+                            offset = cd->offset = (uint16_t)(offset_plus_pat + cd->distance);
                             offset_plus_pat = offset + cd->content_len;
                             SCLogDebug("offset %u offset_plus_pat %u", offset, offset_plus_pat);
                         }
@@ -579,30 +652,27 @@ void DetectContentPropagateLimits(Signature *s)
                         }
                     }
                     if ((cd->flags & (DETECT_CONTENT_WITHIN|DETECT_CONTENT_DEPTH)) == 0) {
-                        last_reset = true;
+                        has_active_depth_chain = false;
                         depth = 0;
-                    } else {
-                        last_reset = false;
                     }
                     break;
                 }
                 case DETECT_PCRE: {
                     // relative could leave offset_plus_pat set.
-                    DetectPcreData *pd = (DetectPcreData *)sm->ctx;
+                    const DetectPcreData *pd = (const DetectPcreData *)sm->ctx;
                     if (pd->flags & DETECT_PCRE_RELATIVE) {
                         depth = 0;
-                        last_reset = true;
                     } else {
                         SCLogDebug("non-anchored PCRE not supported, reset offset_plus_pat & offset");
                         offset_plus_pat = offset = depth = 0;
-                        last_reset = true;
                     }
+                    has_active_depth_chain = false;
                     break;
                 }
                 default: {
                     SCLogDebug("keyword not supported, reset offset_plus_pat & offset");
                     offset_plus_pat = offset = depth = 0;
-                    last_reset = true;
+                    has_active_depth_chain = false;
                     break;
                 }
             }
@@ -625,6 +695,7 @@ void DetectContentPropagateLimits(Signature *s)
             }
         }
     }
+#undef VALIDATE
 }
 
 static inline bool NeedsAsHex(uint8_t c)
@@ -669,6 +740,8 @@ void DetectContentPatternPrettyPrint(const DetectContentData *cd, char *str, siz
 }
 
 #ifdef UNITTESTS /* UNITTESTS */
+#include "detect-engine-alert.h"
+#include "packet.h"
 
 static bool TestLastContent(const Signature *s, uint16_t o, uint16_t d)
 {
@@ -766,7 +839,21 @@ static int DetectContentDepthTest01(void)
     // hi end: depth '13' (4+9) + distance 55 = 68 + within 2 = 70
     TEST_RUN("content:\"=\"; offset:4; depth:9; content:\"=&\"; distance:55; within:2;", 60, 70);
 
-    TEST_RUN("content:\"0123456789\"; content:\"abcdef\"; distance:2147483647;", 10, 0);
+    // distance value is too high so we bail and not set anything on this content
+    TEST_RUN("content:\"0123456789\"; content:\"abcdef\"; distance:2147483647;", 0, 0);
+
+    // Bug #5162.
+    TEST_RUN("content:\"SMB\"; depth:8; content:\"|09 00|\"; distance:8; within:2;", 11, 18);
+    TEST_RUN("content:\"SMB\"; depth:8; content:\"|09 00|\"; distance:8; within:2; content:\"|05 "
+             "00 00|\"; distance:0;",
+            13, 0);
+    TEST_RUN("content:\"SMB\"; depth:8; content:\"|09 00|\"; distance:8; within:2; content:\"|05 "
+             "00 00|\"; distance:0; content:\"|0c 00|\"; distance:19; within:2;",
+            35, 0);
+    TEST_RUN("content:\"SMB\"; depth:8; content:\"|09 00|\"; distance:8; within:2; content:\"|05 "
+             "00 00|\"; distance:0; content:\"|0c 00|\"; distance:19; within:2; content:\"|15 00 "
+             "00 00|\"; distance:20; within:4;",
+            57, 0);
 
     TEST_DONE;
 }
@@ -1043,7 +1130,7 @@ static int DetectContentLongPatternMatchTest(uint8_t *raw_eth_pkt, uint16_t pkts
 {
     int result = 0;
 
-    Packet *p = SCMalloc(SIZE_OF_PACKET);
+    Packet *p = PacketGetFromAlloc();
     if (unlikely(p == NULL))
         return 0;
     DecodeThreadVars dtv;
@@ -1051,7 +1138,6 @@ static int DetectContentLongPatternMatchTest(uint8_t *raw_eth_pkt, uint16_t pkts
     ThreadVars th_v;
     DetectEngineThreadCtx *det_ctx = NULL;
 
-    memset(p, 0, SIZE_OF_PACKET);
     memset(&dtv, 0, sizeof(DecodeThreadVars));
     memset(&th_v, 0, sizeof(th_v));
 
@@ -1100,7 +1186,7 @@ end:
             DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
         DetectEngineCtxFree(de_ctx);
     }
-    PACKET_RECYCLE(p);
+    PacketRecycle(p);
     FlowShutdown();
 
     SCFree(p);
@@ -1316,7 +1402,7 @@ static int DetectContentParseTest09(void)
 }
 
 /**
- * \test Test cases where if within specified is < content lenggth we invalidate
+ * \test Test cases where if within specified is < content length we invalidate
  *       the sig.
  */
 static int DetectContentParseTest17(void)
@@ -2611,7 +2697,7 @@ static int SigTest42TestNegatedContent(void)
 /**
  * \test A negative test that checks that the content string doesn't contain
  *       the negated content within the specified depth, and also after the
- *       specified offset. Since the content is there, the match fails. 
+ *       specified offset. Since the content is there, the match fails.
  *
  *       Match is at offset:23, depth:34
  */
@@ -3050,6 +3136,25 @@ static int DetectLongContentTest3(void)
     return !DetectLongContentTestCommon(sig, 1);
 }
 
+static int DetectBadBinContent(void)
+{
+    DetectEngineCtx *de_ctx = NULL;
+    de_ctx = DetectEngineCtxInit();
+    FAIL_IF_NULL(de_ctx);
+    de_ctx->flags |= DE_QUIET;
+    FAIL_IF_NOT_NULL(DetectEngineAppendSig(
+            de_ctx, "alert tcp any any -> any any (msg:\"test\"; content:\"|a|\"; sid:1;)"));
+    FAIL_IF_NOT_NULL(DetectEngineAppendSig(
+            de_ctx, "alert tcp any any -> any any (msg:\"test\"; content:\"|aa b|\"; sid:1;)"));
+    FAIL_IF_NOT_NULL(DetectEngineAppendSig(
+            de_ctx, "alert tcp any any -> any any (msg:\"test\"; content:\"|aa bz|\"; sid:1;)"));
+    /* https://redmine.openinfosecfoundation.org/issues/5201 */
+    FAIL_IF_NOT_NULL(DetectEngineAppendSig(
+            de_ctx, "alert tcp any any -> any any (msg:\"test\"; content:\"|22 2 22|\"; sid:1;)"));
+    DetectEngineCtxFree(de_ctx);
+    PASS;
+}
+
 /**
  * \brief this function registers unit tests for DetectContent
  */
@@ -3168,5 +3273,7 @@ static void DetectContentRegisterTests(void)
     UtRegisterTest("DetectLongContentTest1", DetectLongContentTest1);
     UtRegisterTest("DetectLongContentTest2", DetectLongContentTest2);
     UtRegisterTest("DetectLongContentTest3", DetectLongContentTest3);
+
+    UtRegisterTest("DetectBadBinContent", DetectBadBinContent);
 }
 #endif /* UNITTESTS */

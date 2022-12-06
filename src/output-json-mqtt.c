@@ -22,7 +22,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -191,8 +190,7 @@ static TmEcode JsonMQTTLogThreadDeinit(ThreadVars *t, void *data)
 
 void JsonMQTTLogRegister(void)
 {
-    OutputRegisterTxSubModule(LOGGER_JSON_MQTT, "eve-log",
-        "JsonMQTTLog", "eve-log.mqtt",
-        OutputMQTTLogInitSub, ALPROTO_MQTT, JsonMQTTLogger,
-        JsonMQTTLogThreadInit, JsonMQTTLogThreadDeinit, NULL);
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonMQTTLog", "eve-log.mqtt",
+            OutputMQTTLogInitSub, ALPROTO_MQTT, JsonMQTTLogger, JsonMQTTLogThreadInit,
+            JsonMQTTLogThreadDeinit, NULL);
 }

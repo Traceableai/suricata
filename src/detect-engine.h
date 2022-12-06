@@ -25,10 +25,7 @@
 #define __DETECT_ENGINE_H__
 
 #include "detect.h"
-#include "tm-threads.h"
-#include "flow-private.h"
-
-#include "detect-engine-frame.h"
+#include "suricata.h"
 
 void InspectionBufferInit(InspectionBuffer *buffer, uint32_t initial_size);
 void InspectionBufferSetup(DetectEngineThreadCtx *det_ctx, const int list_id,
@@ -134,14 +131,13 @@ int DetectEngineTentantUnregisterVlanId(uint32_t tenant_id, uint16_t vlan_id);
 int DetectEngineTentantRegisterPcapFile(uint32_t tenant_id);
 int DetectEngineTentantUnregisterPcapFile(uint32_t tenant_id);
 
-int DetectEngineInspectGenericList(const DetectEngineCtx *, DetectEngineThreadCtx *,
-        const Signature *, const SigMatchData *, Flow *, const uint8_t, void *, void *, uint64_t);
+uint8_t DetectEngineInspectGenericList(DetectEngineCtx *, DetectEngineThreadCtx *,
+        const struct DetectEngineAppInspectionEngine_ *, const Signature *, Flow *, uint8_t, void *,
+        void *, uint64_t);
 
-int DetectEngineInspectBufferGeneric(
-        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const DetectEngineAppInspectionEngine *engine,
-        const Signature *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
+uint8_t DetectEngineInspectBufferGeneric(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+        const DetectEngineAppInspectionEngine *engine, const Signature *s, Flow *f, uint8_t flags,
+        void *alstate, void *txv, uint64_t tx_id);
 
 int DetectEngineInspectPktBufferGeneric(
         DetectEngineThreadCtx *det_ctx,
@@ -192,5 +188,16 @@ int DetectBufferGetActiveList(DetectEngineCtx *de_ctx, Signature *s);
 
 DetectEngineThreadCtx *DetectEngineThreadCtxInitForReload(
         ThreadVars *tv, DetectEngineCtx *new_de_ctx, int mt);
+
+void DetectRunStoreStateTx(const SigGroupHead *sgh, Flow *f, void *tx, uint64_t tx_id,
+        const Signature *s, uint32_t inspect_flags, uint8_t flow_flags,
+        const uint16_t file_no_match);
+
+void DetectRunStoreStateTxFileOnly(const SigGroupHead *sgh, Flow *f, void *tx, uint64_t tx_id,
+        const uint8_t flow_flags, const uint16_t file_no_match);
+
+void DetectEngineStateResetTxs(Flow *f);
+
+void DeStateRegisterTests(void);
 
 #endif /* __DETECT_ENGINE_H__ */

@@ -24,6 +24,8 @@
 #ifndef __FLOW_BYPASS_H__
 #define __FLOW_BYPASS_H__
 
+#include "flow.h"
+
 struct flows_stats {
     uint64_t count;
     uint64_t packets;

@@ -15,7 +15,7 @@
  * 02110-1301, USA.
  */
 
-use crate::applayer::*;
+use crate::applayer::{self, *};
 use crate::core::{self, Direction, DIR_BOTH};
 use crate::dcerpc::dcerpc::{
     DCERPCTransaction, DCERPC_TYPE_REQUEST, DCERPC_TYPE_RESPONSE, PFCL1_FRAG, PFCL1_LASTFRAG,
@@ -24,6 +24,7 @@ use crate::dcerpc::dcerpc::{
 use nom7::Err;
 use std;
 use std::ffi::CString;
+use std::collections::VecDeque;
 use crate::dcerpc::parser;
 
 // Constant DCERPC UDP Header length
@@ -54,8 +55,19 @@ pub struct DCERPCHdrUdp {
 
 #[derive(Default, Debug)]
 pub struct DCERPCUDPState {
+    state_data: AppLayerStateData,
     pub tx_id: u64,
-    pub transactions: Vec<DCERPCTransaction>,
+    pub transactions: VecDeque<DCERPCTransaction>,
+}
+
+impl State<DCERPCTransaction> for DCERPCUDPState {
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&DCERPCTransaction> {
+        self.transactions.get(index)
+    }
 }
 
 impl DCERPCUDPState {
@@ -80,7 +92,7 @@ impl DCERPCUDPState {
         let mut index = 0;
         for i in 0..len {
             let tx = &self.transactions[i];
-            if tx.id as u64 == tx_id { //+ 1 {
+            if tx.id == tx_id { //+ 1 {
                 found = true;
                 index = i;
                 SCLogDebug!("tx {} progress {}/{}", tx.id, tx.req_done, tx.resp_done);
@@ -116,12 +128,9 @@ impl DCERPCUDPState {
 
     fn find_incomplete_tx(&mut self, hdr: &DCERPCHdrUdp) -> Option<&mut DCERPCTransaction> {
         for tx in &mut self.transactions {
-            if tx.seqnum == hdr.seqnum && tx.activityuuid == hdr.activityuuid {
-                if (hdr.pkt_type == DCERPC_TYPE_REQUEST && !tx.req_done) ||
-                   (hdr.pkt_type == DCERPC_TYPE_RESPONSE && !tx.resp_done) {
-                    SCLogDebug!("found tx id {}, last tx_id {}, {} {}", tx.id, self.tx_id, tx.seqnum, tx.activityuuid[0]);
-                    return Some(tx);
-                }
+            if tx.seqnum == hdr.seqnum && tx.activityuuid == hdr.activityuuid && ((hdr.pkt_type == DCERPC_TYPE_REQUEST && !tx.req_done) || (hdr.pkt_type == DCERPC_TYPE_RESPONSE && !tx.resp_done)) {
+                SCLogDebug!("found tx id {}, last tx_id {}, {} {}", tx.id, self.tx_id, tx.seqnum, tx.activityuuid[0]);
+                return Some(tx);
             }
         }
         None
@@ -137,8 +146,8 @@ impl DCERPCUDPState {
         if otx.is_none() {
             let ntx = self.create_tx(hdr);
             SCLogDebug!("new tx id {}, last tx_id {}, {} {}", ntx.id, self.tx_id, ntx.seqnum, ntx.activityuuid[0]);
-            self.transactions.push(ntx);
-            otx = self.transactions.last_mut();
+            self.transactions.push_back(ntx);
+            otx = self.transactions.back_mut();
         }
 
         if let Some(tx) = otx {
@@ -235,7 +244,7 @@ pub unsafe extern "C" fn rs_dcerpc_udp_state_transaction_free(
     state: *mut std::os::raw::c_void, tx_id: u64,
 ) {
     let dce_state = cast_pointer!(state, DCERPCUDPState);
-    SCLogDebug!("freeing tx {}", tx_id as u64);
+    SCLogDebug!("freeing tx {}", tx_id);
     dce_state.free_tx(tx_id);
 }
 
@@ -300,10 +309,8 @@ pub unsafe extern "C" fn rs_dcerpc_probe_udp(_f: *const core::Flow, direction: u
             if dir != Direction::ToServer {
                 *rdir = Direction::ToServer.into();
             }
-        } else {
-            if dir != Direction::ToClient {
-                *rdir = Direction::ToClient.into();
-            }
+        } else if dir != Direction::ToClient {
+            *rdir = Direction::ToClient.into();
         };
         return ALPROTO_DCERPC;
     }
@@ -312,7 +319,7 @@ pub unsafe extern "C" fn rs_dcerpc_probe_udp(_f: *const core::Flow, direction: u
 
 fn register_pattern_probe() -> i8 {
     unsafe {
-        if AppLayerProtoDetectPMRegisterPatternCSwPP(core::IPPROTO_UDP as u8, ALPROTO_DCERPC,
+        if AppLayerProtoDetectPMRegisterPatternCSwPP(core::IPPROTO_UDP, ALPROTO_DCERPC,
                                                      b"|04 00|\0".as_ptr() as *const std::os::raw::c_char, 2, 0,
                                                      Direction::ToServer.into(), rs_dcerpc_probe_udp, 0, 0) < 0 {
             SCLogDebug!("TOSERVER => AppLayerProtoDetectPMRegisterPatternCSwPP FAILED");
@@ -321,6 +328,8 @@ fn register_pattern_probe() -> i8 {
     }
     0
 }
+
+export_state_data_get!(rs_dcerpc_udp_get_state_data, DCERPCUDPState);
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_dcerpc_udp_register_parser() {
@@ -346,9 +355,10 @@ pub unsafe extern "C" fn rs_dcerpc_udp_register_parser() {
         get_eventinfo_byid: None,
         localstorage_new: None,
         localstorage_free: None,
-        get_files: None,
-        get_tx_iterator: None,
+        get_tx_files: None,
+        get_tx_iterator: Some(applayer::state_get_tx_iterator::<DCERPCUDPState, DCERPCTransaction>),
         get_tx_data: rs_dcerpc_udp_get_tx_data,
+        get_state_data: rs_dcerpc_udp_get_state_data,
         apply_tx_config: None,
         flags: APP_LAYER_PARSER_OPT_UNIDIR_TXS,
         truncate: None,

@@ -18,12 +18,18 @@
 #ifndef __RUST_CONTEXT_H__
 #define __RUST_CONTEXT_H__
 
+#include "flow.h"
+#include "detect.h"
 #include "detect-engine-state.h" //DetectEngineState
+
 #include "app-layer-krb5.h" //KRB5State, KRB5Transaction
 #include "app-layer-ike.h"  //IKEState, IKETransaction
 #include "app-layer-ntp.h" //NTPState, NTPTransaction
 #include "app-layer-snmp.h" //SNMPState, SNMPTransaction
 #include "app-layer-tftp.h" //TFTPState, TFTPTransaction
+
+#include "util-debug.h"
+#include "util-file.h"
 
 // hack for include orders cf SCSha256
 typedef struct HttpRangeContainerBlock HttpRangeContainerBlock;
@@ -40,7 +46,7 @@ typedef struct SuricataContext_ {
     void (*AppLayerParserTriggerRawStreamReassembly)(Flow *, int direction);
 
     void (*HttpRangeFreeBlock)(HttpRangeContainerBlock *);
-    void (*HTPFileCloseHandleRange)(
+    bool (*HTPFileCloseHandleRange)(
             FileContainer *, const uint16_t, HttpRangeContainerBlock *, const uint8_t *, uint32_t);
 
     int (*FileOpenFileWithId)(FileContainer *, const StreamingBufferConfig *,
@@ -54,13 +60,12 @@ typedef struct SuricataContext_ {
             const uint8_t *data, uint32_t data_len);
     void (*FileContainerRecycle)(FileContainer *ffc);
     void (*FilePrune)(FileContainer *ffc);
-    void (*FileSetTx)(FileContainer *, uint64_t);
 
     int (*AppLayerRegisterParser)(const struct AppLayerParser *p, AppProto alproto);
 
 } SuricataContext;
 
-extern SuricataContext suricata_context;
+extern const SuricataContext suricata_context;
 
 typedef struct SuricataFileContext_ {
 
@@ -68,6 +73,6 @@ typedef struct SuricataFileContext_ {
 
 } SuricataFileContext;
 
-SuricataContext *SCGetContext(void);
+const SuricataContext *SCGetContext(void);
 
 #endif /* !__RUST_CONTEXT_H__ */

@@ -20,7 +20,7 @@ use crate::core::*;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DetectDnsOpcode {
     negate: bool,
     opcode: u8,
@@ -42,7 +42,7 @@ fn parse_opcode(opcode: &str) -> Result<DetectDnsOpcode, ()> {
                 negated = true;
             }
             _ => {
-                let code: u8 = (&opcode[i..]).parse().map_err(|_| ())?;
+                let code: u8 = opcode[i..].parse().map_err(|_| ())?;
                 return Ok(DetectDnsOpcode {
                     negate: negated,
                     opcode: code,
@@ -79,11 +79,7 @@ pub extern "C" fn rs_dns_opcode_match(
         return 0;
     };
 
-    if match_opcode(detect, header_flags) {
-        1
-    } else {
-        0
-    }
+    match_opcode(detect, header_flags).into()
 }
 
 fn match_opcode(detect: &DetectDnsOpcode, flags: u16) -> bool {

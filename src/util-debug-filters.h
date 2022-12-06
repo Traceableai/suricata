@@ -24,9 +24,8 @@
 #ifndef __DEBUG_FILTERS_H__
 #define __DEBUG_FILTERS_H__
 
-#include <pthread.h>
+// pthread_t
 #include "threads.h"
-#include "util-mem.h"
 
 /**
  * \brief Enum that holds the different kinds of filters available

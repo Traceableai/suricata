@@ -24,6 +24,7 @@ use crate::smb::smb1::*;
 use crate::smb::smb2::*;
 use crate::dcerpc::dcerpc::*;
 use crate::smb::funcs::*;
+use crate::smb::smb_status::*;
 
 #[cfg(not(feature = "debug"))]
 fn debug_add_progress(_js: &mut JsonBuilder, _tx: &SMBTransaction) -> Result<(), JsonError> { Ok(()) }
@@ -66,7 +67,7 @@ fn guid_to_string(guid: &Vec<u8>) -> String {
 
 fn smb_common_header(jsb: &mut JsonBuilder, state: &SMBState, tx: &SMBTransaction) -> Result<(), JsonError>
 {
-    jsb.set_uint("id", tx.id as u64)?;
+    jsb.set_uint("id", tx.id)?;
 
     if state.dialect != 0 {
         let dialect = &smb2_dialect_string(state.dialect);
@@ -98,7 +99,13 @@ fn smb_common_header(jsb: &mut JsonBuilder, state: &SMBState, tx: &SMBTransactio
     match tx.vercmd.get_ntstatus() {
         (true, ntstatus) => {
             let status = smb_ntstatus_string(ntstatus);
-            jsb.set_string("status", &status)?;
+            match status {
+                Some(x) => jsb.set_string("status", x)?,
+                None => {
+                    let status_str = format!("{}", ntstatus);
+                    jsb.set_string("status", &status_str)?
+                },
+            };
             let status_hex = format!("0x{:x}", ntstatus);
             jsb.set_string("status_code", &status_hex)?;
         },
@@ -129,7 +136,7 @@ fn smb_common_header(jsb: &mut JsonBuilder, state: &SMBState, tx: &SMBTransactio
     }
 
 
-    jsb.set_uint("session_id", tx.hdr.ssn_id as u64)?;
+    jsb.set_uint("session_id", tx.hdr.ssn_id)?;
     jsb.set_uint("tree_id", tx.hdr.tree_id as u64)?;
 
     debug_add_progress(jsb, tx)?;
@@ -191,7 +198,7 @@ fn smb_common_header(jsb: &mut JsonBuilder, state: &SMBState, tx: &SMBTransactio
         Some(SMBTransactionTypeData::CREATE(ref x)) => {
             let mut name_raw = x.filename.to_vec();
             name_raw.retain(|&i|i != 0x00);
-            if name_raw.len() > 0 {
+            if !name_raw.is_empty() {
                 let name = String::from_utf8_lossy(&name_raw);
                 if x.directory {
                     jsb.set_string("directory", &name)?;
@@ -249,6 +256,13 @@ fn smb_common_header(jsb: &mut JsonBuilder, state: &SMBState, tx: &SMBTransactio
             }
 
             jsb.set_string("server_guid", &guid_to_string(&x.server_guid))?;
+
+            if state.max_read_size > 0 {
+                jsb.set_uint("max_read_size", state.max_read_size.into())?;
+            }
+            if state.max_write_size > 0 {
+                jsb.set_uint("max_write_size", state.max_write_size.into())?;
+            }
         },
         Some(SMBTransactionTypeData::TREECONNECT(ref x)) => {
             jsb.set_uint("tree_id", x.tree_id as u64)?;
@@ -329,6 +343,22 @@ fn smb_common_header(jsb: &mut JsonBuilder, state: &SMBState, tx: &SMBTransactio
                         jsb.set_uint("frag_cnt", x.frag_cnt_ts as u64)?;
                         jsb.set_uint("stub_data_size", x.stub_data_ts.len() as u64)?;
                         jsb.close()?;
+                        match state.dcerpc_ifaces {
+                            Some(ref ifaces) => {
+                                for i in ifaces {
+                                    if i.context_id == x.context_id {
+                                        jsb.open_object("interface")?;
+                                        let ifstr = uuid::Uuid::from_slice(&i.uuid);
+                                        let ifstr = ifstr.map(|ifstr| ifstr.to_hyphenated().to_string()).unwrap();
+                                        jsb.set_string("uuid", &ifstr)?;
+                                        let vstr = format!("{}.{}", i.ver, i.ver_min);
+                                        jsb.set_string("version", &vstr)?;
+                                        jsb.close()?;
+                                    }
+                                }
+                            },
+                            _ => {},
+                        }
                     },
                     DCERPC_TYPE_BIND => {
                         match state.dcerpc_ifaces {
@@ -377,7 +407,7 @@ fn smb_common_header(jsb: &mut JsonBuilder, state: &SMBState, tx: &SMBTransactio
         Some(SMBTransactionTypeData::SETFILEPATHINFO(ref x)) => {
             let mut name_raw = x.filename.to_vec();
             name_raw.retain(|&i|i != 0x00);
-            if name_raw.len() > 0 {
+            if !name_raw.is_empty() {
                 let name = String::from_utf8_lossy(&name_raw);
                 jsb.set_string("filename", &name)?;
             } else {
@@ -416,14 +446,14 @@ fn smb_common_header(jsb: &mut JsonBuilder, state: &SMBState, tx: &SMBTransactio
 }
 
 #[no_mangle]
-pub extern "C" fn rs_smb_log_json_request(mut jsb: &mut JsonBuilder, state: &mut SMBState, tx: &mut SMBTransaction) -> bool
+pub extern "C" fn rs_smb_log_json_request(jsb: &mut JsonBuilder, state: &mut SMBState, tx: &mut SMBTransaction) -> bool
 {
-    smb_common_header(&mut jsb, state, tx).is_ok()
+    smb_common_header(jsb, state, tx).is_ok()
 }
 
 #[no_mangle]
-pub extern "C" fn rs_smb_log_json_response(mut jsb: &mut JsonBuilder, state: &mut SMBState, tx: &mut SMBTransaction) -> bool
+pub extern "C" fn rs_smb_log_json_response(jsb: &mut JsonBuilder, state: &mut SMBState, tx: &mut SMBTransaction) -> bool
 {
-    smb_common_header(&mut jsb, state, tx).is_ok()
+    smb_common_header(jsb, state, tx).is_ok()
 }
 

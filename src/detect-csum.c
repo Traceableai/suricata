@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 
 #include "detect.h"
@@ -38,6 +37,16 @@
 #include "pkt-var.h"
 #include "host.h"
 #include "util-profiling.h"
+#include "detect-engine-build.h"
+
+#define DETECT_CSUM_VALID   "valid"
+#define DETECT_CSUM_INVALID "invalid"
+
+typedef struct DetectCsumData_ {
+    /* Indicates if the csum-<protocol> keyword in a rule holds the
+       keyvalue "valid" or "invalid" */
+    int16_t valid;
+} DetectCsumData;
 
 /* prototypes for the "ipv4-csum" rule keyword */
 static int DetectIPV4CsumMatch(DetectEngineThreadCtx *,
@@ -819,7 +828,7 @@ static int DetectICMPV6CsumMatch(DetectEngineThreadCtx *det_ctx,
 
     if (p->level4_comp_csum == -1) {
         uint16_t len = IPV6_GET_RAW_PLEN(p->ip6h) -
-            ((uint8_t *)p->icmpv6h - (uint8_t *)p->ip6h - IPV6_HEADER_LEN);
+                       (uint16_t)((uint8_t *)p->icmpv6h - (uint8_t *)p->ip6h - IPV6_HEADER_LEN);
         p->level4_comp_csum = ICMPV6CalculateChecksum(p->ip6h->s_ip6_addrs,
                                                       (uint16_t *)p->icmpv6h,
                                                       len);
@@ -889,7 +898,10 @@ static void DetectICMPV6CsumFree(DetectEngineCtx *de_ctx, void *ptr)
 /* ---------------------------------- Unit Tests --------------------------- */
 
 #ifdef UNITTESTS
+#include "util-unittest-helper.h"
 #include "detect-engine.h"
+#include "detect-engine-alert.h"
+#include "packet.h"
 
 #define mystr(s) #s
 #define TEST1(kwstr) {\
@@ -985,7 +997,6 @@ static int DetectCsumValidArgsTestParse03(void)
 #undef TEST3
 #undef mystr
 
-#include "detect-engine.h"
 #include "stream-tcp.h"
 
 static int DetectCsumICMPV6Test01(void)
@@ -1046,7 +1057,7 @@ static int DetectCsumICMPV6Test01(void)
     DetectEngineCtxFree(de_ctx);
 
     StreamTcpFreeConfig(true);
-    PACKET_RECYCLE(p);
+    PacketRecycle(p);
     FlowShutdown();
     SCFree(p);
     PASS;

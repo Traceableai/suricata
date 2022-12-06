@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -24,9 +24,7 @@
 #ifndef __DECODE_ICMPV4_H__
 #define __DECODE_ICMPV4_H__
 
-#include "decode.h"
 #include "decode-tcp.h"
-#include "decode-sctp.h"
 #include "decode-udp.h"
 
 #define ICMPV4_HEADER_LEN       8
@@ -187,7 +185,7 @@ typedef struct ICMPV4Vars_
     uint16_t  seq;
 
     /** Actual header length **/
-    uint32_t hlen;
+    uint16_t hlen;
 
     /** Pointers to the embedded packet headers */
     IPV4Hdr *emb_ipv4h;
@@ -292,7 +290,6 @@ typedef struct ICMPV4Timestamp_ {
 void DecodeICMPV4RegisterTests(void);
 
 /** ------ Inline functions ------ */
-static inline uint16_t ICMPV4CalculateChecksum(uint16_t *, uint16_t);
 
 /**
  * \brief Calculates the checksum for the ICMP packet
@@ -302,7 +299,7 @@ static inline uint16_t ICMPV4CalculateChecksum(uint16_t *, uint16_t);
  *
  * \retval csum Checksum for the ICMP packet
  */
-static inline uint16_t ICMPV4CalculateChecksum(uint16_t *pkt, uint16_t tlen)
+static inline uint16_t ICMPV4CalculateChecksum(const uint16_t *pkt, uint16_t tlen)
 {
     uint16_t pad = 0;
     uint32_t csum = pkt[0];
@@ -350,4 +347,3 @@ static inline uint16_t ICMPV4CalculateChecksum(uint16_t *pkt, uint16_t tlen)
 int ICMPv4GetCounterpart(uint8_t type);
 
 #endif /* __DECODE_ICMPV4_H__ */
-

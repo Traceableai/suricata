@@ -28,6 +28,7 @@
 #include "detect.h"
 #include "detect-engine.h"
 #include "detect-engine-prefilter.h"
+#include "detect-engine-build.h"
 #include "detect-parse.h"
 #include "detect-transform-urldecode.h"
 
@@ -86,7 +87,9 @@ static bool BufferUrlDecode(const uint8_t *input, const uint32_t input_len, uint
             if (i + 2 < input_len) {
                 if ((isxdigit(input[i+1])) && (isxdigit(input[i+2]))) {
                     // Decode %HH encoding.
-                    *oi = (input[i+1] >= 'A' ? ((input[i+1] & 0xdf) - 'A') + 10 : (input[i+1] - '0')) << 4;
+                    *oi = (uint8_t)((input[i + 1] >= 'A' ? ((input[i + 1] & 0xdf) - 'A') + 10
+                                                         : (input[i + 1] - '0'))
+                                    << 4);
                     *oi |= (input[i+2] >= 'A' ? ((input[i+2] & 0xdf) - 'A') + 10 : (input[i+2] - '0'));
                     oi++;
                     // one more increment before looping
@@ -119,6 +122,9 @@ static void TransformUrlDecode(InspectionBuffer *buffer, void *options)
 
     const uint8_t *input = buffer->inspect;
     const uint32_t input_len = buffer->inspect_len;
+    if (input_len == 0) {
+        return;
+    }
     uint8_t output[input_len]; // we can only shrink
 
     changed = BufferUrlDecode(input, input_len, output, &output_size);

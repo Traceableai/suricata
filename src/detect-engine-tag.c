@@ -32,6 +32,7 @@
 #include "util-time.h"
 #include "util-hashlist.h"
 #include "detect-engine-tag.h"
+#include "detect-engine-build.h"
 #include "detect-tag.h"
 #include "host.h"
 #include "host-storage.h"
@@ -276,6 +277,7 @@ static void TagHandlePacketFlow(Flow *f, Packet *p)
          * to log it (the alert will log it) */
         if (!(iter->flags & TAG_ENTRY_FLAG_SKIPPED_FIRST)) {
             iter->flags |= TAG_ENTRY_FLAG_SKIPPED_FIRST;
+            p->flags |= PKT_FIRST_TAG;
         } else {
             /* Update metrics; remove if tag expired; and set alerts */
             switch (iter->metric) {
@@ -553,7 +555,9 @@ int TagTimeoutCheck(Host *host, struct timeval *tv)
 
     prev = NULL;
     while (tmp != NULL) {
-        if ((tv->tv_sec - tmp->last_ts) <= TAG_MAX_LAST_TIME_SEEN) {
+        struct timeval last_ts = { .tv_sec = tmp->last_ts, 0 };
+        struct timeval timeout_at = TimevalWithSeconds(&last_ts, TAG_MAX_LAST_TIME_SEEN);
+        if (!TimevalEarlier(&timeout_at, tv)) {
             prev = tmp;
             tmp = tmp->next;
             retval = 0;

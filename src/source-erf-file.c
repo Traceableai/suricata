@@ -29,6 +29,7 @@
 #include "suricata.h"
 #include "tm-threads.h"
 #include "source-erf-file.h"
+#include "util-datalink.h"
 
 #define DAG_TYPE_ETH 2
 
@@ -114,6 +115,10 @@ TmEcode ReceiveErfFileLoop(ThreadVars *tv, void *data, void *slot)
     ErfFileThreadVars *etv = (ErfFileThreadVars *)data;
 
     etv->slot = ((TmSlot *)slot)->slot_next;
+
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
 
     while (1) {
         if (suricata_ctl_flags & SURICATA_STOP) {
@@ -240,6 +245,8 @@ ReceiveErfFileThreadInit(ThreadVars *tv, const void *initdata, void **data)
     *data = (void *)etv;
 
     SCLogInfo("Processing ERF file %s", (char *)initdata);
+
+    DatalinkSetGlobalType(LINKTYPE_ETHERNET);
 
     SCReturnInt(TM_ECODE_OK);
 }

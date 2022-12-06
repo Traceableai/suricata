@@ -27,12 +27,14 @@
 #include "util-time.h"
 #include "util-cpu.h"
 #include "util-affinity.h"
+#include "util-var-name.h"
 #include "unix-manager.h"
 
 #include "detect-engine.h"
 
 #include "flow-manager.h"
 #include "flow-timeout.h"
+#include "flow-hash.h"
 #include "stream-tcp.h"
 #include "stream-tcp-reassemble.h"
 #include "source-pcap-file-directory-helper.h"
@@ -50,6 +52,7 @@
 #include "conf-yaml-loader.h"
 
 #include "datasets.h"
+#include "runmode-unix-socket.h"
 
 int unix_socket_mode_is_running = 0;
 
@@ -81,8 +84,6 @@ const char *RunModeUnixSocketGetDefaultMode(void)
 {
     return "autofp";
 }
-
-#ifdef BUILD_UNIX_SOCKET
 
 #define MEMCAPS_MAX 7
 static MemcapCommand memcaps[MEMCAPS_MAX] = {
@@ -129,6 +130,24 @@ static MemcapCommand memcaps[MEMCAPS_MAX] = {
         HostGetMemuse
     },
 };
+
+float MemcapsGetPressure(void)
+{
+    float percent = 0.0;
+    for (int i = 0; i < 4; i++) { // only flow, streams, http
+        uint64_t memcap = memcaps[i].GetFunc();
+        if (memcap) {
+            uint64_t memuse = memcaps[i].GetMemuseFunc();
+            float p = (float)((double)memuse / (double)memcap);
+            // SCLogNotice("%s: memuse %"PRIu64", memcap %"PRIu64" => %f%%",
+            //    memcaps[i].name, memuse, memcap, (p * 100));
+            percent = MAX(p, percent);
+        }
+    }
+    return percent;
+}
+
+#ifdef BUILD_UNIX_SOCKET
 
 static int RunModeUnixSocketMaster(void);
 static int unix_manager_pcap_task_running = 0;
@@ -744,6 +763,100 @@ TmEcode UnixSocketDatasetRemove(json_t *cmd, json_t* answer, void *data)
     }
 }
 
+TmEcode UnixSocketDatasetDump(json_t *cmd, json_t *answer, void *data)
+{
+    SCEnter();
+    SCLogDebug("Going to dump datasets");
+    DatasetsSave();
+    json_object_set_new(answer, "message", json_string("datasets dump done"));
+    SCReturnInt(TM_ECODE_OK);
+}
+
+TmEcode UnixSocketDatasetClear(json_t *cmd, json_t *answer, void *data)
+{
+    /* 1 get dataset name */
+    json_t *narg = json_object_get(cmd, "setname");
+    if (!json_is_string(narg)) {
+        json_object_set_new(answer, "message", json_string("setname is not a string"));
+        return TM_ECODE_FAILED;
+    }
+    const char *set_name = json_string_value(narg);
+
+    /* 2 get the data type */
+    json_t *targ = json_object_get(cmd, "settype");
+    if (!json_is_string(targ)) {
+        json_object_set_new(answer, "message", json_string("settype is not a string"));
+        return TM_ECODE_FAILED;
+    }
+    const char *type = json_string_value(targ);
+
+    enum DatasetTypes t = DatasetGetTypeFromString(type);
+    if (t == DATASET_TYPE_NOTSET) {
+        json_object_set_new(answer, "message", json_string("unknown settype"));
+        return TM_ECODE_FAILED;
+    }
+
+    Dataset *set = DatasetFind(set_name, t);
+    if (set == NULL) {
+        json_object_set_new(answer, "message", json_string("set not found or wrong type"));
+        return TM_ECODE_FAILED;
+    }
+
+    THashCleanup(set->hash);
+
+    json_object_set_new(answer, "message", json_string("dataset cleared"));
+    return TM_ECODE_OK;
+}
+
+TmEcode UnixSocketDatasetLookup(json_t *cmd, json_t *answer, void *data)
+{
+    /* 1 get dataset name */
+    json_t *narg = json_object_get(cmd, "setname");
+    if (!json_is_string(narg)) {
+        json_object_set_new(answer, "message", json_string("setname is not a string"));
+        return TM_ECODE_FAILED;
+    }
+    const char *set_name = json_string_value(narg);
+
+    /* 2 get the data type */
+    json_t *targ = json_object_get(cmd, "settype");
+    if (!json_is_string(targ)) {
+        json_object_set_new(answer, "message", json_string("settype is not a string"));
+        return TM_ECODE_FAILED;
+    }
+    const char *type = json_string_value(targ);
+
+    /* 3 get value */
+    json_t *varg = json_object_get(cmd, "datavalue");
+    if (!json_is_string(varg)) {
+        json_object_set_new(answer, "message", json_string("datavalue is not string"));
+        return TM_ECODE_FAILED;
+    }
+    const char *value = json_string_value(varg);
+
+    SCLogDebug("dataset-exist: %s type %s value %s", set_name, type, value);
+
+    enum DatasetTypes t = DatasetGetTypeFromString(type);
+    if (t == DATASET_TYPE_NOTSET) {
+        json_object_set_new(answer, "message", json_string("unknown settype"));
+        return TM_ECODE_FAILED;
+    }
+
+    Dataset *set = DatasetFind(set_name, t);
+    if (set == NULL) {
+        json_object_set_new(answer, "message", json_string("set not found or wrong type"));
+        return TM_ECODE_FAILED;
+    }
+
+    if (DatasetLookupSerialized(set, value) > 0) {
+        json_object_set_new(answer, "message", json_string("item found in set"));
+        return TM_ECODE_OK;
+    } else {
+        json_object_set_new(answer, "message", json_string("item not found in set"));
+        return TM_ECODE_FAILED;
+    }
+}
+
 /**
  * \brief Command to add a tenant handler
  *
@@ -808,7 +921,7 @@ TmEcode UnixSocketRegisterTenantHandler(json_t *cmd, json_t* answer, void *data)
         }
 
         SCLogInfo("VLAN handler: id %u maps to tenant %u", (uint32_t)traffic_id, tenant_id);
-        r = DetectEngineTentantRegisterVlanId(tenant_id, (uint32_t)traffic_id);
+        r = DetectEngineTentantRegisterVlanId(tenant_id, (uint16_t)traffic_id);
     }
     if (r != 0) {
         json_object_set_new(answer, "message", json_string("handler setup failure"));
@@ -889,7 +1002,7 @@ TmEcode UnixSocketUnregisterTenantHandler(json_t *cmd, json_t* answer, void *dat
         }
 
         SCLogInfo("VLAN handler: removing mapping of %u to tenant %u", (uint32_t)traffic_id, tenant_id);
-        r = DetectEngineTentantUnregisterVlanId(tenant_id, (uint32_t)traffic_id);
+        r = DetectEngineTentantUnregisterVlanId(tenant_id, (uint16_t)traffic_id);
     }
     if (r != 0) {
         json_object_set_new(answer, "message", json_string("handler unregister failure"));
@@ -1521,6 +1634,42 @@ TmEcode UnixSocketShowAllMemcap(json_t *cmd, json_t *answer, void *data)
     }
 
     json_object_set_new(answer, "message", jmemcaps);
+    SCReturnInt(TM_ECODE_OK);
+}
+
+TmEcode UnixSocketGetFlowStatsById(json_t *cmd, json_t *answer, void *data)
+{
+    /* Input: we need the IP tuple including VLAN/tenant and the flow ID */
+    json_t *jarg = json_object_get(cmd, "flow_id");
+    if (!json_is_integer(jarg)) {
+        SCLogInfo("error: command is not a string");
+        json_object_set_new(answer, "message", json_string("flow_id is not an integer"));
+        return TM_ECODE_FAILED;
+    }
+    int64_t flow_id = json_integer_value(jarg);
+
+    Flow *f = FlowGetExistingFlowFromFlowId(flow_id);
+    if (f == NULL) {
+        json_object_set_new(answer, "message", json_string("Not found"));
+        SCReturnInt(TM_ECODE_FAILED);
+    }
+    uint32_t tosrcpktcnt = f->tosrcpktcnt;
+    uint32_t todstpktcnt = f->todstpktcnt;
+    uint64_t tosrcbytecnt = f->tosrcbytecnt;
+    uint64_t todstbytecnt = f->todstbytecnt;
+    uint64_t age = f->lastts.tv_sec - f->startts.tv_sec;
+    FLOWLOCK_UNLOCK(f);
+
+    json_t *flow_info = json_object();
+    if (flow_info == NULL) {
+        SCReturnInt(TM_ECODE_FAILED);
+    }
+    json_object_set_new(flow_info, "pkts_toclient", json_integer(tosrcpktcnt));
+    json_object_set_new(flow_info, "pkts_toserver", json_integer(todstpktcnt));
+    json_object_set_new(flow_info, "bytes_toclient", json_integer(tosrcbytecnt));
+    json_object_set_new(flow_info, "bytes_toserver", json_integer(todstbytecnt));
+    json_object_set_new(flow_info, "age", json_integer(age));
+    json_object_set_new(answer, "message", flow_info);
     SCReturnInt(TM_ECODE_OK);
 }
 #endif /* BUILD_UNIX_SOCKET */

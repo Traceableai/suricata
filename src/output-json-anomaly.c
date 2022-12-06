@@ -25,7 +25,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "flow.h"
 #include "conf.h"
@@ -280,7 +279,7 @@ static int JsonAnomalyLogger(ThreadVars *tv, void *thread_data, const Packet *p)
     return AnomalyJson(tv, aft, p);
 }
 
-static int JsonAnomalyLogCondition(ThreadVars *tv, const Packet *p)
+static int JsonAnomalyLogCondition(ThreadVars *tv, void *thread_data, const Packet *p)
 {
     return p->events.cnt > 0 ||
            (p->app_layer_events && p->app_layer_events->cnt > 0) ||

@@ -25,7 +25,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 
 #include "detect.h"
@@ -89,6 +88,9 @@ void DetectConfigRegister(void)
 static void ConfigApplyTx(Flow *f,
         const uint64_t tx_id, const DetectConfigData *config)
 {
+    if (f->alstate == NULL) {
+        return;
+    }
     void *tx = AppLayerParserGetTx(f->proto, f->alproto, f->alstate, tx_id);
     if (tx) {
         AppLayerTxData *txd = AppLayerParserGetTxData(f->proto, f->alproto, tx);
@@ -286,6 +288,10 @@ static int DetectConfigSetup (DetectEngineCtx *de_ctx, Signature *s, const char 
     }
     if (strcmp(scopeval, "tx") == 0) {
         fd->scope = CONFIG_SCOPE_TX;
+    }
+
+    if (fd->scope == CONFIG_SCOPE_TX) {
+        s->flags |= SIG_FLAG_APPLAYER;
     }
 
     sm->ctx = (SigMatchCtx*)fd;

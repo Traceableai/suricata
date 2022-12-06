@@ -27,10 +27,10 @@ env:
   # A recent version of stable Rust that is known to pass build, test and other
   # verification steps in this workflow. This was added because using "stable"
   # could cause some steps to fail.
-  RUST_VERSION_KNOWN: "1.58.1"
+  RUST_VERSION_KNOWN: "1.62.0"
 
   # The minimum version of Rust supported.
-  RUST_VERSION_MIN: "1.48"
+  RUST_VERSION_MIN: "1.58.1"
 
 jobs:
 
@@ -38,11 +38,6 @@ jobs:
     name: Prepare dependencies
     runs-on: ubuntu-latest
     steps:
-      - name: Cache ~/.cargo
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
-        with:
-          path: ~/.cargo
-          key: cargo
       - run: sudo apt update && sudo apt -y install jq curl
       - name: Parse repo and branch information
         env:
@@ -113,7 +108,7 @@ jobs:
       - name: Cleaning up
         run: rm -rf libhtp suricata-update suricata-verify
       - name: Uploading prep archive
-        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb
         with:
           name: prep
           path: .
@@ -123,10 +118,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Cache ~/.cargo
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
           path: ~/.cargo
-          key: cbindgen
+          key: ${{ github.job }}-cargo
       - name: Installing Rust
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y
@@ -137,11 +132,126 @@ jobs:
           cargo install --target x86_64-unknown-linux-musl --debug cbindgen
           cp $HOME/.cargo/bin/cbindgen .
       - name: Uploading prep archive
-        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb
         with:
           name: prep
           path: .
 
+  almalinux-9:
+    name: AlmaLinux 9
+    runs-on: ubuntu-latest
+    container: almalinux:9
+    needs: [prepare-deps, prepare-cbindgen]
+    steps:
+      # Cache Rust stuff.
+      - name: Cache cargo registry
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
+
+      - name: Cache RPMs
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/dnf
+          key: ${{ github.job }}-dnf
+      - run: echo "keepcache=1" >> /etc/dnf/dnf.conf
+
+      - uses: actions/checkout@v3.1.0
+
+      # Download and extract dependency archives created during prep
+      # job.
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
+        with:
+          name: prep
+          path: prep
+      - run: tar xvf prep/libhtp.tar.gz
+      - run: tar xvf prep/suricata-update.tar.gz
+      - run: tar xvf prep/suricata-verify.tar.gz
+      - name: Setup cbindgen
+        run: |
+          mkdir -p $HOME/.cargo/bin
+          cp prep/cbindgen $HOME/.cargo/bin
+          chmod 755 $HOME/.cargo/bin/cbindgen
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Install system packages
+        run: |
+          dnf -y install dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf -y install \
+                autoconf \
+                automake \
+                cargo-vendor \
+                diffutils \
+                numactl-devel \
+                dpdk-devel \
+                file-devel \
+                gcc \
+                gcc-c++ \
+                git \
+                jansson-devel \
+                jq \
+                lua-devel \
+                libtool \
+                libyaml-devel \
+                libnfnetlink-devel \
+                libnetfilter_queue-devel \
+                libnet-devel \
+                libcap-ng-devel \
+                libevent-devel \
+                libmaxminddb-devel \
+                libpcap-devel \
+                libtool \
+                lz4-devel \
+                make \
+                nss-devel \
+                pcre2-devel \
+                pkgconfig \
+                python3-devel \
+                python3-sphinx \
+                python3-yaml \
+                rust-toolset \
+                sudo \
+                which \
+                zlib-devel
+          # These packages required to build the PDF.
+          dnf -y install \
+                texlive-latex \
+                texlive-cmap \
+                texlive-collection-latexrecommended \
+                texlive-fncychap \
+                texlive-titlesec \
+                texlive-tabulary \
+                texlive-framed \
+                texlive-wrapfig \
+                texlive-upquote \
+                texlive-capt-of \
+                texlive-needspace
+      #- name: Setup cppclean
+      #  run: |
+      #    git clone --depth 1 --branch suricata https://github.com/catenacyber/cppclean
+      #    cd cppclean
+      #    python3 setup.py install
+      - name: Configuring
+        run: |
+          ./autogen.sh
+          CFLAGS="${DEFAULT_CFLAGS}" ./configure
+      - run: make -j2 distcheck
+        env:
+          DISTCHECK_CONFIGURE_FLAGS: "--enable-unittests --enable-debug --enable-lua --enable-geoip --enable-profiling --enable-profiling-locks --enable-dpdk"
+      - run: test -e doc/userguide/suricata.1
+      - name: Checking includes
+        run: |
+          cppclean src/*.h | grep "does not need to be #included" | python3 scripts/cppclean_check.py
+      - name: Building Rust documentation
+        run: make doc
+        working-directory: rust
+      - run: make install
+      - run: suricatasc -h
+      - run: suricata-update -V
+
+  # This build also creates the distribution package that some other builds
+  # depend on.
   alma-8:
     name: AlmaLinux 8
     runs-on: ubuntu-latest
@@ -150,12 +260,19 @@ jobs:
     steps:
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
 
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+      - name: Cache RPMs
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/dnf
+          key: ${{ github.job }}-dnf
+      - run: echo "keepcache=1" >> /etc/dnf/dnf.conf
+
+      - uses: actions/checkout@v3.1.0
 
       # Prebuild check for duplicat SIDs
       - name: Check for duplicate SIDs
@@ -168,7 +285,7 @@ jobs:
 
       # Download and extract dependency archives created during prep
       # job.
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -233,7 +350,12 @@ jobs:
                 texlive-wrapfig \
                 texlive-upquote \
                 texlive-capt-of \
-                texlive-needspace \
+                texlive-needspace
+      #- name: Setup cppclean
+      #  run: |
+      #    git clone --depth 1 --branch suricata https://github.com/catenacyber/cppclean
+      #    cd cppclean
+      #    python3 setup.py install
       - name: Configuring
         run: |
           ./autogen.sh
@@ -242,14 +364,20 @@ jobs:
         env:
           DISTCHECK_CONFIGURE_FLAGS: "--enable-unittests --enable-debug --enable-lua --enable-geoip --enable-profiling --enable-profiling-locks --enable-dpdk"
       - run: test -e doc/userguide/suricata.1
+      - name: Checking includes
+        run: |
+          cppclean src/*.h | grep "does not need to be #included" | python3 scripts/cppclean_check.py
       - name: Building Rust documentation
         run: make doc
         working-directory: rust
+      - run: make install
+      - run: suricatasc -h
+      - run: suricata-update -V
       - name: Preparing distribution
         run: |
           mkdir dist
           mv suricata-*.tar.gz dist
-      - uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+      - uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb
         name: Uploading distribution
         with:
           name: dist
@@ -261,6 +389,19 @@ jobs:
     container: centos:7
     needs: [prepare-deps, alma-8]
     steps:
+      - name: Cache ~/.cargo
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
+
+      - name: Cache RPMs
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/yum
+          key: ${{ github.job }}-yum
+      - run: echo "keepcache=1" >> /etc/yum.conf
+
       - name: Install system dependencies
         run: |
           yum -y install epel-release
@@ -295,7 +436,7 @@ jobs:
                 which \
                 zlib-devel
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+        uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: dist
       - run: tar zxvf suricata-*.tar.gz --strip-components=1
@@ -312,26 +453,132 @@ jobs:
       - run: make distcheck
       - run: make clean
       - run: make -j2
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
       - run: tar xf prep/suricata-verify.tar.gz
       - run: python3 ./suricata-verify/run.py -q
+      - run: suricata-update -V
+      - run: suricatasc -h
 
-  fedora-35:
-    name: Fedora 35 (debug, clang, asan, wshadow, rust-strict)
+  fedora-36-sv-codecov:
+    name: Fedora 36 (Suricata Verify codecov)
     runs-on: ubuntu-latest
-    container: fedora:35
+    container: fedora:36
     needs: [prepare-deps, prepare-cbindgen]
     steps:
 
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
+
+      - name: Cache RPMs
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/dnf
+          key: ${{ github.job }}-dnf
+      - run: echo "keepcache=1" >> /etc/dnf/dnf.conf
+
+      - run: |
+          dnf -y install \
+                autoconf \
+                automake \
+                ccache \
+                clang \
+                curl \
+                diffutils \
+                file-devel \
+                gcc \
+                gcc-c++ \
+                git \
+                hiredis-devel \
+                jansson-devel \
+                jq \
+                lua-devel \
+                libasan \
+                libtool \
+                libyaml-devel \
+                libnfnetlink-devel \
+                libnetfilter_queue-devel \
+                libnet-devel \
+                libcap-ng-devel \
+                libevent-devel \
+                libmaxminddb-devel \
+                libpcap-devel \
+                libtool \
+                llvm-devel \
+                lz4-devel \
+                make \
+                nss-softokn-devel \
+                pcre2-devel \
+                pkgconfig \
+                python3-yaml \
+                sudo \
+                which \
+                zlib-devel
+      # packaged Rust version has no profiler support built in, so get from rustup
+      - name: Install Rust
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.63.0 -y
+      - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
+        with:
+          name: prep
+          path: prep
+      - run: tar xf prep/libhtp.tar.gz
+      - run: tar xf prep/suricata-update.tar.gz
+      - name: Setup cbindgen
+        run: |
+          mkdir -p $HOME/.cargo/bin
+          cp prep/cbindgen $HOME/.cargo/bin
+          chmod 755 $HOME/.cargo/bin/cbindgen
+      - run: ./autogen.sh
+      - run: ./configure --disable-shared
+        env:
+          CC: "clang"
+          RUSTFLAGS: "-C instrument-coverage"
+          CFLAGS: "-fprofile-instr-generate -fcoverage-mapping -O0"
+      - run: make -j2
+        env:
+          CC: "clang"
+          RUSTFLAGS: "-C instrument-coverage"
+          CFLAGS: "-fprofile-instr-generate -fcoverage-mapping -O0"
+      - name: Extracting suricata-verify
+        run: tar xf prep/suricata-verify.tar.gz
+      - name: Running suricata-verify
+        run: python3 ./suricata-verify/run.py -q
+      - run: llvm-profdata merge -o default.profdata $(find suricata-verify/tests/ -name '*.profraw')
+      - run: llvm-cov show ./src/suricata -instr-profile=default.profdata --show-instantiations --ignore-filename-regex="^/root/.*" > coverage.txt
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@d9f34f8cd5cb3b3eb79b3e4b5dae3a16df499a70
+        with:
+          fail_ci_if_error: false
+          flags: suricata-verify
+
+  fedora-36:
+    name: Fedora 36 (debug, clang, asan, wshadow, rust-strict, systemd)
+    runs-on: ubuntu-latest
+    container: fedora:36
+    needs: [prepare-deps, prepare-cbindgen]
+    steps:
+
+      # Cache Rust stuff.
+      - name: Cache cargo registry
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
+
+      - name: Cache RPMs
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/dnf
+          key: ${{ github.job }}-dnf
+      - run: echo "keepcache=1" >> /etc/dnf/dnf.conf
 
       - run: |
           dnf -y install \
@@ -359,6 +606,8 @@ jobs:
                 libevent-devel \
                 libmaxminddb-devel \
                 libpcap-devel \
+                libxdp-devel \
+                libbpf-devel \
                 libtool \
                 lz4-devel \
                 make \
@@ -367,14 +616,16 @@ jobs:
                 pkgconfig \
                 python3-yaml \
                 sudo \
+                systemd-devel \
                 which \
                 zlib-devel
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
       - run: tar xf prep/libhtp.tar.gz
+      - run: tar xf prep/suricata-update.tar.gz
       - name: Setup cbindgen
         run: |
           mkdir -p $HOME/.cargo/bin
@@ -382,7 +633,7 @@ jobs:
           chmod 755 $HOME/.cargo/bin/cbindgen
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - run: ./autogen.sh
-      - run: CC="clang" CFLAGS="$DEFAULT_CFLAGS -Wshadow -fsanitize=address -fno-omit-frame-pointer" ./configure --enable-debug --enable-unittests --disable-shared --enable-rust-strict --enable-hiredis
+      - run: CC="clang" CFLAGS="$DEFAULT_CFLAGS -Wshadow -fsanitize=address -fno-omit-frame-pointer" ./configure --enable-debug --enable-unittests --disable-shared --enable-rust-strict --enable-hiredis --enable-nfqueue --enable-lua
         env:
           LDFLAGS: "-fsanitize=address"
           ac_cv_func_realloc_0_nonnull: "yes"
@@ -405,20 +656,100 @@ jobs:
       - run: test -e /usr/local/lib/libsuricata_rust.a
       - run: test -e /usr/local/bin/libsuricata-config
       - run: test ! -e /usr/local/lib/libsuricata.so
+      - run: make install
+      - run: suricata-update -V
+      - run: suricatasc -h
+      # Check compilation against systemd
+      - run: ldd src/suricata | grep libsystemd &> /dev/null
 
-  fedora-34:
-    name: Fedora 34 (debug, clang, asan, wshadow, rust-strict)
+  fedora-36-non-root:
+    name: Fedora 36 (non-root, debug, clang, asan, wshadow, rust-strict, systemd)
     runs-on: ubuntu-latest
-    container: fedora:34
+    container: fedora:36
+    needs: [prepare-deps, prepare-cbindgen]
+    steps:
+      - run: |
+          dnf -y install \
+                autoconf \
+                automake \
+                cargo \
+                ccache \
+                clang \
+                diffutils \
+                file-devel \
+                gcc \
+                gcc-c++ \
+                git \
+                hiredis-devel \
+                jansson-devel \
+                jq \
+                lua-devel \
+                libasan \
+                libtool \
+                libyaml-devel \
+                libnfnetlink-devel \
+                libnetfilter_queue-devel \
+                libnet-devel \
+                libcap-ng-devel \
+                libevent-devel \
+                libmaxminddb-devel \
+                libpcap-devel \
+                libtool \
+                lz4-devel \
+                make \
+                nss-softokn-devel \
+                pcre2-devel \
+                pkgconfig \
+                python3-yaml \
+                sudo \
+                systemd-devel \
+                which \
+                zlib-devel
+      - run: adduser suricata
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
+        with:
+          name: prep
+          path: prep
+      - run: tar xf prep/libhtp.tar.gz
+      - run: tar xf prep/suricata-update.tar.gz
+      - run: tar xf prep/suricata-verify.tar.gz
+      - run: mkdir /home/suricata/suricata
+      - run: cp -a . /home/suricata/suricata
+      - run: chown -R suricata:suricata /home/suricata
+      - run: sudo -u suricata -s ./.github/workflows/scripts/fedora-non-root.sh cbindgen
+        working-directory: /home/suricata/suricata
+      - run: sudo -u suricata -s ./.github/workflows/scripts/fedora-non-root.sh autogen
+        working-directory: /home/suricata/suricata
+      - run: sudo -u suricata -s ./.github/workflows/scripts/fedora-non-root.sh configure
+        working-directory: /home/suricata/suricata
+      - run: sudo -u suricata -s ./.github/workflows/scripts/fedora-non-root.sh make
+        working-directory: /home/suricata/suricata
+      - run: sudo -u suricata -s ./.github/workflows/scripts/fedora-non-root.sh unit-test
+        working-directory: /home/suricata/suricata
+      - run: sudo -u suricata -s ./.github/workflows/scripts/fedora-non-root.sh verify
+        working-directory: /home/suricata/suricata
+
+  fedora-35:
+    name: Fedora 35 (debug, clang, asan, wshadow, rust-strict)
+    runs-on: ubuntu-latest
+    container: fedora:35
     needs: [prepare-deps, prepare-cbindgen]
     steps:
 
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
+
+      - name: Cache RPMs
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/dnf
+          key: ${{ github.job }}-dnf
+      - run: echo "keepcache=1" >> /etc/dnf/dnf.conf
 
       - run: |
           dnf -y install \
@@ -456,12 +787,13 @@ jobs:
                 sudo \
                 which \
                 zlib-devel
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
       - run: tar xf prep/libhtp.tar.gz
+      - run: tar xf prep/suricata-update.tar.gz
       - name: Setup cbindgen
         run: |
           mkdir -p $HOME/.cargo/bin
@@ -492,94 +824,30 @@ jobs:
       - run: test -e /usr/local/lib/libsuricata_rust.a
       - run: test -e /usr/local/bin/libsuricata-config
       - run: test ! -e /usr/local/lib/libsuricata.so
+      - run: make install
+      - run: suricata-update -V
+      - run: suricatasc -h
 
-  fedora-33:
-    name: Fedora 33 (debug, clang, asan, wshadow, rust-strict)
+  fedora-35-no-jansson:
+    name: Fedora 35 (no jansson)
     runs-on: ubuntu-latest
-    container: fedora:33
+    container: fedora:35
     needs: [prepare-deps, prepare-cbindgen]
     steps:
 
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
 
-      - run: |
-          dnf -y install \
-                autoconf \
-                automake \
-                cargo \
-                ccache \
-                clang \
-                diffutils \
-                file-devel \
-                gcc \
-                gcc-c++ \
-                git \
-                jansson-devel \
-                jq \
-                lua-devel \
-                libasan \
-                libtool \
-                libyaml-devel \
-                libnfnetlink-devel \
-                libnetfilter_queue-devel \
-                libnet-devel \
-                libcap-ng-devel \
-                libevent-devel \
-                libmaxminddb-devel \
-                libpcap-devel \
-                libtool \
-                lz4-devel \
-                make \
-                nss-softokn-devel \
-                pcre2-devel \
-                pkgconfig \
-                python3-yaml \
-                sudo \
-                which \
-                zlib-devel
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - name: Cache RPMs
+        uses: actions/cache@v3
         with:
-          name: prep
-          path: prep
-      - name: Setup cbindgen
-        run: |
-          mkdir -p $HOME/.cargo/bin
-          cp prep/cbindgen $HOME/.cargo/bin
-          chmod 755 $HOME/.cargo/bin/cbindgen
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - run: tar xf prep/libhtp.tar.gz
-      - run: ./autogen.sh
-      - run: CC="clang" CFLAGS="$DEFAULT_CFLAGS -Wshadow -fsanitize=address -fno-omit-frame-pointer" ./configure --enable-debug --enable-unittests --disable-shared --enable-rust-strict
-        env:
-          LDFLAGS: "-fsanitize=address"
-          ac_cv_func_realloc_0_nonnull: "yes"
-          ac_cv_func_malloc_0_nonnull: "yes"
-      - run: make -j2
-      - run: ASAN_OPTIONS="detect_leaks=0" ./src/suricata -u -l .
-      - name: Extracting suricata-verify
-        run: tar xf prep/suricata-verify.tar.gz
-      - name: Running suricata-verify
-        run: python3 ./suricata-verify/run.py -q
-
-  fedora-34-no-jansson:
-    name: Fedora 34 (no jansson)
-    runs-on: ubuntu-latest
-    container: fedora:34
-    needs: [prepare-deps, prepare-cbindgen]
-    steps:
-
-      # Cache Rust stuff.
-      - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
-        with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: /var/cache/dnf
+          key: ${{ github.job }}-dnf
+      - run: echo "keepcache=1" >> /etc/dnf/dnf.conf
 
       - run: |
           dnf -y install \
@@ -614,8 +882,8 @@ jobs:
                 sudo \
                 which \
                 zlib-devel
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -635,12 +903,17 @@ jobs:
             exit 0
           fi
 
-  ubuntu-20-04-cov-sv:
-    name: Ubuntu 20.04 (suricata verify coverage)
+  ubuntu-22-04-cov-ut:
+    name: Ubuntu 22.04 (unittests coverage)
     runs-on: ubuntu-latest
-    container: ubuntu:20.04
+    container: ubuntu:22.04
     needs: [prepare-deps, prepare-cbindgen]
     steps:
+      - name: Cache ~/.cargo
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
       - name: Install dependencies
         run: |
           apt update
@@ -649,86 +922,8 @@ jobs:
                 build-essential \
                 autoconf \
                 automake \
-                gcc-9 \
-                git \
-                jq \
-                libtool \
-                libpcap-dev \
-                libnet1-dev \
-                libyaml-0-2 \
-                libyaml-dev \
-                libcap-ng-dev \
-                libcap-ng0 \
-                libmagic-dev \
-                libnet1-dev \
-                libnetfilter-queue-dev \
-                libnetfilter-queue1 \
-                libnfnetlink-dev \
-                libnfnetlink0 \
-                libnuma-dev \
-                libhiredis-dev \
-                liblua5.1-dev \
-                libjansson-dev \
-                libevent-dev \
-                libevent-pthreads-2.1-7 \
-                libjansson-dev \
-                libpython2.7 \
-                make \
-                parallel \
-                python3-yaml \
-                rustc \
-                software-properties-common \
-                zlib1g \
-                zlib1g-dev \
-                exuberant-ctags \
+                clang-14 \
                 curl \
-                dpdk-dev
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
-        with:
-          name: prep
-          path: prep
-      - run: tar xf prep/libhtp.tar.gz
-      - name: Setup cbindgen
-        run: |
-          mkdir -p $HOME/.cargo/bin
-          cp prep/cbindgen $HOME/.cargo/bin
-          chmod 755 $HOME/.cargo/bin/cbindgen
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - run: ./autogen.sh
-      - run: CFLAGS="${DEFAULT_CFLAGS} -fprofile-arcs -ftest-coverage -O0 -ggdb" ./configure
-      - run: make -j2
-      - name: Extracting suricata-verify
-        run: tar xf prep/suricata-verify.tar.gz
-      - name: Running suricata-verify
-        run: python3 ./suricata-verify/run.py -q
-      - name: Gcov
-        run: |
-          cd src
-          gcov-9 -p *.[ch]
-          cd ../libhtp/htp
-          gcov-9 -p *.[ch]
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@f32b3a3741e1053eb607407145bc9619351dc93b
-        with:
-          fail_ci_if_error: false
-          flags: suricata-verify
-
-  ubuntu-20-04-cov-ut:
-    name: Ubuntu 20.04 (unittests coverage)
-    runs-on: ubuntu-latest
-    container: ubuntu:20.04
-    needs: [prepare-deps, prepare-cbindgen]
-    steps:
-      - name: Install dependencies
-        run: |
-          apt update
-          apt -y install \
-                libpcre2-dev \
-                build-essential \
-                autoconf \
-                automake \
-                gcc-9 \
                 git \
                 jq \
                 libtool \
@@ -745,24 +940,28 @@ jobs:
                 libnfnetlink0 \
                 libnuma-dev \
                 libhiredis-dev \
+                libhyperscan-dev \
                 liblua5.1-dev \
                 libjansson-dev \
                 libevent-dev \
                 libevent-pthreads-2.1-7 \
                 libjansson-dev \
                 libpython2.7 \
+                llvm-14-dev \
                 make \
                 parallel \
                 python3-yaml \
-                rustc \
                 software-properties-common \
                 zlib1g \
                 zlib1g-dev \
                 exuberant-ctags \
                 curl \
                 dpdk-dev
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      # packaged Rust version is too old for coverage, so get from rustup
+      - name: Install Rust
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.63.0 -y
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -774,27 +973,64 @@ jobs:
           chmod 755 $HOME/.cargo/bin/cbindgen
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - run: ./autogen.sh
-      - run: CFLAGS="${DEFAULT_CFLAGS} -fprofile-arcs -ftest-coverage -O0 -ggdb" ./configure --enable-unittests
+      - run: ./configure --disable-shared --enable-unittests
+        env:
+          CC: "clang-14"
+          CXX: "clang++-14"
+          RUSTFLAGS: "-C instrument-coverage"
+          CFLAGS: "-fprofile-instr-generate -fcoverage-mapping -O0"
+          CXXFLAGS: "-fprofile-instr-generate -fcoverage-mapping -O0"
       - run: make -j2
+        env:
+          CC: "clang-14"
+          CXX: "clang++-14"
+          RUSTFLAGS: "-C instrument-coverage"
+          CFLAGS: "-fprofile-instr-generate -fcoverage-mapping -O0"
+          CXXFLAGS: "-fprofile-instr-generate -fcoverage-mapping -O0"
       - run: ./src/suricata -u -l /tmp/
-      - name: Gcov
-        run: |
-          cd src
-          gcov-9 -p *.[ch]
-          cd ../libhtp/htp
-          gcov-9 -p *.[ch]
+        env:
+          LLVM_PROFILE_FILE: "/tmp/ut.profraw"
+      - run: llvm-profdata-14 merge -o ut.profdata /tmp/ut.profraw
+      - run: llvm-cov-14 show ./src/suricata -instr-profile=ut.profdata --show-instantiations --ignore-filename-regex="^/root/.*" > coverage.txt
+      - run: |
+          cd rust
+          cargo test --no-run
+          cd ..
+        env:
+          RUSTFLAGS: "-C instrument-coverage"
+          CARGO_INCREMENTAL: 0
+      - run: |
+          $(find rust/target/debug/deps/ -type f -regex 'rust/target/debug/deps/suricata\-[a-z0-9]+$')
+        env:
+          LLVM_PROFILE_FILE: "/tmp/ct.profraw"
+          CARGO_INCREMENTAL: 0
+      - run: llvm-profdata-14 merge -o ct.profdata /tmp/ct.profraw
+      - run: llvm-cov-14 show $(find rust/target/debug/deps/ -type f -regex 'rust/target/debug/deps/suricata\-[a-z0-9]+$') -instr-profile=ct.profdata --show-instantiations --ignore-filename-regex="^/root/.*" >> coverage.txt
+      - run: |
+          cd libhtp
+          make test
+          cd ..
+        env:
+          LLVM_PROFILE_FILE: "/tmp/htp-test.profraw"
+      - run: llvm-profdata-14 merge -o htp-test.profdata /tmp/htp-test.profraw
+      - run: llvm-cov-14 show libhtp/test/test_all -instr-profile=htp-test.profdata --show-instantiations --ignore-filename-regex="^/root/.*" >> coverage.txt
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@f32b3a3741e1053eb607407145bc9619351dc93b
+        uses: codecov/codecov-action@d9f34f8cd5cb3b3eb79b3e4b5dae3a16df499a70
         with:
           fail_ci_if_error: false
           flags: unittests
 
-  ubuntu-20-04-cov-fuzz:
-    name: Ubuntu 20.04 (fuzz corpus coverage)
+  ubuntu-22-04-cov-fuzz:
+    name: Ubuntu 22.04 (fuzz corpus coverage)
     runs-on: ubuntu-latest
-    container: ubuntu:20.04
+    container: ubuntu:22.04
     needs: [prepare-deps, prepare-cbindgen]
     steps:
+      - name: Cache ~/.cargo
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
       - name: Install dependencies
         run: |
           apt update
@@ -803,8 +1039,8 @@ jobs:
                 build-essential \
                 autoconf \
                 automake \
-                llvm-10 \
-                clang-10 \
+                llvm-14-dev \
+                clang-14 \
                 git \
                 jq \
                 libc++-dev \
@@ -832,7 +1068,6 @@ jobs:
                 make \
                 parallel \
                 python3-yaml \
-                rustc \
                 software-properties-common \
                 zlib1g \
                 zlib1g-dev \
@@ -842,8 +1077,11 @@ jobs:
                 time \
                 wget \
                 dpdk-dev
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      # packaged Rust version is too old for coverage, so get from rustup
+      - name: Install Rust
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.63.0 -y
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -855,15 +1093,26 @@ jobs:
           chmod 755 $HOME/.cargo/bin/cbindgen
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - run: ./autogen.sh
-      - run: LIB_FUZZING_ENGINE="fail_to_onefile_driver" CC=clang-10 CXX=clang++-10 CFLAGS="-fprofile-arcs -ftest-coverage -g -fno-strict-aliasing -fsanitize=address -fno-omit-frame-pointer -fPIC -Wno-unused-parameter -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1" CXXFLAGS="-fprofile-arcs -ftest-coverage -g -fno-strict-aliasing -fsanitize=address -fno-omit-frame-pointer -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1 -stdlib=libc++" ac_cv_func_malloc_0_nonnull=yes ac_cv_func_realloc_0_nonnull=yes ./configure --with-gnu-ld --enable-fuzztargets --disable-shared --enable-gccprotect
+      - run: ./configure --with-gnu-ld --enable-fuzztargets --disable-shared --enable-gccprotect
+        env:
+          LIB_FUZZING_ENGINE: "fail_to_onefile_driver"
+          CC: "clang-14"
+          CXX: "clang++-14"
+          RUSTFLAGS: "-C instrument-coverage"
+          CFLAGS: "-fprofile-instr-generate -fcoverage-mapping -O0 -g -fno-strict-aliasing -fsanitize=address -fno-omit-frame-pointer -fPIC -Wno-unused-parameter -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1 -Wimplicit-int-float-conversion -Wimplicit-int-conversion -Werror"
+          CXXFLAGS: "-fprofile-instr-generate -fcoverage-mapping -O0 -g -fno-strict-aliasing -fsanitize=address -fno-omit-frame-pointer -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1 -stdlib=libc++ -Wimplicit-int-float-conversion -Wimplicit-int-conversion"
+          ac_cv_func_malloc_0_nonnull: "yes"
+          ac_cv_func_realloc_0_nonnull: "yes"
       - run: make -j2
+        env:
+          CC: "clang-14"
+          CXX: "clang++-14"
+          RUSTFLAGS: "-C instrument-coverage"
       - run: ./qa/run-ossfuzz-corpus.sh
-      - name: Gcov
-        run: |
-          cd src
-          llvm-cov-10 gcov -p *.c
+      - run: llvm-profdata-14 merge -o default.profdata $(find /tmp/ -name '*.profraw')
+      - run: llvm-cov-14 show ./src/suricata -instr-profile=default.profdata --show-instantiations --ignore-filename-regex="^/root/.*" > coverage.txt
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@f32b3a3741e1053eb607407145bc9619351dc93b
+        uses: codecov/codecov-action@d9f34f8cd5cb3b3eb79b3e4b5dae3a16df499a70
         with:
           fail_ci_if_error: false
           flags: fuzzcorpus
@@ -874,6 +1123,11 @@ jobs:
     container: ubuntu:20.04
     needs: [prepare-deps, prepare-cbindgen]
     steps:
+      - name: Cache ~/.cargo
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
 
       - name: Install dependencies
         run: |
@@ -882,6 +1136,7 @@ jobs:
                 build-essential \
                 autoconf \
                 automake \
+                cargo \
                 git \
                 jq \
                 libtool \
@@ -913,12 +1168,13 @@ jobs:
                 zlib1g-dev \
                 exuberant-ctags \
                 dpdk-dev
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
       - run: tar xf prep/libhtp.tar.gz
+      - run: tar xf prep/suricata-update.tar.gz
       - name: Setup cbindgen
         run: |
           mkdir -p $HOME/.cargo/bin
@@ -947,6 +1203,8 @@ jobs:
       - run: test -e /usr/local/bin/libsuricata-config
       - run: test -e /usr/local/lib/libsuricata.so
       - run: test -e /usr/local/lib/$(readlink /usr/local/lib/libsuricata.so)
+      - run: suricata-update -V
+      - run: suricatasc -h
 
   ubuntu-20-04-too-old-rust:
     name: Ubuntu 20.04 (unsupported rust)
@@ -954,6 +1212,11 @@ jobs:
     container: ubuntu:20.04
     needs: alma-8
     steps:
+      - name: Cache ~/.cargo
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
       - name: Install dependencies
         run: |
           apt update
@@ -989,7 +1252,7 @@ jobs:
       - run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.33.0 -y
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+        uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: dist
       - run: tar zxvf suricata-*.tar.gz --strip-components=1
@@ -1001,19 +1264,19 @@ jobs:
             exit 0
           fi
 
-  ubuntu-18-04-debug-validation:
-    name: Ubuntu 18.04 (Debug Validation)
-    runs-on: ubuntu-18.04
-    container: ubuntu:18.04
+  ubuntu-22-04-debug-validation:
+    name: Ubuntu 22.04 (Debug Validation)
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
     needs: [prepare-deps, prepare-cbindgen]
     steps:
 
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
 
       - name: Install dependencies
         run: |
@@ -1023,6 +1286,7 @@ jobs:
                 build-essential \
                 autoconf \
                 automake \
+                cargo \
                 git \
                 jq \
                 libtool \
@@ -1040,7 +1304,7 @@ jobs:
                 libhiredis-dev \
                 libjansson-dev \
                 libevent-dev \
-                libevent-pthreads-2.1.6 \
+                libevent-pthreads-2.1-7 \
                 libjansson-dev \
                 libpython2.7 \
                 make \
@@ -1051,8 +1315,8 @@ jobs:
                 zlib1g \
                 zlib1g-dev \
                 exuberant-ctags
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -1072,19 +1336,19 @@ jobs:
       - name: Running suricata-verify
         run: python3 ./suricata-verify/run.py -q
 
-  ubuntu-18-04:
-    name: Ubuntu 18.04 (Cocci)
-    runs-on: ubuntu-18.04
-    container: ubuntu:18.04
+  ubuntu-22-04:
+    name: Ubuntu 22.04 (Cocci)
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
     needs: [prepare-deps, prepare-cbindgen]
     steps:
 
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
 
       - name: Install dependencies
         run: |
@@ -1094,6 +1358,7 @@ jobs:
                 build-essential \
                 autoconf \
                 automake \
+                cargo \
                 git \
                 jq \
                 libtool \
@@ -1111,13 +1376,14 @@ jobs:
                 libhiredis-dev \
                 libjansson-dev \
                 libevent-dev \
-                libevent-pthreads-2.1.6 \
+                libevent-pthreads-2.1-7 \
                 libjansson-dev \
                 libpython2.7 \
+                libpython3.10 \
                 make \
-                mscgen \
                 parallel \
                 python3-yaml \
+                python-is-python3 \
                 rustc \
                 software-properties-common \
                 zlib1g \
@@ -1135,8 +1401,8 @@ jobs:
       - name: Install Coccinelle
         run: |
           apt -y install coccinelle
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -1157,7 +1423,6 @@ jobs:
       - run: make dist
       - name: Checking that documentation was built
         run: |
-          test -e doc/devguide/devguide.pdf
           test -e doc/userguide/userguide.pdf
           test -e doc/userguide/suricata.1
       - name: Extracting suricata-verify
@@ -1166,19 +1431,19 @@ jobs:
         run: python3 ./suricata-verify/run.py -q
 
   # test build with afl and fuzztargets
-  ubuntu-18-04-fuzz:
-    name: Ubuntu 18.04 (Fuzz)
-    runs-on: ubuntu-18.04
-    container: ubuntu:18.04
+  ubuntu-22-04-fuzz:
+    name: Ubuntu 22.04 (Fuzz)
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
     needs: [prepare-deps, prepare-cbindgen]
     steps:
 
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
 
       - name: Install dependencies
         run: |
@@ -1190,6 +1455,7 @@ jobs:
                 build-essential \
                 autoconf \
                 automake \
+                cargo \
                 git \
                 libtool \
                 libpcap-dev \
@@ -1213,8 +1479,8 @@ jobs:
                 zlib1g \
                 zlib1g-dev
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -1237,10 +1503,10 @@ jobs:
     steps:
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
 
       - run: |
           apt update
@@ -1280,8 +1546,8 @@ jobs:
       - name: Install Rust
         run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $RUST_VERSION_KNOWN -y
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -1299,6 +1565,9 @@ jobs:
       - run: tar xf prep/suricata-verify.tar.gz
       - name: Running suricata-verify
         run: python3 ./suricata-verify/run.py -q
+      - run: make install
+      - run: suricata-update -V
+      - run: suricatasc -h
 
   debian-9:
     name: Debian 9
@@ -1306,6 +1575,11 @@ jobs:
     container: debian:9
     needs: [prepare-deps, prepare-cbindgen]
     steps:
+      - name: Cache ~/.cargo
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
       - run: |
           apt update
           apt -y install \
@@ -1328,6 +1602,7 @@ jobs:
                 libjansson-dev \
                 libgeoip-dev \
                 liblua5.1-dev \
+                libluajit-5.1-dev \
                 libhiredis-dev \
                 libevent-dev \
                 libtool \
@@ -1339,10 +1614,10 @@ jobs:
                 zlib1g \
                 zlib1g-dev
       - name: Install Rust
-        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $RUST_VERSION_KNOWN -y
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $RUST_VERSION_MIN -y
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -1354,25 +1629,27 @@ jobs:
           cp prep/cbindgen $HOME/.cargo/bin
           chmod 755 $HOME/.cargo/bin/cbindgen
       - run: ./autogen.sh
-      - run: CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-unittests
+      - run: CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-unittests --enable-luajit
       - run: make -j2
       - run: make check
       - run: tar xf prep/suricata-verify.tar.gz
       - name: Running suricata-verify
         run: python3 ./suricata-verify/run.py -q
+      - run: make install
+      - run: suricata-update -V
+      - run: suricatasc -h
 
   macos-latest:
     name: MacOS Latest
-    # use 10.15 for now. Build fails on macos-11 (aka macos-latest)
-    runs-on: macos-10.15
+    runs-on: macos-latest
     needs: [prepare-deps]
     steps:
       # Cache Rust stuff.
       - name: Cache cargo registry
-        uses: actions/cache@937d24475381cd9c75ae6db12cb4e79714b926ed
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
         with:
-          path: ~/.cargo/registry
-          key: cargo-registry
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
       - run: |
          brew install \
           autoconf \
@@ -1391,23 +1668,28 @@ jobs:
           rust \
           xz
       - name: Install cbindgen
-        run: cargo install --force --debug --version 0.14.1 cbindgen
+        run: cargo install --debug --version 0.24.3 cbindgen
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - run: pip3 install PyYAML
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+      - uses: actions/checkout@v3.1.0
       - name: Downloading prep archive
-        uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+        uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
       - run: tar xvf prep/libhtp.tar.gz
+      - run: tar xvf prep/suricata-update.tar.gz
       - run: ./autogen.sh
       - run: CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-unittests
       - run: make -j2
-      - run: make check
+      # somehow it gets included by some C++ stdlib header (case unsensitive)
+      - run: rm libhtp/VERSION && make check
       - run: tar xf prep/suricata-verify.tar.gz
       - name: Running suricata-verify
         run: python3 ./suricata-verify/run.py -q
+      - run: make install
+      - run: suricata-update -V
+      - run: suricatasc -h
 
   windows-msys2-mingw64-npcap:
     name: Windows MSYS2 MINGW64 (NPcap)
@@ -1417,7 +1699,12 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
+      - name: Cache ~/.cargo
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
+      - uses: actions/checkout@v3.1.0
       - uses: msys2/setup-msys2@fa138fa56e2558760b9f2205135313c7345c5f3f
         with:
           msystem: MINGW64
@@ -1426,9 +1713,9 @@ jobs:
       # hack: install our own cbindgen system wide as we can't get the
       # preinstalled one to be picked up by configure
       - name: cbindgen
-        run: cargo install --root /usr --force --debug --version 0.14.1 cbindgen
-      - uses: actions/checkout@ec3a7ce113134d7a93b817d10a8272cb61118579
-      - uses: actions/download-artifact@f023be2c48cc18debc3bacd34cb396e0295e2869
+        run: cargo install --root /usr --force --debug --version 0.24.3 cbindgen
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -1457,6 +1744,8 @@ jobs:
           ./src/suricata -u -l /tmp/
           # need cwd in path due to npcap dlls (see above)
           PATH="$PATH:$(pwd)" python3 ./suricata-verify/run.py -q
+      - run: make install
+      - run: suricata-update -V
 
   windows-msys2-mingw64-libpcap:
     name: Windows MSYS2 MINGW64 (libpcap)
@@ -1466,7 +1755,12 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v2
+      - name: Cache ~/.cargo
+        uses: actions/cache@9b0c1fce7a93df8e3bb8926b0d6e9d89e92f20a7
+        with:
+          path: ~/.cargo
+          key: ${{ github.job }}-cargo
+      - uses: actions/checkout@v3.1.0
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -1475,9 +1769,9 @@ jobs:
       # hack: install our own cbindgen system wide as we can't get the
       # preinstalled one to be picked up by configure
       - name: cbindgen
-        run: cargo install --root /usr --force --debug --version 0.14.1 cbindgen
-      - uses: actions/checkout@v2
-      - uses: actions/download-artifact@v2
+        run: cargo install --root /usr --force --debug --version 0.24.3 cbindgen
+      - uses: actions/checkout@v3.1.0
+      - uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7
         with:
           name: prep
           path: prep
@@ -1494,3 +1788,5 @@ jobs:
           ./src/suricata --build-info
           ./src/suricata -u -l /tmp/
           python3 ./suricata-verify/run.py -q
+      - run: make install
+      - run: suricata-update -V

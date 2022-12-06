@@ -34,6 +34,8 @@
 #include "detect-parse.h"
 #include "detect-engine.h"
 #include "detect-engine-state.h"
+#include "detect-engine-uint.h"
+#include "detect-engine-build.h"
 
 #include "detect-filesize.h"
 #include "util-debug.h"
@@ -41,12 +43,6 @@
 #include "flow-util.h"
 #include "stream-tcp.h"
 
-/**
- * \brief Regex for parsing our filesize
- */
-#define PARSE_REGEX  "^(?:\\s*)(<|>)?(?:\\s*)([0-9]{1,23}[a-zA-Z]{0,2})(?:\\s*)(?:(<>)(?:\\s*)([0-9]{1,23}[a-zA-Z]{0,2}))?\\s*$"
-
-static DetectParseRegex parse_regex;
 
 /*prototypes*/
 static int DetectFilesizeMatch (DetectEngineThreadCtx *det_ctx, Flow *f,
@@ -73,7 +69,6 @@ void DetectFilesizeRegister(void)
 #ifdef UNITTESTS
     sigmatch_table[DETECT_FILESIZE].RegisterTests = DetectFilesizeRegisterTests;
 #endif
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     g_file_match_list_id = DetectBufferTypeRegister("files");
 }
@@ -87,7 +82,7 @@ void DetectFilesizeRegister(void)
  * \param flags direction flags
  * \param file file being inspected
  * \param s signature being inspected
- * \param m sigmatch that we will cast into DetectFilesizeData
+ * \param m sigmatch that we will cast into DetectU64Data
  *
  * \retval 0 no match
  * \retval 1 match
@@ -97,171 +92,21 @@ static int DetectFilesizeMatch (DetectEngineThreadCtx *det_ctx, Flow *f,
 {
     SCEnter();
 
-    DetectFilesizeData *fsd = (DetectFilesizeData *)m;
+    DetectU64Data *fsd = (DetectU64Data *)m;
     int ret = 0;
     uint64_t file_size = FileTrackedSize(file);
 
-    SCLogDebug("file size %"PRIu64", check %"PRIu64, file_size, fsd->size1);
+    SCLogDebug("file size %" PRIu64 ", check %" PRIu64, file_size, fsd->arg1);
 
     if (file->state == FILE_STATE_CLOSED) {
-        switch (fsd->mode) {
-            case DETECT_FILESIZE_EQ:
-                if (file_size == fsd->size1)
-                    ret = 1;
-                break;
-            case DETECT_FILESIZE_LT:
-                if (file_size < fsd->size1)
-                    ret = 1;
-                break;
-            case DETECT_FILESIZE_GT:
-                if (file_size > fsd->size1)
-                    ret = 1;
-                break;
-            case DETECT_FILESIZE_RA:
-                if (file_size > fsd->size1 && file_size < fsd->size2)
-                    ret = 1;
-                break;
-        }
-    /* truncated, error: only see if what we have meets the GT condition */
+        return DetectU64Match(file_size, fsd);
+        /* truncated, error: only see if what we have meets the GT condition */
     } else if (file->state > FILE_STATE_CLOSED) {
-        if (fsd->mode == DETECT_FILESIZE_GT && file_size > fsd->size1)
-            ret = 1;
+        if (fsd->mode == DETECT_UINT_GT || fsd->mode == DETECT_UINT_GTE) {
+            ret = DetectU64Match(file_size, fsd);
+        }
     }
     SCReturnInt(ret);
-}
-
-/**
- * \brief parse filesize options
- *
- * \param str pointer to the user provided filesize
- *
- * \retval fsd pointer to DetectFilesizeData on success
- * \retval NULL on failure
- */
-static DetectFilesizeData *DetectFilesizeParse (const char *str)
-{
-
-    DetectFilesizeData *fsd = NULL;
-    char *arg1 = NULL;
-    char *arg2 = NULL;
-    char *arg3 = NULL;
-    char *arg4 = NULL;
-    int ret = 0, res = 0;
-    size_t pcre2_len;
-
-    ret = DetectParsePcreExec(&parse_regex, str, 0, 0);
-    if (ret < 3 || ret > 5) {
-        SCLogError(SC_ERR_PCRE_PARSE, "filesize option pcre parse error: \"%s\"", str);
-        goto error;
-    }
-    const char *str_ptr;
-
-    SCLogDebug("ret %d", ret);
-
-    res = SC_Pcre2SubstringGet(parse_regex.match, 1, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-    if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-        goto error;
-    }
-    arg1 = (char *) str_ptr;
-    SCLogDebug("Arg1 \"%s\"", arg1);
-
-    res = pcre2_substring_get_bynumber(parse_regex.match, 2, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-    if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-        goto error;
-    }
-    arg2 = (char *) str_ptr;
-    SCLogDebug("Arg2 \"%s\"", arg2);
-
-    if (ret > 3) {
-        res = pcre2_substring_get_bynumber(
-                parse_regex.match, 3, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-        if (res < 0) {
-            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-            goto error;
-        }
-        arg3 = (char *) str_ptr;
-        SCLogDebug("Arg3 \"%s\"", arg3);
-
-        if (ret > 4) {
-            res = pcre2_substring_get_bynumber(
-                    parse_regex.match, 4, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-            if (res < 0) {
-                SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-                goto error;
-            }
-            arg4 = (char *) str_ptr;
-            SCLogDebug("Arg4 \"%s\"", arg4);
-        }
-    }
-
-    fsd = SCMalloc(sizeof (DetectFilesizeData));
-    if (unlikely(fsd == NULL))
-    goto error;
-    memset(fsd, 0, sizeof(DetectFilesizeData));
-
-    if (arg1 != NULL && arg1[0] == '<')
-        fsd->mode = DETECT_FILESIZE_LT;
-    else if (arg1 != NULL && arg1[0] == '>')
-        fsd->mode = DETECT_FILESIZE_GT;
-    else
-        fsd->mode = DETECT_FILESIZE_EQ;
-
-    if (arg3 != NULL && strcmp("<>", arg3) == 0) {
-        if (arg1 != NULL && strlen(arg1) != 0) {
-            SCLogError(SC_ERR_INVALID_ARGUMENT,"Range specified but mode also set");
-            goto error;
-        }
-        fsd->mode = DETECT_FILESIZE_RA;
-    }
-
-    /** set the first value */
-    if (ParseSizeStringU64(arg2, &fsd->size1) < 0) {
-        SCLogError(SC_ERR_SIZE_PARSE, "Error parsing filesize value - %s", arg2);
-        goto error;
-    }
-
-    /** set the second value if specified */
-    if (arg4 != NULL && strlen(arg4) > 0) {
-        if (fsd->mode != DETECT_FILESIZE_RA) {
-            SCLogError(SC_ERR_INVALID_ARGUMENT,"Multiple filesize values specified"
-                                           " but mode is not range");
-            goto error;
-        }
-
-        if (ParseSizeStringU64(arg4, &fsd->size2) < 0) {
-            SCLogError(SC_ERR_SIZE_PARSE, "Error parsing filesize value - %s", arg4);
-            goto error;
-        }
-
-        if (fsd->size2 <= fsd->size1){
-            SCLogError(SC_ERR_INVALID_ARGUMENT,"filesize2:%"PRIu64" <= filesize:"
-                        "%"PRIu64"",fsd->size2,fsd->size1);
-            goto error;
-        }
-    }
-
-    pcre2_substring_free((PCRE2_UCHAR *)arg1);
-    pcre2_substring_free((PCRE2_UCHAR *)arg2);
-    if (arg3 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg3);
-    if (arg4 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg4);
-    return fsd;
-
-error:
-    if (fsd)
-        SCFree(fsd);
-    if (arg1 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg1);
-    if (arg2 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg2);
-    if (arg3 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg3);
-    if (arg4 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg4);
-    return NULL;
 }
 
 /**
@@ -277,10 +122,10 @@ error:
 static int DetectFilesizeSetup (DetectEngineCtx *de_ctx, Signature *s, const char *str)
 {
     SCEnter();
-    DetectFilesizeData *fsd = NULL;
+    DetectU64Data *fsd = NULL;
     SigMatch *sm = NULL;
 
-    fsd = DetectFilesizeParse(str);
+    fsd = DetectU64Parse(str);
     if (fsd == NULL)
         goto error;
 
@@ -305,104 +150,82 @@ error:
 }
 
 /**
- * \brief this function will free memory associated with DetectFilesizeData
+ * \brief this function will free memory associated with DetectU64Data
  *
- * \param ptr pointer to DetectFilesizeData
+ * \param ptr pointer to DetectU64Data
  */
 static void DetectFilesizeFree(DetectEngineCtx *de_ctx, void *ptr)
 {
-    DetectFilesizeData *fsd = (DetectFilesizeData *)ptr;
-    SCFree(fsd);
+    rs_detect_u64_free(ptr);
 }
 
 #ifdef UNITTESTS
 #include "stream.h"
 #include "stream-tcp-private.h"
 #include "stream-tcp-reassemble.h"
-#include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "app-layer-parser.h"
 
 /** \test   Test the Filesize keyword setup */
 static int DetectFilesizeParseTest01(void)
 {
-    int ret = 0;
-    DetectFilesizeData *fsd = NULL;
+    DetectU64Data *fsd = DetectU64Parse("10");
+    FAIL_IF_NULL(fsd);
+    FAIL_IF_NOT(fsd->arg1 == 10);
+    FAIL_IF_NOT(fsd->mode == DETECT_UINT_EQ);
+    DetectFilesizeFree(NULL, fsd);
 
-    fsd = DetectFilesizeParse("10");
-    if (fsd != NULL) {
-        if (fsd->size1 == 10 && fsd->mode == DETECT_FILESIZE_EQ)
-            ret = 1;
-
-        DetectFilesizeFree(NULL, fsd);
-    }
-    return ret;
+    PASS;
 }
 
 /** \test   Test the Filesize keyword setup */
 static int DetectFilesizeParseTest02(void)
 {
-    int ret = 0;
-    DetectFilesizeData *fsd = NULL;
+    DetectU64Data *fsd = DetectU64Parse(" < 10  ");
+    FAIL_IF_NULL(fsd);
+    FAIL_IF_NOT(fsd->arg1 == 10);
+    FAIL_IF_NOT(fsd->mode == DETECT_UINT_LT);
+    DetectFilesizeFree(NULL, fsd);
 
-    fsd = DetectFilesizeParse(" < 10  ");
-    if (fsd != NULL) {
-        if (fsd->size1 == 10 && fsd->mode == DETECT_FILESIZE_LT)
-            ret = 1;
-
-        DetectFilesizeFree(NULL, fsd);
-    }
-    return ret;
+    PASS;
 }
 
 /** \test   Test the Filesize keyword setup */
 static int DetectFilesizeParseTest03(void)
 {
-    int ret = 0;
-    DetectFilesizeData *fsd = NULL;
+    DetectU64Data *fsd = DetectU64Parse(" > 10 ");
+    FAIL_IF_NULL(fsd);
+    FAIL_IF_NOT(fsd->arg1 == 10);
+    FAIL_IF_NOT(fsd->mode == DETECT_UINT_GT);
+    DetectFilesizeFree(NULL, fsd);
 
-    fsd = DetectFilesizeParse(" > 10 ");
-    if (fsd != NULL) {
-        if (fsd->size1 == 10 && fsd->mode == DETECT_FILESIZE_GT)
-            ret = 1;
-
-        DetectFilesizeFree(NULL, fsd);
-    }
-    return ret;
+    PASS;
 }
 
 /** \test   Test the Filesize keyword setup */
 static int DetectFilesizeParseTest04(void)
 {
-    int ret = 0;
-    DetectFilesizeData *fsd = NULL;
+    DetectU64Data *fsd = DetectU64Parse(" 5 <> 10 ");
+    FAIL_IF_NULL(fsd);
+    FAIL_IF_NOT(fsd->arg1 == 5);
+    FAIL_IF_NOT(fsd->arg2 == 10);
+    FAIL_IF_NOT(fsd->mode == DETECT_UINT_RA);
+    DetectFilesizeFree(NULL, fsd);
 
-    fsd = DetectFilesizeParse(" 5 <> 10 ");
-    if (fsd != NULL) {
-        if (fsd->size1 == 5 && fsd->size2 == 10 &&
-            fsd->mode == DETECT_FILESIZE_RA)
-            ret = 1;
-
-        DetectFilesizeFree(NULL, fsd);
-    }
-    return ret;
+    PASS;
 }
 
 /** \test   Test the Filesize keyword setup */
 static int DetectFilesizeParseTest05(void)
 {
-    int ret = 0;
-    DetectFilesizeData *fsd = NULL;
+    DetectU64Data *fsd = DetectU64Parse("5<>10");
+    FAIL_IF_NULL(fsd);
+    FAIL_IF_NOT(fsd->arg1 == 5);
+    FAIL_IF_NOT(fsd->arg2 == 10);
+    FAIL_IF_NOT(fsd->mode == DETECT_UINT_RA);
+    DetectFilesizeFree(NULL, fsd);
 
-    fsd = DetectFilesizeParse("5<>10");
-    if (fsd != NULL) {
-        if (fsd->size1 == 5 && fsd->size2 == 10 &&
-            fsd->mode == DETECT_FILESIZE_RA)
-            ret = 1;
-
-        DetectFilesizeFree(NULL, fsd);
-    }
-    return ret;
+    PASS;
 }
 
 /**
@@ -411,40 +234,31 @@ static int DetectFilesizeParseTest05(void)
  *
  */
 
-static int DetectFilesizeInitTest(DetectEngineCtx **de_ctx, Signature **sig,
-                                DetectFilesizeData **fsd, const char *str)
+static int DetectFilesizeInitTest(
+        DetectEngineCtx **de_ctx, Signature **sig, DetectU64Data **fsd, const char *str)
 {
     char fullstr[1024];
-    int result = 0;
-
     *de_ctx = NULL;
-    *sig = NULL;
-
-    if (snprintf(fullstr, 1024, "alert http any any -> any any (msg:\"Filesize "
-                                "test\"; filesize:%s; sid:1;)", str) >= 1024) {
-        goto end;
-    }
 
     *de_ctx = DetectEngineCtxInit();
-    if (*de_ctx == NULL) {
-        goto end;
-    }
-
     (*de_ctx)->flags |= DE_QUIET;
+    FAIL_IF_NULL((*de_ctx));
 
-    (*de_ctx)->sig_list = SigInit(*de_ctx, fullstr);
-    if ((*de_ctx)->sig_list == NULL) {
-        goto end;
-    }
+    *sig = NULL;
+
+    FAIL_IF(snprintf(fullstr, 1024,
+                    "alert http any any -> any any (msg:\"Filesize "
+                    "test\"; filesize:%s; sid:1;)",
+                    str) >= 1024);
+
+    Signature *s = DetectEngineAppendSig(*de_ctx, fullstr);
+    FAIL_IF_NULL(s);
 
     *sig = (*de_ctx)->sig_list;
 
-    *fsd = DetectFilesizeParse(str);
+    *fsd = DetectU64Parse(str);
 
-    result = 1;
-
-end:
-    return result;
+    PASS;
 }
 
 /**
@@ -457,33 +271,23 @@ end:
 static int DetectFilesizeSetpTest01(void)
 {
 
-    DetectFilesizeData *fsd = NULL;
+    DetectU64Data *fsd = NULL;
     uint8_t res = 0;
     Signature *sig = NULL;
     DetectEngineCtx *de_ctx = NULL;
 
-    res = DetectFilesizeInitTest(&de_ctx, &sig, &fsd, "1 <> 2 ");
-    if (res == 0) {
-        goto end;
-    }
+    res = DetectFilesizeInitTest(&de_ctx, &sig, &fsd, "1 <> 3 ");
+    FAIL_IF(res == 0);
 
-    if(fsd == NULL)
-        goto cleanup;
+    FAIL_IF_NULL(fsd);
+    FAIL_IF_NOT(fsd->arg1 == 1);
+    FAIL_IF_NOT(fsd->arg2 == 3);
+    FAIL_IF_NOT(fsd->mode == DETECT_UINT_RA);
 
-    if (fsd != NULL) {
-        if (fsd->size1 == 1 && fsd->size2 == 2 &&
-                fsd->mode == DETECT_FILESIZE_RA)
-            res = 1;
-    }
-
-cleanup:
-    if (fsd)
-        SCFree(fsd);
-    SigGroupCleanup(de_ctx);
-    SigCleanSignatures(de_ctx);
+    DetectFilesizeFree(NULL, fsd);
     DetectEngineCtxFree(de_ctx);
-end:
-    return res;
+
+    PASS;
 }
 
 /**

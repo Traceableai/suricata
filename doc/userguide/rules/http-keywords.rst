@@ -4,7 +4,7 @@ HTTP Keywords
 
 Using the HTTP specific sticky buffers provides a way to efficiently
 inspect specific fields of the HTTP protocol. After specifying a
-sticky buffer in a rule it should be followed by one or more doc:`payload-keywords`.
+sticky buffer in a rule it should be followed by one or more :doc:`payload-keywords`.
 
 Many of the sticky buffers have legacy variants in the older "content modifier"
 notation. See :ref:`rules-modifiers` for more information. As a
@@ -43,6 +43,7 @@ http.accept_lang               http_accept_lang (*)     Request
 http.accept_enc                http_accept_enc (*)      Request
 http.referer                   http_referer (*)         Request
 http.connection                http_connection (*)      Request
+file.data                      file_data (*)            Both
 http.content_type              http_content_type (*)    Both
 http.content_len               http_content_len (*)     Both
 http.start                     http_start (*)           Both
@@ -66,7 +67,7 @@ http.cookie                    http_cookie              Both
 http.response_body             http_server_body         Response
 http.server                    N/A                      Response
 http.location                  N/A                      Response
-file.data                      file_data (*)            Response
+file.data                      file_data (*)            Both
 http.content_type              http_content_type (*)    Both
 http.content_len               http_content_len (*)     Both
 http.start                     http_start (*)           Both
@@ -270,14 +271,11 @@ Example::
 
     alert http any any -> any any (flow:to_server; http.protocol; content:"HTTP/1.0"; sid:1;)
 
-``http.protocol`` replaces the previous keyword name: ```http_protocol``. You may continue
-+to use the previous name, but it's recommended that rules be converted to use
-+the new name.
+``http.protocol`` replaces the previous keyword name: ```http_protocol``. You may continue to use the previous name, but it's recommended that rules be converted to use the new name.
 
 Example::
 
     alert http any any -> any any (flow:to_server; http.protocol; content:"HTTP/1.0"; sid:1;)
-
 
 http.request_line
 -----------------
@@ -619,12 +617,12 @@ Notes
 ~~~~~
 
 -  Using ``http.response_body`` is similar to having content matches
-   that come after ``file_data`` except that it doesn't permanently
+   that come after ``file.data`` except that it doesn't permanently
    (unless reset) set the detection pointer to the beginning of the
    server response body. i.e. it is not a sticky buffer.
 
 -  ``http.response_body`` will match on gzip decoded data just like
-   ``file_data`` does.
+   ``file.data`` does.
 
 -  Since ``http.response_body`` matches on a server response, it
    can't be used with the ``to_server`` or ``from_client`` flow
@@ -632,7 +630,7 @@ Notes
 
 -  Corresponding PCRE modifier: ``Q``
 
--  further notes at the ``file_data`` section below.
+-  further notes at the ``file.data`` section below.
 
 ``http.response_body`` replaces the previous keyword name: ```http_server_body``. You may continue
 +to use the previous name, but it's recommended that rules be converted to use
@@ -726,19 +724,21 @@ Notes
 -  Corresponding PCRE modifier (``http_host``): ``W``
 -  Corresponding PCRE modifier (``http_raw_host``): ``Z``
 
-file_data
+file.data
 ---------
 
-With ``file_data``, the HTTP response body is inspected, just like
-with ``http.response_body``. The ``file_data`` keyword is a sticky buffer.
+With ``file.data``, the HTTP response body is inspected, just like
+with ``http.response_body``. The ``file.data`` keyword is a sticky buffer.
+``file.data`` also works for HTTP request body and can be used in other
+protocols than HTTP1.
 
 Example::
 
-  alert http any any -> any any (file_data; content:"abc"; content:"xyz";)
+  alert http any any -> any any (file.data; content:"abc"; content:"xyz";)
 
 .. image:: http-keywords/file_data.png
 
-The ``file_data`` keyword affects all following content matches, until
+The ``file.data`` keyword affects all following content matches, until
 the ``pkt_data`` keyword is encountered or it reaches the end of the
 rule. This makes it a useful shortcut for applying many content
 matches to the HTTP response body, eliminating the need to modify each
@@ -753,7 +753,7 @@ in your :ref:`libhtp configuration section
 setting.
 
 If the HTTP body is a flash file compressed with 'deflate' or 'lzma',
-it can be decompressed and ``file_data`` can match on the decompress data.
+it can be decompressed and ``file.data`` can match on the decompress data.
 Flash decompression must be enabled under ``libhtp`` configuration:
 
 ::
@@ -775,7 +775,10 @@ Flash decompression must be enabled under ``libhtp`` configuration:
 Notes
 ~~~~~
 
--  If a HTTP body is using gzip or deflate, ``file_data`` will match
+-  file.data is the preferred notation, however, file_data is still
+   recognized by the engine and works as well.
+
+-  If a HTTP body is using gzip or deflate, ``file.data`` will match
    on the decompressed data.
 
 -  Negated matching is affected by the chunked inspection. E.g.
@@ -786,4 +789,4 @@ Notes
    than 1k, 'content:!"<html"; depth:1024;' can only match if the
    pattern '<html' is absent from the first inspected chunk.
 
--  ``file_data`` can also be used with SMTP
+-  ``file.data`` can also be used with SMTP

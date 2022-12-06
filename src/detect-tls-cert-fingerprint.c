@@ -25,7 +25,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -42,7 +41,6 @@
 #include "flow-var.h"
 
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-spm.h"
 #include "util-print.h"
 
@@ -75,7 +73,8 @@ void DetectTlsFingerprintRegister(void)
 {
     sigmatch_table[DETECT_AL_TLS_CERT_FINGERPRINT].name = "tls.cert_fingerprint";
     sigmatch_table[DETECT_AL_TLS_CERT_FINGERPRINT].alias = "tls_cert_fingerprint";
-    sigmatch_table[DETECT_AL_TLS_CERT_FINGERPRINT].desc = "match on the TLS cert fingerprint buffer";
+    sigmatch_table[DETECT_AL_TLS_CERT_FINGERPRINT].desc =
+            "sticky byffer to match the TLS cert fingerprint buffer";
     sigmatch_table[DETECT_AL_TLS_CERT_FINGERPRINT].url = "/rules/tls-keywords.html#tls-cert-fingerprint";
     sigmatch_table[DETECT_AL_TLS_CERT_FINGERPRINT].Setup = DetectTlsFingerprintSetup;
 #ifdef UNITTESTS
@@ -211,7 +210,7 @@ static void DetectTlsFingerprintSetupCallback(const DetectEngineCtx *de_ctx,
         for (u = 0; u < cd->content_len; u++)
         {
             if (isupper(cd->content[u])) {
-                cd->content[u] = tolower(cd->content[u]);
+                cd->content[u] = u8_tolower(cd->content[u]);
                 changed = true;
             }
         }
@@ -226,5 +225,6 @@ static void DetectTlsFingerprintSetupCallback(const DetectEngineCtx *de_ctx,
 }
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 #include "tests/detect-tls-cert-fingerprint.c"
 #endif

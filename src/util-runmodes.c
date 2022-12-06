@@ -206,9 +206,9 @@ int RunModeSetLiveCaptureAutoFp(ConfigIfaceParserFunc ConfigParser,
         }
     }
 
-    for (int thread = 0; thread < thread_max; thread++) {
-        snprintf(tname, sizeof(tname), "%s#%02u", thread_name_workers, thread+1);
-        snprintf(qname, sizeof(qname), "pickup%u", thread+1);
+    for (uint16_t thread = 0; thread < thread_max; thread++) {
+        snprintf(tname, sizeof(tname), "%s#%02u", thread_name_workers, (uint16_t)(thread + 1));
+        snprintf(qname, sizeof(qname), "pickup%u", (uint16_t)(thread + 1));
 
         SCLogDebug("tname %s, qname %s", tname, qname);
 
@@ -342,9 +342,6 @@ int RunModeSetLiveCaptureWorkers(ConfigIfaceParserFunc ConfigParser,
         if ((nlive <= 1) && (live_dev != NULL)) {
             aconf = ConfigParser(live_dev);
             live_dev_c = live_dev;
-            if (unlikely(live_dev_c == NULL)) {
-                FatalError(SC_ERR_MEM_ALLOC, "Can't allocate interface name");
-            }
         } else {
             live_dev_c = LiveGetDeviceName(ldev);
             aconf = ConfigParser(live_dev_c);
@@ -452,9 +449,9 @@ int RunModeSetIPSAutoFp(ConfigIPSParserFunc ConfigParser,
 
     }
     for (int thread = 0; thread < thread_max; thread++) {
-        snprintf(tname, sizeof(tname), "%s#%02u", thread_name_workers, thread+1);
+        snprintf(tname, sizeof(tname), "%s#%02u", thread_name_workers, (uint16_t)(thread + 1));
         char qname[TM_QUEUE_NAME_MAX];
-        snprintf(qname, sizeof(qname), "pickup%u", thread+1);
+        snprintf(qname, sizeof(qname), "pickup%u", (uint16_t)(thread + 1));
 
         SCLogDebug("tname %s, qname %s", tname, qname);
 

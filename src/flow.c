@@ -54,6 +54,7 @@
 #include "util-unittest-helper.h"
 #include "util-byte.h"
 #include "util-misc.h"
+#include "util-macset.h"
 
 #include "util-debug.h"
 #include "util-privs.h"
@@ -186,6 +187,23 @@ int FlowHasAlerts(const Flow *f)
     return 0;
 }
 
+bool FlowHasGaps(const Flow *f, uint8_t way)
+{
+    if (f->proto == IPPROTO_TCP) {
+        TcpSession *ssn = (TcpSession *)f->protoctx;
+        if (ssn != NULL) {
+            if (way == STREAM_TOCLIENT) {
+                if (ssn->server.flags & STREAMTCP_STREAM_FLAG_HAS_GAP)
+                    return 1;
+            } else {
+                if (ssn->client.flags & STREAMTCP_STREAM_FLAG_HAS_GAP)
+                    return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /** \brief Set flag to indicate to change proto for the flow
  *
  * \param f flow
@@ -235,9 +253,11 @@ static inline void FlowSwapFlags(Flow *f)
 static inline void FlowSwapFileFlags(Flow *f)
 {
     SWAP_FLAGS(f->file_flags, FLOWFILE_NO_MAGIC_TS, FLOWFILE_NO_MAGIC_TC);
-    SWAP_FLAGS(f->file_flags, FLOWFILE_NO_MAGIC_TS, FLOWFILE_NO_MAGIC_TC);
-    SWAP_FLAGS(f->file_flags, FLOWFILE_NO_MAGIC_TS, FLOWFILE_NO_MAGIC_TC);
-    SWAP_FLAGS(f->file_flags, FLOWFILE_NO_MAGIC_TS, FLOWFILE_NO_MAGIC_TC);
+    SWAP_FLAGS(f->file_flags, FLOWFILE_NO_STORE_TS, FLOWFILE_NO_STORE_TC);
+    SWAP_FLAGS(f->file_flags, FLOWFILE_NO_MD5_TS, FLOWFILE_NO_MD5_TC);
+    SWAP_FLAGS(f->file_flags, FLOWFILE_NO_SHA1_TS, FLOWFILE_NO_SHA1_TC);
+    SWAP_FLAGS(f->file_flags, FLOWFILE_NO_SHA256_TS, FLOWFILE_NO_SHA256_TC);
+    SWAP_FLAGS(f->file_flags, FLOWFILE_NO_SIZE_TS, FLOWFILE_NO_SIZE_TC);
 }
 
 static inline void TcpStreamFlowSwap(Flow *f)
@@ -596,6 +616,9 @@ void FlowInitConfig(bool quiet)
             flow_config.prealloc = configval;
         }
     }
+
+    flow_config.memcap_policy = ExceptionPolicyParse("flow.memcap-policy", false);
+
     SCLogDebug("Flow config from suricata.yaml: memcap: %"PRIu64", hash-size: "
                "%"PRIu32", prealloc: %"PRIu32, SC_ATOMIC_GET(flow_config.memcap),
                flow_config.hash_size, flow_config.prealloc);
@@ -1159,7 +1182,8 @@ void FlowUpdateState(Flow *f, const enum FlowState s)
 {
     if (s != f->flow_state) {
         /* set the state */
-        f->flow_state = s;
+        // Explicit cast from the enum type to the compact version
+        f->flow_state = (FlowStateType)s;
 
         /* update timeout policy and value */
         const uint32_t timeout_policy = FlowGetTimeoutPolicy(f);

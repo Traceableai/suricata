@@ -45,6 +45,7 @@
 #include "detect-parse.h"
 #include "detect-engine-state.h"
 #include "detect-engine-dcepayload.h"
+#include "detect-engine-build.h"
 
 #include "detect-flowvar.h"
 
@@ -56,7 +57,6 @@
 #include "app-layer-parser.h"
 #include "app-layer-protos.h"
 #include "app-layer-htp.h"
-#include "app-layer-dcerpc-common.h"
 
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
@@ -124,7 +124,8 @@ static void DeStateSignatureAppend(DetectEngineState *state,
 {
     SCEnter();
 
-    DetectEngineStateDirection *dir_state = &state->dir_state[direction & STREAM_TOSERVER ? 0 : 1];
+    DetectEngineStateDirection *dir_state =
+            &state->dir_state[(direction & STREAM_TOSERVER) ? 0 : 1];
 
 #ifdef DEBUG_VALIDATION
     BUG_ON(DeStateSearchState(state, direction, s->num));
@@ -191,27 +192,31 @@ void DetectEngineStateFree(DetectEngineState *state)
 
 static void StoreFileNoMatchCnt(DetectEngineState *de_state, uint16_t file_no_match, uint8_t direction)
 {
-    de_state->dir_state[direction & STREAM_TOSERVER ? 0 : 1].filestore_cnt += file_no_match;
+    de_state->dir_state[(direction & STREAM_TOSERVER) ? 0 : 1].filestore_cnt += file_no_match;
 
     return;
 }
 
 static bool StoreFilestoreSigsCantMatch(const SigGroupHead *sgh, const DetectEngineState *de_state, uint8_t direction)
 {
-    if (de_state->dir_state[direction & STREAM_TOSERVER ? 0 : 1].filestore_cnt == sgh->filestore_cnt)
+    if (de_state->dir_state[(direction & STREAM_TOSERVER) ? 0 : 1].filestore_cnt ==
+            sgh->filestore_cnt)
         return true;
     else
         return false;
 }
 
-static void StoreStateTxHandleFiles(const SigGroupHead *sgh, Flow *f,
-                                    DetectEngineState *destate, const uint8_t flow_flags,
-                                    const uint64_t tx_id, const uint16_t file_no_match)
+static void StoreStateTxHandleFiles(const SigGroupHead *sgh, Flow *f, DetectEngineState *destate,
+        const uint8_t flow_flags, void *tx, const uint64_t tx_id, const uint16_t file_no_match)
 {
     SCLogDebug("tx %"PRIu64", file_no_match %u", tx_id, file_no_match);
     StoreFileNoMatchCnt(destate, file_no_match, flow_flags);
     if (StoreFilestoreSigsCantMatch(sgh, destate, flow_flags)) {
-        FileDisableStoringForTransaction(f, flow_flags & (STREAM_TOCLIENT | STREAM_TOSERVER), tx_id);
+        SCLogDebug("filestore sigs can't match");
+        FileDisableStoringForTransaction(
+                f, flow_flags & (STREAM_TOCLIENT | STREAM_TOSERVER), tx, tx_id);
+    } else {
+        SCLogDebug("filestore sigs can still match");
     }
 }
 
@@ -235,28 +240,9 @@ void DetectRunStoreStateTx(
         SCLogDebug("destate created for %"PRIu64, tx_id);
     }
     DeStateSignatureAppend(tx_data->de_state, s, inspect_flags, flow_flags);
-    StoreStateTxHandleFiles(sgh, f, tx_data->de_state, flow_flags, tx_id, file_no_match);
+    StoreStateTxHandleFiles(sgh, f, tx_data->de_state, flow_flags, tx, tx_id, file_no_match);
 
     SCLogDebug("Stored for TX %"PRIu64, tx_id);
-}
-
-/** \brief update flow's inspection id's
- *
- *  \param f unlocked flow
- *  \param flags direction and disruption flags
- *  \param tag_txs_as_inspected if true all 'complete' txs will be marked
- *                              'inspected'
- *
- *  \note it is possible that f->alstate, f->alparser are NULL */
-void DeStateUpdateInspectTransactionId(Flow *f, const uint8_t flags,
-        const bool tag_txs_as_inspected)
-{
-    if (f->alparser && f->alstate) {
-        AppLayerParserSetTransactionInspectId(f, f->alparser,
-                                              f->alstate, flags,
-                                              tag_txs_as_inspected);
-    }
-    return;
 }
 
 static inline void ResetTxState(DetectEngineState *s)
@@ -309,6 +295,7 @@ void DetectEngineStateResetTxs(Flow *f)
 /*********Unittests*********/
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 
 static int DeStateTest01(void)
 {
@@ -725,12 +712,15 @@ static int DeStateSigTest03(void)
 
     HtpState *http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
     FAIL_IF(!(PacketAlertCheck(p, 1)));
 
-    FileContainer *files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    FileContainer *files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
 
     File *file = files->head;
@@ -804,9 +794,12 @@ static int DeStateSigTest04(void)
 
     HtpState *http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    FileContainer *files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    FileContainer *files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     File *file = files->head;
     FAIL_IF_NULL(file);
@@ -873,19 +866,26 @@ static int DeStateSigTest05(void)
     int r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1,
             STREAM_TOSERVER | STREAM_START | STREAM_EOF, httpbuf1, httplen1);
     FAIL_IF_NOT(r == 0);
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-    FAIL_IF(PacketAlertCheck(p, 1));
-
     HtpState *http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    FileContainer *files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    FileContainer *files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     File *file = files->head;
     FAIL_IF_NULL(file);
+    FAIL_IF(http_state->state_data.file_flags & FLOWFILE_NO_STORE_TS);
 
-    FAIL_IF(!(file->flags & FILE_NOSTORE));
+    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
+    FAIL_IF(PacketAlertCheck(p, 1));
+
+    /* detect will have set FLOWFILE_NO_STORE_TS, but it won't have had
+     * an opportunity to be applied to the file itself yet */
+    FAIL_IF_NOT(http_state->state_data.file_flags & FLOWFILE_NO_STORE_TS);
+    FAIL_IF(file->flags & FILE_NOSTORE);
 
     AppLayerParserThreadCtxFree(alp_tctx);
     UTHFreeFlow(f);
@@ -953,13 +953,19 @@ static int DeStateSigTest06(void)
 
     HtpState *http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    FileContainer *files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    FileContainer *files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     File *file = files->head;
     FAIL_IF_NULL(file);
-    FAIL_IF(!(file->flags & FILE_NOSTORE));
+    /* detect will have set FLOWFILE_NO_STORE_TS, but it won't have had
+     * an opportunity to be applied to the file itself yet */
+    FAIL_IF_NOT(tx_ud->tx_data.file_flags & FLOWFILE_NO_STORE_TS);
+    FAIL_IF(file->flags & FILE_NOSTORE);
 
     AppLayerParserThreadCtxFree(alp_tctx);
     UTHFreeFlow(f);
@@ -1034,9 +1040,12 @@ static int DeStateSigTest07(void)
 
     HtpState *http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    FileContainer *files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    FileContainer *files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     File *file = files->head;
     FAIL_IF_NULL(file);
@@ -1129,9 +1138,12 @@ static int DeStateSigTest08(void)
 
     HtpState *http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    FileContainer *files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    FileContainer *files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     File *file = files->head;
     FAIL_IF_NULL(file);
@@ -1152,9 +1164,12 @@ static int DeStateSigTest08(void)
 
     http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     file = files->head;
     FAIL_IF_NULL(file);
@@ -1249,9 +1264,12 @@ static int DeStateSigTest09(void)
 
     HtpState *http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    FileContainer *files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    FileContainer *files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     File *file = files->head;
     FAIL_IF_NULL(file);
@@ -1272,9 +1290,12 @@ static int DeStateSigTest09(void)
 
     http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     file = files->head;
     FAIL_IF_NULL(file);
@@ -1367,9 +1388,12 @@ static int DeStateSigTest10(void)
 
     HtpState *http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    FileContainer *files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    FileContainer *files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     File *file = files->head;
     FAIL_IF_NULL(file);
@@ -1390,9 +1414,12 @@ static int DeStateSigTest10(void)
 
     http_state = f->alstate;
     FAIL_IF_NULL(http_state);
-    FAIL_IF_NULL(http_state->files_ts);
+    tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
+    FAIL_IF_NULL(tx);
+    tx_ud = htp_tx_get_user_data(tx);
+    FAIL_IF_NULL(tx_ud);
 
-    files = AppLayerParserGetFiles(p->flow, STREAM_TOSERVER);
+    files = AppLayerParserGetTxFiles(p->flow, tx, STREAM_TOSERVER);
     FAIL_IF_NULL(files);
     file = files->head;
     FAIL_IF_NULL(file);

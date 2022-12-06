@@ -17,55 +17,40 @@
 
 #![cfg_attr(feature = "strict", deny(warnings))]
 
+// Allow these patterns as its a style we like.
+#![allow(clippy::needless_return)]
+#![allow(clippy::let_and_return)]
+
 // Clippy lints we want to suppress due to style, or simply too noisy
 // and not a priority right now.
+#![allow(clippy::len_without_is_empty)]
 #![allow(clippy::missing_safety_doc)]
-#![allow(clippy::needless_return)]
-#![allow(clippy::redundant_field_names)]
-#![allow(clippy::len_zero)]
 #![allow(clippy::too_many_arguments)]
-#![allow(clippy::assign_op_pattern)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::vec_init_then_push)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::needless_bool)]
-#![allow(clippy::char_lit_as_u8)]
 
 // To be fixed, but remove the noise for now.
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::collapsible_else_if)]
-#![allow(clippy::unnecessary_cast)]
-#![allow(clippy::redundant_static_lifetimes)]
 #![allow(clippy::bool_comparison)]
+#![allow(clippy::collapsible_else_if)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::derive_partial_eq_without_eq)]
+#![allow(clippy::explicit_counter_loop)]
+#![allow(clippy::extra_unused_lifetimes)]
+#![allow(clippy::field_reassign_with_default)]
 #![allow(clippy::for_loops_over_fallibles)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::single_match)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::new_without_default)]
-#![allow(clippy::needless_lifetimes)]
+#![allow(clippy::manual_find)]
+#![allow(clippy::match_like_matches_macro)]
 #![allow(clippy::match_ref_pats)]
 #![allow(clippy::module_inception)]
+#![allow(clippy::needless_lifetimes)]
 #![allow(clippy::needless_range_loop)]
-#![allow(clippy::enum_variant_names)]
-#![allow(clippy::if_same_then_else)]
-#![allow(clippy::match_like_matches_macro)]
-#![allow(clippy::extra_unused_lifetimes)]
-#![allow(clippy::mixed_case_hex_literals)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::nonminimal_bool)]
 #![allow(clippy::never_loop)]
-#![allow(clippy::large_enum_variant)]
-#![allow(clippy::for_loops_over_fallibles)]
-#![allow(clippy::explicit_counter_loop)]
-#![allow(clippy::branches_sharing_code)]
-#![allow(clippy::while_let_loop)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::nonminimal_bool)]
 #![allow(clippy::redundant_pattern_matching)]
-#![allow(clippy::field_reassign_with_default)]
-
-#[macro_use]
-extern crate nom;
+#![allow(clippy::result_unit_err)]
+#![allow(clippy::single_match)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::while_let_loop)]
 
 #[macro_use]
 extern crate bitflags;
@@ -101,6 +86,7 @@ pub mod frames;
 pub mod filecontainer;
 pub mod filetracker;
 pub mod kerberos;
+pub mod detect;
 
 #[cfg(feature = "lua")]
 pub mod lua;
@@ -132,6 +118,8 @@ pub mod mime;
 pub mod ssh;
 pub mod http2;
 pub mod quic;
+pub mod bittorrent_dht;
 pub mod plugin;
+pub mod lzma;
 pub mod util;
 pub mod ffi;

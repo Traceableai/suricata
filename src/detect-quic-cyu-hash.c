@@ -1,4 +1,4 @@
-/* Copyright (C) 2021 Open Information Security Foundation
+/* Copyright (C) 2021-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -23,12 +23,16 @@
 #include "suricata-common.h"
 #include "detect.h"
 #include "detect-parse.h"
+#include "detect-content.h"
+
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-prefilter.h"
 #include "detect-engine-content-inspection.h"
 #include "detect-quic-cyu-hash.h"
+#include "detect-engine-build.h"
 #include "rust.h"
+#include "util-profiling.h"
 
 #ifdef UNITTESTS
 static void DetectQuicCyuHashRegisterTests(void);
@@ -80,7 +84,7 @@ static InspectionBuffer *QuicHashGetData(DetectEngineThreadCtx *det_ctx,
     SCReturnPtr(buffer, "InspectionBuffer");
 }
 
-static int DetectEngineInspectQuicHash(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+static uint8_t DetectEngineInspectQuicHash(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const DetectEngineAppInspectionEngine *engine, const Signature *s, Flow *f, uint8_t flags,
         void *alstate, void *txv, uint64_t tx_id)
 {
@@ -131,7 +135,7 @@ typedef struct PrefilterMpmQuicHash {
  *  \param pectx inspection context
  */
 static void PrefilterTxQuicHash(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
-        Flow *f, void *txv, const uint64_t idx, const uint8_t flags)
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -152,6 +156,7 @@ static void PrefilterTxQuicHash(DetectEngineThreadCtx *det_ctx, const void *pect
         if (buffer->inspect_len >= mpm_ctx->minlen) {
             (void)mpm_table[mpm_ctx->mpm_type].Search(
                     mpm_ctx, &det_ctx->mtcu, &det_ctx->pmq, buffer->inspect, buffer->inspect_len);
+            PREFILTER_PROFILING_ADD_BYTES(det_ctx, buffer->inspect_len);
         }
 
         local_id++;
@@ -244,6 +249,7 @@ void DetectQuicCyuHashRegister(void)
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "flow-util.h"
+#include "detect-engine-alert.h"
 
 /**
  * \test DetectQuicCyuHashTest01 is a test for a valid quic packet, matching
@@ -385,15 +391,12 @@ static int DetectQuicCyuHashTest01(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&tv, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(&f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, &f, ALPROTO_QUIC, STREAM_TOSERVER, buf, sizeof(buf));
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(&f);
         FAIL;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     quic_state = f.alstate;
     FAIL_IF_NULL(quic_state);

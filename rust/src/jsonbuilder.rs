@@ -23,7 +23,7 @@ use std::str::Utf8Error;
 
 const INIT_SIZE: usize = 4096;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum JsonError {
     InvalidState,
     Utf8Error(Utf8Error),
@@ -106,7 +106,7 @@ impl JsonBuilder {
         let mut buf = String::with_capacity(capacity);
         buf.push('{');
         Self {
-            buf: buf,
+            buf,
             state: vec![State::None, State::ObjectFirst],
             init_type: Type::Object,
         }
@@ -121,7 +121,7 @@ impl JsonBuilder {
         let mut buf = String::with_capacity(capacity);
         buf.push('[');
         Self {
-            buf: buf,
+            buf,
             state: vec![State::None, State::ArrayFirst],
             init_type: Type::Array,
         }
@@ -328,6 +328,36 @@ impl JsonBuilder {
         }
     }
 
+    /// Add a byte array to a JSON array encoded as hex.
+    pub fn append_hex(&mut self, val: &[u8]) -> Result<&mut Self, JsonError> {
+        match self.current_state() {
+            State::ArrayFirst => {
+                self.buf.push('"');
+                for i in 0..val.len() {
+                    self.buf.push(HEX[(val[i] >>  4) as usize] as char);
+                    self.buf.push(HEX[(val[i] & 0xf) as usize] as char);
+                }
+                self.buf.push('"');
+                self.set_state(State::ArrayNth);
+                Ok(self)
+            }
+            State::ArrayNth => {
+                self.buf.push(',');
+                self.buf.push('"');
+                for i in 0..val.len() {
+                    self.buf.push(HEX[(val[i] >>  4) as usize] as char);
+                    self.buf.push(HEX[(val[i] & 0xf) as usize] as char);
+                }
+                self.buf.push('"');
+                Ok(self)
+            }
+            _ => {
+                debug_validate_fail!("invalid state");
+                Err(JsonError::InvalidState)
+            }
+        }
+    }
+
     /// Add an unsigned integer to an array.
     pub fn append_uint(&mut self, val: u64) -> Result<&mut Self, JsonError> {
         match self.current_state() {
@@ -469,6 +499,32 @@ impl JsonBuilder {
         self.buf.push_str(key);
         self.buf.push_str("\":\"");
         base64::encode_config_buf(val, base64::STANDARD, &mut self.buf);
+        self.buf.push('"');
+
+        Ok(self)
+    }
+
+    /// Set a key and a string field as the hex encoded string of the value.
+    pub fn set_hex(&mut self, key: &str, val: &[u8]) -> Result<&mut Self, JsonError> {
+        match self.current_state() {
+            State::ObjectNth => {
+                self.buf.push(',');
+            }
+            State::ObjectFirst => {
+                self.set_state(State::ObjectNth);
+            }
+            _ => {
+                debug_validate_fail!("invalid state");
+                return Err(JsonError::InvalidState);
+            }
+        }
+        self.buf.push('"');
+        self.buf.push_str(key);
+        self.buf.push_str("\":\"");
+        for i in 0..val.len() {
+            self.buf.push(HEX[(val[i] >>  4) as usize] as char);
+            self.buf.push(HEX[(val[i] & 0xf) as usize] as char);
+        }
         self.buf.push('"');
 
         Ok(self)
@@ -706,12 +762,26 @@ pub unsafe extern "C" fn jb_set_string_from_bytes(
 pub unsafe extern "C" fn jb_set_base64(
     js: &mut JsonBuilder, key: *const c_char, bytes: *const u8, len: u32,
 ) -> bool {
-    if bytes == std::ptr::null() || len == 0 {
+    if bytes.is_null() || len == 0 {
         return false;
     }
     if let Ok(key) = CStr::from_ptr(key).to_str() {
         let val = std::slice::from_raw_parts(bytes, len as usize);
         return js.set_base64(key, val).is_ok();
+    }
+    return false;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn jb_set_hex(
+    js: &mut JsonBuilder, key: *const c_char, bytes: *const u8, len: u32,
+) -> bool {
+    if bytes.is_null() || len == 0 {
+        return false;
+    }
+    if let Ok(key) = CStr::from_ptr(key).to_str() {
+        let val = std::slice::from_raw_parts(bytes, len as usize);
+        return js.set_hex(key, val).is_ok();
     }
     return false;
 }
@@ -765,7 +835,7 @@ pub unsafe extern "C" fn jb_append_string_from_bytes(
 pub unsafe extern "C" fn jb_append_base64(
     js: &mut JsonBuilder, bytes: *const u8, len: u32,
 ) -> bool {
-    if bytes == std::ptr::null() || len == 0 {
+    if bytes.is_null() || len == 0 {
         return false;
     }
     let val = std::slice::from_raw_parts(bytes, len as usize);
@@ -1160,6 +1230,6 @@ static ESCAPED: [u8; 256] = [
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // F
 ];
 
-static HEX: [u8; 16] = [
+pub static HEX: [u8; 16] = [
     b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'a', b'b', b'c', b'd', b'e', b'f',
 ];

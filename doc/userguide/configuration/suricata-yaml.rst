@@ -145,6 +145,74 @@ is: pass, drop, reject, alert.
 This means a pass rule is considered before a drop rule, a drop rule
 before a reject rule and so on.
 
+Packet alert queue settings
+---------------------------
+
+It is possible to configure the size of the alerts queue that is used to append alerts triggered by each packet.
+
+This will influence how many alerts would be perceived to have matched against a given packet.
+The default value is 15. If an invalid setting or no value is provided, the engine will fall
+back to the default.
+
+::
+
+    #Define maximum number of possible alerts that can be triggered for the same
+    # packet. Default is 15
+    packet-alert-max: 15
+
+We recommend that you use the default value for this setting unless you are seeing a high number of discarded alerts
+(``alert_queue_overflow``) - see the `Discarded and Suppressed Alerts Stats`_ section for more details.
+
+Impact on engine behavior
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Internally, the Suricata engine represents each packet with a data structure that has its own alert queue. The max size
+of the queue is defined by ``packet-alert-max``. The same rule can be triggered by the same packet multiple times. As
+long as there is still space in the alert queue, those are appended.
+
+Rules that have the ``noalert`` keyword will be checked - in case their signatures have actions that must be applied to the Packet or Flow, then suppressed. They have no effect in the final alert queue.
+
+Rules are queued by priority: higher priority rules may be kept instead of lower priority ones that may have been triggered earlier, if Suricata reaches ``packet-alert-max`` for a given packet (a.k.a. packet alert queue overflow).
+
+Packet alert queue overflow
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once the alert queue reaches its max size, we are potentially at packet alert queue overflow, so new alerts will only be appended in case their rules have a higher priority id (this is the internal id attributed by the engine, not the signature id).
+
+This may happen in two different situations:
+
+- a higher priority rule is triggered after a lower priority one: the lower priority rule is replaced in the queue;
+- a lower priority rule is triggered: the rule is just discarded.
+
+.. note ::
+
+    This behavior does not mean that triggered ``drop`` rules would have their action ignored, in IPS mode.
+
+.. _alerts stats:
+
+Discarded and Suppressed Alerts Stats
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Both scenarios previously described will be logged as *detect.alert_queue_overflow* in the stats logs (in stats.log and eve-log's stats event).
+
+When ``noalert`` rules match, they appear in the stats logs as *detect.alerts_suppressed*.
+
+::
+
+    Date: 4/6/2022 -- 17:18:08 (uptime: 0d, 00h 00m 00s)
+    ------------------------------------------------------------------------------------
+    Counter                                       | TM Name                   | Value
+    ------------------------------------------------------------------------------------
+    detect.alert                                  | Total                     | 3
+    detect.alert_queue_overflow                   | Total                     | 4
+    detect.alerts_suppressed                      | Total                     | 1
+
+
+In this example from a stats.log, we read that 8 alerts were generated: 3 were kept in the packet queue while 4
+were discarded due to packets having reached max size for the alert queue, and 1 was suppressed due to coming from a ``noalert``
+rule.
+
+
 Splitting configuration in multiple files
 -----------------------------------------
 
@@ -196,7 +264,7 @@ different YAML file.
   ...
 
 If the same section, say outputs is later redefined after the include
-statement it will overwrite the included file. Therefor any include
+statement it will overwrite the included file. Therefore any include
 statement at the end of the document will overwrite the already
 configured sections.
 
@@ -320,6 +388,27 @@ For more advanced configuration options, see :ref:`Eve JSON Output <eve-json-out
 
 The format is documented in :ref:`Eve JSON Format <eve-json-format>`.
 
+TLS parameters and certificates logging (tls.log)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The TLS handshake parameters can be logged in a line based log as well.
+By default, the logfile is `tls.log` in the suricata log directory.
+See :ref:`Custom TLS logging <output-custom-tls-logging>` for details
+about the configuration and customization of the log format.
+
+Furthermore there is an output module to store TLS certificate files to
+disk. This is similar to :ref:`File-store (File Extraction)
+<suricata-yaml-file-store>`, but for TLS certificates.
+
+Example:
+
+::
+
+  # output module to store certificates chain to disk
+  - tls-store:
+      enabled: yes
+      #certs-log-dir: certs # directory to store the certificates files
+
 A line based log of HTTP requests (http.log)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -403,6 +492,16 @@ By default all packets are logged except:
 - TCP streams beyond stream.reassembly.depth
 - encrypted streams after the key exchange
 
+It is possible to do conditional pcap logging by using the `conditional`
+option in the pcap-log section. By default the variable is set to `all`
+so all packets are logged. If the variable is set to `alerts` then only
+the flow with alerts will be logged. If the variable is set to `tag`
+then only packets tagged by signatures using the `tag` keyword will
+be logged to the pcap file. Please note that if `alerts` or `tag` is
+used, then in the case of TCP session, Suricata will use available
+information from the streaming engine to log data that have triggered
+the alert.
+
 ::
 
   - pcap-log:
@@ -414,6 +513,7 @@ By default all packets are logged except:
 
       mode: sguil # "normal" (default) or sguil.
       sguil_base_dir: /nsm_data/
+      conditional: alerts
 
 Verbose Alerts Log (alert-debug.log)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -653,6 +753,8 @@ After 'mpm-algo', you can enter one of the following algorithms: ac, hs and ac-k
 
 On `x86_64` hs (Hyperscan) should be used for best performance.
 
+.. _suricata-yaml-threading:
+
 Threading
 ---------
 
@@ -825,19 +927,26 @@ a component of Suricata; the defragment-engine. After a fragmented
 packet is reconstructed by the defragment-engine, the engine sends on
 the reassembled packet to rest of Suricata.
 
-There are three options within defrag: max-frags, prealloc and
-timeout. At the moment Suricata receives a fragment of a packet, it
+At the moment Suricata receives a fragment of a packet, it
 keeps in memory that other fragments of that packet will appear soon
 to complete the packet. However, there is a possibility that one of
 the fragments does not appear. To prevent Suricata for keeping waiting
 for that packet (thereby using memory) there is a timespan after which
-Suricata discards the fragments. This occurs by default after 60
+Suricata discards the fragments (timeout). This occurs by default after 60
 seconds.
+
+In IPS mode, it is possible to tell the engine what to do in case the memcap for
+the defrag engine is reached: "drop-flow", "pass-flow", "bypass", "drop-packet",
+"pass-packet", or "ignore" (default behavior).
 
 ::
 
   defrag:
-    max-frags: 65535
+    memcap: 32mb
+    memcap-policy: ignore  # in IPS mode, what to do if memcap is reached
+    hash-size: 65536
+    trackers: 65535        # number of defragmented flows to follow
+    max-frags: 65535       # number of fragments do keep (higher than trackers)
     prealloc: yes
     timeout: 60
 
@@ -886,13 +995,18 @@ and prealloc for the following:
 
 The flow-engine has a management thread that operates independent from
 the packet processing. This thread is called the flow-manager. This
-thread ensures that wherever possible and within the memcap. there
+thread ensures that wherever possible and within the memcap. There
 will be 10000 flows prepared.
+
+In IPS mode, a memcap-policy exception policy can be set, telling Suricata
+what to do in case memcap is hit: 'drop-flow', 'pass-flow', 'bypass', 'reject',
+'ignore'.
 
 ::
 
   flow:
     memcap: 33554432              #The maximum amount of bytes the flow-engine will make use of.
+    memcap-policy: bypass         #How to handle the flow if memcap is reached (IPS mode)
     hash_size: 65536              #Flows will be organized in a hash-table. With this option you can set the
                                   #size of the hash-table.
     Prealloc: 10000               #The amount of flows Suricata has to keep ready in memory.
@@ -985,7 +1099,10 @@ reassembly-engine reconstructs the flow as it used to be, so it will
 be recognized by Suricata.
 
 The stream-engine has two memcaps that can be set. One for the
-stream-tracking-engine and one for the reassembly-engine.
+stream-tracking-engine and one for the reassembly-engine. For both cases,
+in IPS mode, an exception policy (memcap-policy) can be set, telling Suricata
+what to do in case memcap is hit: 'drop-flow', 'pass-flow', 'bypass', 'reject',
+'ignore'.
 
 The stream-tracking-engine keeps information of the flow in
 memory. Information about the state, TCP-sequence-numbers and the TCP
@@ -1001,6 +1118,7 @@ option can be set off by entering 'no' instead of 'yes'.
 
   stream:
     memcap: 64mb                # Max memory usage (in bytes) for TCP session tracking
+    memcap-policy: ignore       # In IPS mode, call memcap policy if memcap is reached
     checksum_validation: yes    # Validate packet checksum, reject packets with invalid checksums.
 
 To mitigate Suricata from being overloaded by fast session creation,
@@ -1014,13 +1132,14 @@ started. This way, Suricata misses the original setup of those
 sessions. This setup always includes a lot of information. If you want
 Suricata to check the stream from that time on, you can do so by
 setting the option 'midstream' to 'true'. The default setting is
-'false'. Normally Suricata is able to see all packets of a
-connection. Some networks make it more complicated though. Some of the
-network-traffic follows a different route than the other part, in
-other words: the traffic goes asynchronous. To make sure Suricata will
-check the one part it does see, instead of getting confused, the
-option 'async-oneside' is brought to life. By default the option is
-set to 'false'.
+'false'. In IPS mode, it is possible to define a 'midstream-policy',
+indicating whether Suricata should drop, pass or bypass a midstream flow.
+Normally Suricata is able to see all packets of a connection. Some networks
+make it more complicated though. Some of the network-traffic follows a
+different route than the other part, in other words: the traffic goes
+asynchronous. To make sure Suricata will check the one part it does see,
+instead of getting confused, the option 'async-oneside' is brought to life. By
+default the option is set to 'false'.
 
 Suricata inspects content in the normal/IDS mode in chunks. In the
 inline/IPS mode it does that on the sliding window way (see example
@@ -1035,6 +1154,7 @@ anomalies in streams. See :ref:`host-os-policy`.
 
     prealloc_sessions: 32768     # 32k sessions prealloc'd
     midstream: false             # do not allow midstream session pickups
+    midstream-policy: drop-flow  # in IPS mode, drop flows that start midstream
     async_oneside: false         # do not enable async stream handling
     inline: no                   # stream inline mode
     drop-invalid: yes            # drop invalid packets
@@ -1071,7 +1191,9 @@ Suricata inspects traffic in a sliding window manner.
 
 The reassembly-engine has to keep data segments in memory in order to
 be able to reconstruct a stream. To avoid resource starvation a memcap
-is used to limit the memory used.
+is used to limit the memory used. In IPS mode, an exception policy
+(memcap-policy) can be set, telling Suricata what to do in case memcap
+is hit: 'drop-flow', 'pass-flow', 'bypass', 'reject', 'ignore'.
 
 Reassembling a stream is an expensive operation. With the option depth
 you can control how far into a stream reassembly is done. By default
@@ -1087,6 +1209,7 @@ adding in a random factor.
 
     reassembly:
       memcap: 256mb             # Memory reserved for stream data reconstruction (in bytes)
+      memcap-policy: ignore     # What to do when a midstream session is seen
       depth: 1mb                # The depth of the reassembling.
       toserver_chunk_size: 2560 # inspect raw stream in chunks of at least this size
       toclient_chunk_size: 2560 # inspect raw stream in chunks of at least
@@ -1128,6 +1251,16 @@ network inspection.
 Application Layer Parsers
 -------------------------
 
+The ``app-layer`` section holds application layer specific configurations.
+
+In IPS mode, a global exception policy accessed via the ``error-policy``
+setting can be defined to indicate what the engine should do in case if
+encounters an app-layer error. Possible values are "drop-flow", "pass-flow",
+"bypass", "drop-packet", "pass-packet", "reject" or "ignore" (which maintains
+the default behavior).
+
+Each supported protocol has a dedicated subsection under ``protocols``.
+
 Asn1_max_frames (new in 1.0.3 and 1.1)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1149,6 +1282,31 @@ Limit for the maximum number of asn1 frames to decode (default 256):
 ::
 
    asn1_max_frames: 256
+
+.. _suricata-yaml-configure-ftp:
+
+FTP
+~~~
+
+The FTP application layer parser is enabled by default and uses dynamic protocol
+detection.
+
+By default, FTP control channel commands and responses are limited to 4096
+bytes, but this value can be changed. When a command request or response exceeds
+the line length limit, the stored data will be truncated, however the parser
+will continue to watch for the end of line and acquire the next command.
+Commands that are truncated will be noted in the *eve* log file with the fields
+``command_truncated`` or ``reply_truncated``. Please note that this affects the
+control messages only, not FTP data (file transfers).
+
+  ::
+
+    ftp:
+      enabled: yes
+      #memcap: 64mb
+
+      # Maximum line length for control messages before they will be truncated.
+      #max-line-length: 4kb
 
 .. _suricata-yaml-configure-libhtp:
 
@@ -1351,7 +1509,7 @@ Other parameters are customizable from Suricata.
 #   double-decode-query:    Double decode query section of the URI
 
 decompression-time-limit
-------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 decompression-time-limit was implemented to avoid DOS by resource exhaustion
 on inputs such as decompression bombs (found by fuzzing).
@@ -1362,10 +1520,8 @@ the app-layer event ``http.compression_bomb`` is set
 (this event can also set from other conditions).
 This can happen on slow configurations (hardware, ASAN, etc...)
 
-Configure SMB (Rust)
-~~~~~~~~~~~~~~~~~~~~
-
-.. note:: for full SMB support compile Suricata with Rust support
+Configure SMB
+~~~~~~~~~~~~~
 
 The SMB parser will parse version 1, 2 and 3 of the SMB protocol over TCP.
 
@@ -1385,6 +1541,60 @@ independent. The ``probing parsers`` will only run on the ``detection-ports``.
 SMB is commonly used to transfer the DCERPC protocol. This traffic is also handled by
 this parser.
 
+Resource limits
+^^^^^^^^^^^^^^^
+
+Several options are available for limiting record sizes and data chunk tracking.
+
+::
+
+    smb:
+      enabled: yes
+      max-read-size: 8mb
+      max-write-size: 1mb
+
+      max-read-queue-size: 16mb
+      max-read-queue-cnt: 16
+
+      max-write-queue-size: 16mb
+      max-write-queue-cnt: 16
+
+The `max-read-size` option can be set to control the max size of accepted
+READ records. Events will be raised if a READ request asks for too much data
+and/or if READ responses are too big. A value of 0 disables the checks.
+
+The `max-write-size` option can be set to control the max size of accepted
+WRITE request records. Events will be raised if a WRITE request sends too much
+data. A value of 0 disables the checks.
+
+Additionally if the `max-read-size` or `max-write-size` values in the
+"negotiate protocol response" exceeds this limit an event will also be raised.
+
+
+For file tracking, extraction and file data inspection the parser queues up
+out of order data chunks for both READs and WRITEs. To avoid using too much
+memory the parser allows for limiting both the size in bytes and the number
+of queued chunks.
+
+::
+
+    smb:
+      enabled: yes
+
+      max-read-queue-size: 16mb
+      max-read-queue-cnt: 16
+
+      max-write-queue-size: 16mb
+      max-write-queue-cnt: 16
+
+`max-read-queue-size` controls how many bytes can be used per SMB flow for
+out of order READs. `max-read-queue-cnt` controls how many READ chunks can be
+queued per SMB flow. Processing of these chunks will be blocked when any of
+the limits are exceeded, and an event will be raised.
+
+`max-write-queue-size` and `max-write-queue-cnt` are as the READ variants,
+but then for WRITEs.
+
 Configure HTTP2
 ~~~~~~~~~~~~~~~
 
@@ -1398,14 +1608,130 @@ Its default value is 4096 bytes, but it can be set to any uint32 by a flow.
 `http2.max-streams` refers to `SETTINGS_MAX_CONCURRENT_STREAMS` from rfc 7540 section 6.5.2.
 Its default value is unlimited.
 
+SSL/TLS
+~~~~~~~
+
+SSL/TLS parsers track encrypted SSLv2, SSLv3, TLSv1, TLSv1.1 and TLSv1.2
+sessions.
+
+Protocol detection is done using patterns and a probing parser running
+on only TCP/443 by default. The pattern based protocol detection is
+port independent.
+
+::
+
+    tls:
+      enabled: yes
+      detection-ports:
+        dp: 443
+
+      # What to do when the encrypted communications start:
+      # - default: keep tracking TLS session, check for protocol anomalies,
+      #            inspect tls_* keywords. Disables inspection of unmodified
+      #            'content' signatures.
+      # - bypass:  stop processing this flow as much as possible. No further
+      #            TLS parsing and inspection. Offload flow bypass to kernel
+      #            or hardware if possible.
+      # - full:    keep tracking and inspection as normal. Unmodified content
+      #            keyword signatures are inspected as well.
+      #
+      # For best performance, select 'bypass'.
+      #
+      #encrypt-handling: default
+
+
+Encrypted traffic
+^^^^^^^^^^^^^^^^^
+
+There is no decryption of encrypted traffic, so once the handshake is complete
+continued tracking of the session is of limited use. The ``encrypt-handling``
+option controls the behavior after the handshake.
+
+If ``encrypt-handling`` is set to ``default`` (or if the option is not set),
+Suricata will continue to track the SSL/TLS session. Inspection will be limited,
+as raw ``content`` inspection will still be disabled. There is no point in doing
+pattern matching on traffic known to be encrypted. Inspection for (encrypted)
+Heartbleed and other protocol anomalies still happens.
+
+When ``encrypt-handling`` is set to ``bypass``, all processing of this session is
+stopped. No further parsing and inspection happens. If ``stream.bypass`` is enabled
+this will lead to the flow being bypassed, either inside Suricata or by the
+capture method if it supports it and is configured for it.
+
+Finally, if ``encrypt-handling`` is set to ``full``, Suricata will process the
+flow as normal, without inspection limitations or bypass.
+
+The option has replaced the ``no-reassemble`` option. If ``no-reassemble`` is
+present, and ``encrypt-handling`` is not, ``false`` is interpreted as
+``encrypt-handling: default`` and ``true`` is interpreted as
+``encrypt-handling: bypass``.
+
+
+Modbus
+~~~~~~
+
+According to MODBUS Messaging on TCP/IP Implementation Guide V1.0b, it
+is recommended to keep the TCP connection opened with a remote device
+and not to open and close it for each MODBUS/TCP transaction.
+In that case, it is important to set the stream-depth of the modbus as
+unlimited.
+
+::
+
+      modbus:
+        # Stream reassembly size for modbus, default is 0
+        stream-depth: 0
+
+
+MQTT
+~~~~
+
+The maximum size of a MQTT message is 256MB, potentially containing a lot of
+payload data (such as properties, topics, or published payloads) that would end
+up parsed and logged. To acknowledge the fact that most MQTT messages, however,
+will be quite small and to reduce the potential for denial of service issues,
+it is possible to limit the maximum length of a message that Suricata should
+parse. Any message larger than the limit will just be logged with reduced
+metadata, and rules will only be evaluated against a subset of fields. The
+default is 1 MB.
+
+::
+
+      mqtt:
+        max-msg-length: 1mb
+
+SMTP
+~~~~~~
+
+SMTP parsers can extract files from attachments.
+It is also possible to extract raw conversations as files with the
+key ``raw-extraction``. Note that in this case the whole conversation
+will be stored as a file, including SMTP headers and body content. The filename
+will be set to "rawmsg". Usual file-related signatures will match on the raw
+content of the email.
+This configuration parameter has a ``false`` default value. It is
+incompatible with ``decode-mime``. If both are enabled,
+``raw-extraction`` will be automatically disabled.
+
+::
+
+      smtp:
+        # extract messages in raw format from SMTP
+        raw-extraction: true
+
 Maximum transactions
 ~~~~~~~~~~~~~~~~~~~~
 
-MQTT, FTP, and NFS have each a `max-tx` parameter that can be customized.
+MQTT, FTP, PostgreSQL and NFS have each a `max-tx` parameter that can be customized.
 `max-tx` refers to the maximum number of live transactions for each flow.
 An app-layer event `protocol.too_many_transactions` is triggered when this value is reached.
 The point of this parameter is to find a balance between the completeness of analysis
 and the resource consumption.
+
+For HTTP2, this parameter is named `max-streams` as an HTTP2 stream will get translated
+into one Suricata transaction. This configuration parameter is used whatever the
+value of `SETTINGS_MAX_CONCURRENT_STREAMS` negotiated between a client and a server
+in a specific flow is.
 
 Engine Logging
 --------------
@@ -1580,6 +1906,8 @@ computers etc.)
 
 Packet Acquisition
 ------------------
+
+.. _dpdk-capture-module:
 
 Data Plane Development Kit (DPDK)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2224,121 +2552,6 @@ threads, the time threads might have to wait for each other will be
 taken in account when/during profiling packets. For more information
 see :doc:`../performance/packet-profiling`.
 
-Application layers
-------------------
-
-SSL/TLS
-~~~~~~~
-
-SSL/TLS parsers track encrypted SSLv2, SSLv3, TLSv1, TLSv1.1 and TLSv1.2
-sessions.
-
-Protocol detection is done using patterns and a probing parser running
-on only TCP/443 by default. The pattern based protocol detection is
-port independent.
-
-::
-
-    tls:
-      enabled: yes
-      detection-ports:
-        dp: 443
-
-      # What to do when the encrypted communications start:
-      # - default: keep tracking TLS session, check for protocol anomalies,
-      #            inspect tls_* keywords. Disables inspection of unmodified
-      #            'content' signatures.
-      # - bypass:  stop processing this flow as much as possible. No further
-      #            TLS parsing and inspection. Offload flow bypass to kernel
-      #            or hardware if possible.
-      # - full:    keep tracking and inspection as normal. Unmodified content
-      #            keyword signatures are inspected as well.
-      #
-      # For best performance, select 'bypass'.
-      #
-      #encrypt-handling: default
-
-
-Encrypted traffic
-^^^^^^^^^^^^^^^^^
-
-There is no decryption of encrypted traffic, so once the handshake is complete
-continued tracking of the session is of limited use. The ``encrypt-handling``
-option controls the behavior after the handshake.
-
-If ``encrypt-handling`` is set to ``default`` (or if the option is not set),
-Suricata will continue to track the SSL/TLS session. Inspection will be limited,
-as raw ``content`` inspection will still be disabled. There is no point in doing
-pattern matching on traffic known to be encrypted. Inspection for (encrypted)
-Heartbleed and other protocol anomalies still happens.
-
-When ``encrypt-handling`` is set to ``bypass``, all processing of this session is
-stopped. No further parsing and inspection happens. If ``stream.bypass`` is enabled
-this will lead to the flow being bypassed, either inside Suricata or by the
-capture method if it supports it and is configured for it.
-
-Finally, if ``encrypt-handling`` is set to ``full``, Suricata will process the
-flow as normal, without inspection limitations or bypass.
-
-The option has replaced the ``no-reassemble`` option. If ``no-reassemble`` is
-present, and ``encrypt-handling`` is not, ``false`` is interpreted as
-``encrypt-handling: default`` and ``true`` is interpreted as
-``encrypt-handling: bypass``.
-
-
-Modbus
-~~~~~~
-
-According to MODBUS Messaging on TCP/IP Implementation Guide V1.0b, it
-is recommended to keep the TCP connection opened with a remote device
-and not to open and close it for each MODBUS/TCP transaction.
-In that case, it is important to set the stream-depth of the modbus as
-unlimited.
-
-::
-
-      modbus:
-        # Stream reassembly size for modbus, default is 0
-        stream-depth: 0
-
-
-MQTT
-~~~~
-
-MQTT messages could theoretically be up to 256MB in size, potentially
-containing a lot of payload data (such as properties, topics, or
-published payloads) that would end up parsed and logged. To acknowledge
-the fact that most MQTT messages, however, will be quite small and to
-reduce the potential for denial of service issues, it is possible to limit
-the maximum length of a message that we are willing to parse. Any message
-larger than the limit will just be logged with reduced metadata, and rules
-will only be evaluated against a subset of fields.
-The default is 1 MB.
-
-::
-
-      mqtt:
-        max-msg-length: 1mb
-
-SMTP
-~~~~~~
-
-SMTP parsers can extract files from attachments.
-It is also possible to extract raw conversations as files with the
-key ``raw-extraction``. Note that in this case the whole conversation
-will be stored as a file, including SMTP headers and body content. The filename
-will be set to "rawmsg". Usual file-related signatures will match on the raw
-content of the email.
-This configuration parameter has a ``false`` default value. It is
-incompatible with ``decode-mime``. If both are enabled,
-``raw-extraction`` will be automatically disabled.
-
-::
-
-      smtp:
-        # extract messages in raw format from SMTP
-        raw-extraction: true
-
 Decoder
 -------
 
@@ -2400,3 +2613,25 @@ detect thread. For each output script, a single state is used. Keep in
 mind that a rule reload temporary doubles the states requirement.
 
 .. _deprecation policy: https://suricata.io/about/deprecation-policy/
+
+.. _suricata-yaml-config-hardening:
+
+Configuration hardening
+-----------------------
+
+The `security` section of suricata.yaml is meant to provide in-depth security configuration options.
+
+Besides landlock, (see :ref:`landlock`), one setting is available.
+`limit-noproc` is a boolean to prevent process creation by Suricata.
+If you do not need Suricata to create other processes or threads
+(you may need it for LUA scripts for instance or plugins), enable this to
+call `setrlimit` with `RLIMIT_NPROC` argument (see `man setrlimit`).
+This prevents potential exploits against Suricata to fork a new process,
+even if it does not prevent the call of `exec`.
+
+Warning! This has no effect on Linux when running as root. If you want a hardened configuration,
+you probably want to set `run-as` configuration parameter so as to drop root privileges.
+
+Beyond suricata.yaml, other ways to harden Suricata are
+- compilation : enabling ASLR and other exploit mitigation techniques.
+- environment : running Suricata on a device that has no direct access to Internet.

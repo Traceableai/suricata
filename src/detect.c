@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2017 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -28,14 +28,18 @@
 #include "conf.h"
 
 #include "decode.h"
+#include "packet.h"
 #include "flow.h"
 #include "stream-tcp.h"
 #include "app-layer.h"
 #include "app-layer-parser.h"
+#include "app-layer-frames.h"
 
 #include "detect.h"
 #include "detect-dsize.h"
 #include "detect-engine.h"
+#include "detect-engine-build.h"
+#include "detect-engine-frame.h"
 #include "detect-engine-profile.h"
 
 #include "detect-engine-alert.h"
@@ -59,6 +63,9 @@
 
 #include "util-validate.h"
 #include "util-detect.h"
+#include "util-profiling.h"
+
+#include "action-globals.h"
 
 typedef struct DetectRunScratchpad {
     const AppProto alproto;
@@ -369,15 +376,14 @@ static inline void DetectPrefilterMergeSort(DetectEngineCtx *de_ctx,
 /** \internal
  *  \brief build non-prefilter list based on the rule group list we've set.
  */
-static inline void
-DetectPrefilterBuildNonPrefilterList(DetectEngineThreadCtx *det_ctx,
-        const SignatureMask mask, const uint8_t alproto)
+static inline void DetectPrefilterBuildNonPrefilterList(
+        DetectEngineThreadCtx *det_ctx, const SignatureMask mask, const AppProto alproto)
 {
     for (uint32_t x = 0; x < det_ctx->non_pf_store_cnt; x++) {
         /* only if the mask matches this rule can possibly match,
          * so build the non_mpm array only for match candidates */
         const SignatureMask rule_mask = det_ctx->non_pf_store_ptr[x].mask;
-        const uint8_t rule_alproto = det_ctx->non_pf_store_ptr[x].alproto;
+        const AppProto rule_alproto = det_ctx->non_pf_store_ptr[x].alproto;
         if ((rule_mask & mask) == rule_mask &&
                 (rule_alproto == 0 || AppProtoEquals(rule_alproto, alproto))) {
             det_ctx->non_pf_id_array[det_ctx->non_pf_id_cnt++] = det_ctx->non_pf_store_ptr[x].id;
@@ -779,15 +785,8 @@ static inline void DetectRulePacketRules(
         /* if the sig has alproto and the session as well they should match */
         if (likely(sflags & SIG_FLAG_APPLAYER)) {
             if (s->alproto != ALPROTO_UNKNOWN && !AppProtoEquals(s->alproto, scratch->alproto)) {
-                if (s->alproto == ALPROTO_DCERPC) {
-                    if (scratch->alproto != ALPROTO_SMB) {
-                        SCLogDebug("DCERPC sig, alproto not SMB");
-                        goto next;
-                    }
-                } else {
-                    SCLogDebug("alproto mismatch");
-                    goto next;
-                }
+                SCLogDebug("alproto mismatch");
+                goto next;
             }
         }
 
@@ -804,7 +803,7 @@ static inline void DetectRulePacketRules(
 #endif
         DetectRunPostMatch(tv, det_ctx, p, s);
 
-        PacketAlertAppend(det_ctx, s, p, 0, alert_flags);
+        AlertQueueAppend(det_ctx, s, p, 0, alert_flags);
 next:
         DetectVarProcessList(det_ctx, pflow, p);
         DetectReplaceFree(det_ctx);
@@ -828,11 +827,16 @@ static DetectRunScratchpad DetectRunSetup(
 
 #ifdef UNITTESTS
     p->alerts.cnt = 0;
+    p->alerts.discarded = 0;
+    p->alerts.suppressed = 0;
 #endif
     det_ctx->filestore_cnt = 0;
     det_ctx->base64_decoded_len = 0;
     det_ctx->raw_stream_progress = 0;
     det_ctx->match_array_cnt = 0;
+
+    det_ctx->alert_queue_size = 0;
+    p->alerts.drop.action = 0;
 
 #ifdef DEBUG
     if (p->flags & PKT_STREAM_ADD) {
@@ -920,7 +924,8 @@ static inline void DetectRunPostRules(
     /* see if we need to increment the inspect_id and reset the de_state */
     if (pflow && pflow->alstate) {
         PACKET_PROFILING_DETECT_START(p, PROF_DETECT_TX_UPDATE);
-        DeStateUpdateInspectTransactionId(pflow, scratch->flow_flags, (scratch->sgh == NULL));
+        AppLayerParserSetTransactionInspectId(pflow, pflow->alparser, pflow->alstate,
+                scratch->flow_flags, (scratch->sgh == NULL));
         PACKET_PROFILING_DETECT_END(p, PROF_DETECT_TX_UPDATE);
     }
 
@@ -932,6 +937,12 @@ static inline void DetectRunPostRules(
     PacketAlertFinalize(de_ctx, det_ctx, p);
     if (p->alerts.cnt > 0) {
         StatsAddUI64(tv, det_ctx->counter_alerts, (uint64_t)p->alerts.cnt);
+    }
+    if (p->alerts.discarded > 0) {
+        StatsAddUI64(tv, det_ctx->counter_alerts_overflow, (uint64_t)p->alerts.discarded);
+    }
+    if (p->alerts.suppressed > 0) {
+        StatsAddUI64(tv, det_ctx->counter_alerts_suppressed, (uint64_t)p->alerts.suppressed);
     }
     PACKET_PROFILING_DETECT_END(p, PROF_DETECT_ALERT);
 }
@@ -1005,17 +1016,20 @@ static int RuleMatchCandidateTxArrayExpand(DetectEngineThreadCtx *det_ctx, const
  *  \brief sort helper for sorting match candidates by id: ascending
  *
  *  The id field is set from Signature::num, so we sort the candidates to match the signature
- *  sort order (ascending).
- *
- *  \todo maybe let one with flags win if equal? */
+ *  sort order (ascending), where candidates that have flags go first.
+ */
 static int
 DetectRunTxSortHelper(const void *a, const void *b)
 {
     const RuleMatchCandidateTx *s0 = a;
     const RuleMatchCandidateTx *s1 = b;
-    if (s1->id == s0->id)
+    if (s1->id == s0->id) {
+        if (s1->flags && !s0->flags)
+            return 1;
+        else if (!s1->flags && s0->flags)
+            return -1;
         return 0;
-    else
+    } else
         return s0->id > s1->id ? 1 : -1;
 }
 
@@ -1059,7 +1073,7 @@ static bool DetectRunTxInspectRule(ThreadVars *tv,
     const int direction = (flow_flags & STREAM_TOSERVER) ? 0 : 1;
     uint32_t inspect_flags = stored_flags ? *stored_flags : 0;
     int total_matches = 0;
-    int file_no_match = 0;
+    uint16_t file_no_match = 0;
     bool retval = false;
     bool mpm_before_progress = false;   // is mpm engine before progress?
     bool mpm_in_progress = false;       // is mpm engine in a buffer we will revisit?
@@ -1127,7 +1141,7 @@ static bool DetectRunTxInspectRule(ThreadVars *tv,
             }
 
             /* run callback: but bypass stream callback if we can */
-            int match;
+            uint8_t match;
             if (unlikely(engine->stream && can->stream_stored)) {
                 match = can->stream_result;
                 TRACE_SID_TXS(s->id, tx, "stream skipped, stored result %d used instead", match);
@@ -1320,6 +1334,7 @@ static void DetectRunTx(ThreadVars *tv,
         }
         tx_id_min = tx.tx_id + 1; // next look for cur + 1
 
+        bool do_sort = false; // do we need to sort the tx candidate list?
         uint32_t array_idx = 0;
         uint32_t total_rules = det_ctx->match_array_cnt;
         total_rules += (tx.de_state ? tx.de_state->cnt : 0);
@@ -1370,8 +1385,9 @@ static void DetectRunTx(ThreadVars *tv,
                         tx.tx_ptr, tx.tx_id, s->id, id);
             }
         }
-        SCLogDebug("%p/%"PRIu64" rules added from 'match' list: %u",
-                tx.tx_ptr, tx.tx_id, array_idx - x); (void)x;
+        do_sort = (array_idx > x); // sort if match added anything
+        SCLogDebug("%p/%" PRIu64 " rules added from 'match' list: %u", tx.tx_ptr, tx.tx_id,
+                array_idx - x);
 
         /* merge stored state into results */
         if (tx.de_state != NULL) {
@@ -1411,14 +1427,15 @@ static void DetectRunTx(ThreadVars *tv,
                     array_idx++;
                 }
             }
-            if (old && old != array_idx) {
-                qsort(det_ctx->tx_candidates, array_idx, sizeof(RuleMatchCandidateTx),
-                        DetectRunTxSortHelper);
-
-                SCLogDebug("%p/%"PRIu64" rules added from 'continue' list: %u",
-                        tx.tx_ptr, tx.tx_id, array_idx - old);
-            }
+            do_sort |= (old && old != array_idx); // sort if continue list adds sids
+            SCLogDebug("%p/%" PRIu64 " rules added from 'continue' list: %u", tx.tx_ptr, tx.tx_id,
+                    array_idx - old);
         }
+        if (do_sort) {
+            qsort(det_ctx->tx_candidates, array_idx, sizeof(RuleMatchCandidateTx),
+                    DetectRunTxSortHelper);
+        }
+
 #ifdef PROFILING
         if (array_idx >= de_ctx->profile_match_logging_threshold)
             RulesDumpTxMatchArray(det_ctx, scratch->sgh, p, tx.tx_id, array_idx, x);
@@ -1427,6 +1444,13 @@ static void DetectRunTx(ThreadVars *tv,
         det_ctx->tx_id_set = true;
         det_ctx->p = p;
 
+#ifdef DEBUG
+        for (uint32_t i = 0; i < array_idx; i++) {
+            RuleMatchCandidateTx *can = &det_ctx->tx_candidates[i];
+            const Signature *s = det_ctx->tx_candidates[i].s;
+            SCLogDebug("%u: sid %u flags %p", i, s->id, can->flags);
+        }
+#endif
         /* run rules: inspect the match candidates */
         for (uint32_t i = 0; i < array_idx; i++) {
             RuleMatchCandidateTx *can = &det_ctx->tx_candidates[i];
@@ -1436,24 +1460,13 @@ static void DetectRunTx(ThreadVars *tv,
             /* deduplicate: rules_array is sorted, but not deduplicated:
              * both mpm and stored state could give us the same sid.
              * As they are back to back in that case we can check for it
-             * here. We select the stored state one. */
-            if ((i + 1) < array_idx) {
-                if (det_ctx->tx_candidates[i].s == det_ctx->tx_candidates[i+1].s) {
-                    if (det_ctx->tx_candidates[i].flags != NULL) {
-                        i++;
-                        SCLogDebug("%p/%"PRIu64" inspecting SKIP NEXT: sid %u (%u), flags %08x",
-                                tx.tx_ptr, tx.tx_id, s->id, s->num, inspect_flags ? *inspect_flags : 0);
-                    } else if (det_ctx->tx_candidates[i+1].flags != NULL) {
-                        SCLogDebug("%p/%"PRIu64" inspecting SKIP CURRENT: sid %u (%u), flags %08x",
-                                tx.tx_ptr, tx.tx_id, s->id, s->num, inspect_flags ? *inspect_flags : 0);
-                        continue;
-                    } else {
-                        // if it's all the same, inspect the current one and skip next.
-                        i++;
-                        SCLogDebug("%p/%"PRIu64" inspecting SKIP NEXT: sid %u (%u), flags %08x",
-                                tx.tx_ptr, tx.tx_id, s->id, s->num, inspect_flags ? *inspect_flags : 0);
-                    }
-                }
+             * here. We select the stored state one as that comes first
+             * in the array. */
+            while ((i + 1) < array_idx &&
+                    det_ctx->tx_candidates[i].s == det_ctx->tx_candidates[i + 1].s) {
+                SCLogDebug("%p/%" PRIu64 " inspecting SKIP NEXT: sid %u (%u), flags %08x",
+                        tx.tx_ptr, tx.tx_id, s->id, s->num, inspect_flags ? *inspect_flags : 0);
+                i++;
             }
 
             SCLogDebug("%p/%"PRIu64" inspecting: sid %u (%u), flags %08x",
@@ -1485,7 +1498,7 @@ static void DetectRunTx(ThreadVars *tv,
 
                 const uint8_t alert_flags = (PACKET_ALERT_FLAG_STATE_MATCH | PACKET_ALERT_FLAG_TX);
                 SCLogDebug("%p/%"PRIu64" sig %u (%u) matched", tx.tx_ptr, tx.tx_id, s->id, s->num);
-                PacketAlertAppend(det_ctx, s, p, tx.tx_id, alert_flags);
+                AlertQueueAppend(det_ctx, s, p, tx.tx_id, alert_flags);
             }
             DetectVarProcessList(det_ctx, p->flow, p);
             RULE_PROFILING_END(det_ctx, s, r, p);
@@ -1626,12 +1639,11 @@ static void DetectRunFrames(ThreadVars *tv, DetectEngineCtx *de_ctx, DetectEngin
 
                     const uint8_t alert_flags =
                             (PACKET_ALERT_FLAG_STATE_MATCH | PACKET_ALERT_FLAG_FRAME);
-                    // TODO set tx id if the frame has it
                     det_ctx->flags |= DETECT_ENGINE_THREAD_CTX_FRAME_ID_SET;
                     det_ctx->frame_id = frame->id;
                     SCLogDebug(
                             "%p/%" PRIi64 " sig %u (%u) matched", frame, frame->id, s->id, s->num);
-                    PacketAlertAppend(det_ctx, s, p, 0, alert_flags); // TODO tx id frame field
+                    AlertQueueAppend(det_ctx, s, p, frame->tx_id, alert_flags);
                 }
             }
             DetectVarProcessList(det_ctx, p->flow, p);
@@ -1653,20 +1665,19 @@ static void DetectFlow(ThreadVars *tv,
                        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
                        Packet *p)
 {
+    Flow *const f = p->flow;
+
     if (p->flags & PKT_NOPACKET_INSPECTION) {
         /* hack: if we are in pass the entire flow mode, we need to still
          * update the inspect_id forward. So test for the condition here,
          * and call the update code if necessary. */
-        const int pass = ((p->flow->flags & FLOW_NOPACKET_INSPECTION));
+        const int pass = ((f->flags & FLOW_NOPACKET_INSPECTION));
         if (pass) {
-            uint8_t flags;
-            if (p->flowflags & FLOW_PKT_TOSERVER) {
-                flags = STREAM_TOSERVER;
-            } else {
-                flags = STREAM_TOCLIENT;
+            uint8_t flags = STREAM_FLAGS_FOR_PACKET(p);
+            flags = FlowGetDisruptionFlags(f, flags);
+            if (f->alstate) {
+                AppLayerParserSetTransactionInspectId(f, f->alparser, f->alstate, flags, true);
             }
-            flags = FlowGetDisruptionFlags(p->flow, flags);
-            DeStateUpdateInspectTransactionId(p->flow, flags, true);
         }
         SCLogDebug("p->pcap %"PRIu64": no detection on packet, "
                 "PKT_NOPACKET_INSPECTION is set", p->pcap_cnt);
@@ -1674,8 +1685,8 @@ static void DetectFlow(ThreadVars *tv,
     }
 
     /* if flow is set to drop, we enforce that here */
-    if (p->flow->flags & FLOW_ACTION_DROP) {
-        PACKET_DROP(p);
+    if (f->flags & FLOW_ACTION_DROP) {
+        PacketDrop(p, ACTION_DROP, PKT_DROP_REASON_FLOW_DROP);
         SCReturn;
     }
 
@@ -1689,7 +1700,7 @@ static void DetectNoFlow(ThreadVars *tv,
                          Packet *p)
 {
     /* No need to perform any detection on this packet, if the the given flag is set.*/
-    if ((p->flags & PKT_NOPACKET_INSPECTION) || (PacketTestAction(p, ACTION_DROP))) {
+    if ((p->flags & PKT_NOPACKET_INSPECTION) || (PacketCheckAction(p, ACTION_DROP))) {
         return;
     }
 

@@ -1,4 +1,4 @@
-    AC_INIT([suricata],[7.0.0-dev])
+    AC_INIT([suricata],[7.0.0-rc1-dev])
     m4_ifndef([AM_SILENT_RULES], [m4_define([AM_SILENT_RULES],[])])AM_SILENT_RULES([yes])
     AC_CONFIG_HEADERS([src/autoconf.h])
     AC_CONFIG_SRCDIR([src/suricata.c])
@@ -117,42 +117,6 @@
        pymv="$($HAVE_PYTHON -c 'import sys; print(sys.version_info[[0]]);')"
     fi
 
-    # Check for python-distutils (setup).
-    have_python_distutils="no"
-    if test "x$enable_python" = "xyes"; then
-        AC_MSG_CHECKING([for python-distutils])
-	if $HAVE_PYTHON -c "import distutils; from distutils.core import setup" 2>/dev/null; then
-	   AC_MSG_RESULT([yes])
-	   have_python_distutils="yes"
-	else
-	   AC_MSG_RESULT([no])
-	fi
-    fi
-    AM_CONDITIONAL([HAVE_PYTHON_DISTUTILS],
-	[test "x$have_python_distutils" = "xyes"])
-    if test "$have_python_distutils" = "no"; then
-       echo ""
-       echo "    Warning: Python distutils not found. Python tools will"
-       echo "        not be installed."
-       echo ""
-       echo "    Install the distutils module for Python ${pymv} to enable"
-       echo "    the Python tools."
-       echo ""
-    fi
-
-    # Check for python-yaml.
-    have_python_yaml="no"
-    if test "x$enable_python" = "xyes"; then
-        AC_MSG_CHECKING([for python-yaml])
-	if $HAVE_PYTHON -c "import yaml" 2>/dev/null; then
-	   have_python_yaml="yes"
-	   AC_MSG_RESULT([yes])
-	else
-	   AC_MSG_RESULT([no])
-	fi
-    fi
-    AM_CONDITIONAL([HAVE_PYTHON_YAML], [test "x$have_python_yaml" = "xyes"])
-
     AC_PATH_PROG(HAVE_WGET, wget, "no")
     if test "$HAVE_WGET" = "no"; then
         AC_PATH_PROG(HAVE_CURL, curl, "no")
@@ -245,6 +209,7 @@
     AC_CHECK_FUNCS([gethostname inet_ntoa uname])
     AC_CHECK_FUNCS([gettimeofday clock_gettime utime strptime tzset localtime_r])
     AC_CHECK_FUNCS([socket setenv select putenv dup2 endgrent endpwent atexit munmap])
+    AC_CHECK_FUNCS([setrlimit])
 
     AC_CHECK_FUNCS([fwrite_unlocked])
 
@@ -296,7 +261,7 @@
             LUA_LIB_NAME="lua-5.1"
             CFLAGS="${CFLAGS} -DOS_DARWIN"
             CPPFLAGS="${CPPFLAGS} -I/opt/local/include"
-            LDFLAGS="${LDFLAGS} -L/opt/local/lib"
+            LDFLAGS="${LDFLAGS} -L/opt/local/lib -framework Security"
             ;;
         *-*-linux*)
             # Always compile with -fPIC on Linux for shared library support.
@@ -412,6 +377,13 @@
         AC_SUBST(SECCFLAGS)
         AC_SUBST(SECLDFLAGS)
     ])
+
+    #check for Landlock support
+    AC_CHECK_HEADERS([linux/landlock.h])
+    enable_landlock="no"
+    if test "$ac_cv_header_linux_landlock_h" = "yes"; then
+        enable_landlock="yes"
+    fi
 
     #check for plugin support
     AC_CHECK_HEADERS([dlfcn.h])
@@ -608,6 +580,19 @@
         LIBS="${TMPLIBS} -lz"
     fi
 
+    AC_ARG_WITH(libpcre2_includes,
+            [  --with-libpcre2-includes=DIR  libpcre2 include directory],
+            [with_libpcre2_includes="$withval"],[with_libpcre2_includes="no"])
+    AC_ARG_WITH(libpcre2_libraries,
+            [  --with-libpcre2-libraries=DIR    libpcre2 library directory],
+            [with_libpcre2_libraries="$withval"],[with_libpcre2_libraries="no"])
+
+    if test "$with_libpcre2_includes" != "no"; then
+        CPPFLAGS="${CPPFLAGS} -I${with_libpcre2_includes}"
+    fi
+    if test "$with_libpcre2_libraries" != "no"; then
+        LDFLAGS="${LDFLAGS} -L${with_libpcre2_libraries}"
+    fi
     PCRE2=""
     AC_CHECK_LIB(pcre2-8, pcre2_compile_8,,PCRE2="no")
     if test "$PCRE2" = "no"; then
@@ -636,6 +621,35 @@
         AC_MSG_RESULT(no)
     fi
 
+  #systemd
+    AC_ARG_WITH(systemd_includes,
+            [  --with-systemd-includes=DIR  systemd include directory],
+            [with_systemd_includes="$withval"],[with_systemd_includes=no])
+    AC_ARG_WITH(systemd_libraries,
+            [  --with-systemd-libraries=DIR    systemd library directory],
+            [with_systemd_libraries="$withval"],[with_systemd_libraries="no"])
+
+    AC_CHECK_HEADER(systemd/sd-daemon.h, SYSTEMD="yes",SYSTEMD="no")
+    if test "$SYSTEMD" = "yes"; then
+        if test "$with_systemd_libraries" != "no"; then
+            LDFLAGS="${LDFLAGS} -L${with_systemd_libraries}"
+        fi
+
+        if test "$with_systemd_includes" != "no"; then
+            CPPFLAGS="${CPPFLAGS} -I${with_systems_includes}"
+        fi
+
+        # To prevent duping the lib link we reset LIBS after this check. Setting action-if-found to NULL doesn't seem to work
+        # see: http://blog.flameeyes.eu/2008/04/29/i-consider-ac_check_lib-harmful
+        SYSTEMD=""
+        TMPLIBS="${LIBS}"
+        AC_CHECK_LIB(systemd,sd_notify,,SYSTEMD="no")
+
+        if test "$SYSTEMD" != "no"; then
+            LIBS="${TMPLIBS} -lsystemd"
+        fi
+    fi
+  
   # libhs
     enable_hyperscan="no"
 
@@ -1332,6 +1346,31 @@
             [[#include <linux/net_tstamp.h>]])
     ])
 
+  # AF_XDP support
+    AC_ARG_ENABLE(af-xdp,
+           AS_HELP_STRING([--disable-af-xdp], [Disable AF_XDP support [default=enabled]]),
+                        [enable_af_xdp=$enableval],[enable_af_xdp=yes])
+
+    AS_IF([test "x$enable_af_xdp" = "xyes"], [
+        # Check for the availability of elf
+        AC_CHECK_LIB(elf,elf_begin,,[enable_af_xdp=no])
+
+        # Conditionally check headers, only when found will it 'continue'
+        AS_IF([test "x$enable_af_xdp" = "xyes"],
+            # Check for the availability of libxdp
+            AC_CHECK_HEADERS([xdp/xsk.h],,[enable_af_xdp=no])
+            AC_CHECK_LIB([xdp],[xsk_umem__create],,[enable_af_xdp=no]))
+
+        AS_IF([test "x$enable_af_xdp" = "xyes"],
+            # Check for the availability of libbpf
+            AC_CHECK_HEADERS([bpf/libbpf.h],,[enable_af_xdp=no])
+            AC_CHECK_LIB([bpf],[bpf_object__open],,[enable_af_xdp=no]))
+
+        # Are all required libs installed, yes=HAVE_AF_XDP
+        AS_IF([test "x$enable_af_xdp" = "xyes"],
+            AC_DEFINE([HAVE_AF_XDP],[1],[AF_XDP support is available]))
+    ])
+
   # DPDK support
     AC_ARG_ENABLE(dpdk,
             AS_HELP_STRING([--enable-dpdk], [Enable DPDK support [default=no]]),
@@ -1350,12 +1389,6 @@
         fi
 
         AC_DEFINE([HAVE_DPDK],[1],(DPDK support enabled))
-        PKG_CHECK_EXISTS(libdpdk >= 20.11, [pkgconfig_libdpdk_above20=yes], )
-        if test "$pkgconfig_libdpdk_above20" = "yes"; then
-            AC_DEFINE([HAVE_STRLCAT],[1],[STRLCAT is predefined by DPDK 20.11+])
-            AC_DEFINE([HAVE_STRLCPY],[1],[STRLCPY is predefined by DPDK 20.11+])
-        fi
-
         PKG_CHECK_EXISTS(libdpdk >= 19.11, , [with_pkgconfig_libdpdk=no])
         if test "$with_pkgconfig_libdpdk" = "no"; then
             echo
@@ -1440,13 +1473,11 @@
     fi
 
     if test "$have_suricata_update" = "yes"; then
-        if test "$have_python_yaml" != "yes"; then
+        if test "$enable_python" != "yes"; then
 	    echo ""
-	    echo "    Warning: suricata-update will not be installed as the"
-	    echo "        Python yaml module is not installed.."
+	    echo "    Warning: suricata-update will not be installed as"
+	    echo "        Python is not installed."
 	    echo ""
-            echo "    Install the yaml module for Python ${pymv} to enable"
-            echo "    suricata-update."
 	    echo
 	else
             SURICATA_UPDATE_DIR="suricata-update"
@@ -1459,8 +1490,6 @@
     # Test to see if suricatactl (and suricatasc) can be installed.
     if test "x$enable_python" != "xyes"; then
         install_suricatactl="requires python"
-    elif test "x$have_python_distutils" != "xyes"; then
-        install_suricatactl="no, requires distutils"
     else
         install_suricatactl="yes"
     fi
@@ -1472,12 +1501,6 @@
     elif test "x$enable_python" != "xyes"; then
         install_suricata_update="no, "
         install_suricata_update_reason="requires python"
-    elif test "x$have_python_distutils" != "xyes"; then
-        install_suricata_update="no, "
-        install_suricata_update_reason="requires distutils"
-    elif test "x$have_python_yaml" != "xyes"; then
-        install_suricata_update="no, "
-        install_suricata_update_reason="requires pyyaml"
     else
         install_suricata_update="yes"
     fi
@@ -1521,12 +1544,12 @@
             echo
             exit 1
         fi
-        PKG_CHECK_MODULES(LIBHTPMINVERSION, [htp >= 0.5.36],[libhtp_minver_found="yes"],[libhtp_minver_found="no"])
+        PKG_CHECK_MODULES(LIBHTPMINVERSION, [htp >= 0.5.42],[libhtp_minver_found="yes"],[libhtp_minver_found="no"])
         if test "$libhtp_minver_found" = "no"; then
             PKG_CHECK_MODULES(LIBHTPDEVVERSION, [htp = 0.5.X],[libhtp_devver_found="yes"],[libhtp_devver_found="no"])
             if test "$libhtp_devver_found" = "no"; then
                 echo
-                echo "   ERROR! libhtp was found but it is neither >= 0.5.36, nor the dev 0.5.X"
+                echo "   ERROR! libhtp was found but it is neither >= 0.5.42, nor the dev 0.5.X"
                 echo
                 exit 1
             fi
@@ -1662,11 +1685,18 @@
             AC_DEFINE([HAVE_PACKET_EBPF],[1],[Recent ebpf fanout support is available]),
             [],
             [[#include <linux/if_packet.h>]])
-        AC_CHECK_LIB(bpf, bpf_set_link_xdp_fd,have_xdp="yes")
+        # Check for XDP specific function.
+        AC_CHECK_LIB(bpf,bpf_xdp_attach,have_xdp="yes")
         if test "$have_xdp" = "yes"; then
             AC_DEFINE([HAVE_PACKET_XDP],[1],[XDP support is available])
+        else
+            # Check for legacy XDP function.
+            AC_CHECK_LIB(bpf,bpf_set_link_xdp_fd,have_xdp="yes")
+            if test "$have_xdp" = "yes"; then
+                AC_DEFINE([HAVE_PACKET_XDP],[1],[XDP support is available])
+            fi
         fi
-        AC_CHECK_FUNCS(bpf_program__section_name)
+        AC_CHECK_FUNCS([bpf_program__section_name bpf_xdp_attach bpf_program__set_type])
     fi;
 
   # Check for DAG support.
@@ -2159,7 +2189,7 @@ fi
     AC_PATH_PROG(HAVE_GETCONF_CMD, getconf, "no")
     if test "$HAVE_GETCONF_CMD" != "no"; then
         CLS=$(getconf LEVEL1_DCACHE_LINESIZE)
-        if [test "$CLS" != "" && test "$CLS" != "0"]; then
+        if [test "$CLS" != "undefined" && test "$CLS" != "" && test "$CLS" != "0"]; then
             AC_DEFINE_UNQUOTED([CLS],[${CLS}],[L1 cache line size])
         else
             AC_DEFINE([CLS],[64],[L1 cache line size])
@@ -2167,18 +2197,6 @@ fi
     else
         AC_DEFINE([CLS],[64],[L1 cache line size])
     fi
-
-# mscgen for devguide images
-    AC_PATH_PROG([HAVE_MSCGEN], mscgen, "no")
-    if test "$HAVE_MSCGEN" = "no"; then
-        enable_mscgen=no
-        echo "WARNING! mscgen package not installed."
-        echo "    Devguide images won't be generated!"
-        echo "    Get mscgen package:"
-        echo "    https://www.mcternan.me.uk/mscgen/"
-        echo "    or install it from your distribution"
-    fi
-    AM_CONDITIONAL([HAVE_MSCGEN], [test "x$enable_mscgen" != "xno" ])
 
 # sphinx for documentation
     AC_PATH_PROG(HAVE_SPHINXBUILD, sphinx-build, "no")
@@ -2203,7 +2221,7 @@ fi
     AC_PATH_PROG(RUSTC, rustc, "no")
     if test "$RUSTC" = "no"; then
         echo ""
-        echo "    ERROR: Suricata now requires Rust to build."
+        echo "    ERROR: Rust compiler not found."
         echo ""
         echo "    Ubuntu/Debian: apt install rustc cargo"
         echo "    Fedora: dnf install rustc cargo"
@@ -2229,7 +2247,7 @@ fi
     cargo_version_output=$($CARGO --version)
     cargo_version=$(echo "$cargo_version_output" | sed 's/^.*[[^0-9]]\([[0-9]]*\.[[0-9]]*\.[[0-9]]*\).*$/\1/')
 
-    MIN_RUSTC_VERSION="1.41.1"
+    MIN_RUSTC_VERSION="1.58.1" # MSRV
     AC_MSG_CHECKING(for Rust version $MIN_RUSTC_VERSION or newer)
     AS_VERSION_COMPARE([$rustc_version], [$MIN_RUSTC_VERSION],
         [
@@ -2328,7 +2346,7 @@ fi
 
     AC_PATH_PROG(CBINDGEN, cbindgen, "no")
     if test "x$CBINDGEN" != "xno"; then
-      cbindgen_version=$(cbindgen --version | cut -d' ' -f2-)
+      cbindgen_version=$(cbindgen --version 2>&1 | cut -d' ' -f2-)
       min_cbindgen_version="0.10.0"
       AS_VERSION_COMPARE([$cbindgen_version], [$min_cbindgen_version],
           [cbindgen_ok="no"],
@@ -2534,7 +2552,7 @@ AM_CONDITIONAL([BUILD_SHARED_LIBRARY], [test "x$enable_shared" = "xyes"] && [tes
 
 AC_CONFIG_FILES(Makefile src/Makefile rust/Makefile rust/Cargo.toml rust/derive/Cargo.toml rust/.cargo/config)
 AC_CONFIG_FILES(qa/Makefile qa/coccinelle/Makefile)
-AC_CONFIG_FILES(rules/Makefile doc/Makefile doc/userguide/Makefile doc/devguide/Makefile)
+AC_CONFIG_FILES(rules/Makefile doc/Makefile doc/userguide/Makefile)
 AC_CONFIG_FILES(contrib/Makefile contrib/file_processor/Makefile contrib/file_processor/Action/Makefile contrib/file_processor/Processor/Makefile)
 AC_CONFIG_FILES(suricata.yaml etc/Makefile etc/suricata.logrotate etc/suricata.service)
 AC_CONFIG_FILES(python/Makefile python/suricata/config/defaults.py)
@@ -2544,6 +2562,7 @@ AC_OUTPUT
 
 SURICATA_BUILD_CONF="Suricata Configuration:
   AF_PACKET support:                       ${enable_af_packet}
+  AF_XDP support:                          ${enable_af_xdp}
   DPDK support:                            ${enable_dpdk}
   eBPF support:                            ${enable_ebpf}
   XDP support:                             ${have_xdp}
@@ -2571,6 +2590,7 @@ SURICATA_BUILD_CONF="Suricata Configuration:
   Hyperscan support:                       ${enable_hyperscan}
   Libnet support:                          ${enable_libnet}
   liblz4 support:                          ${enable_liblz4}
+  Landlock support:                        ${enable_landlock}
 
   Rust support:                            ${enable_rust}
   Rust strict mode:                        ${enable_rust_strict}
@@ -2581,8 +2601,6 @@ SURICATA_BUILD_CONF="Suricata Configuration:
 
   Python support:                          ${enable_python}
   Python path:                             ${python_path}
-  Python distutils                         ${have_python_distutils}
-  Python yaml                              ${have_python_yaml}
   Install suricatactl:                     ${install_suricatactl}
   Install suricatasc:                      ${install_suricatactl}
   Install suricata-update:                 ${install_suricata_update}${install_suricata_update_reason}

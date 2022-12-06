@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -32,6 +31,7 @@
 #include "detect-engine.h"
 #include "detect-engine-prefilter.h"
 #include "detect-engine-prefilter-common.h"
+#include "detect-engine-build.h"
 
 #include "detect-tcp-seq.h"
 

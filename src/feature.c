@@ -25,8 +25,10 @@
 
 #include "suricata-common.h"
 #include "feature.h"
+#include "threads.h"
 
-#include "util-hash.h"
+#include "util-debug.h"
+#include "util-hashlist.h"
 
 typedef struct FeatureEntryType {
 	const char *feature;
@@ -43,7 +45,7 @@ static uint32_t FeatureHashFunc(HashListTable *ht, void *data,
     int len = strlen(f->feature);
 
     for (int i = 0; i < len; i++)
-        hash += tolower((unsigned char)f->feature[i]);
+        hash += u8_tolower((unsigned char)f->feature[i]);
 
     return (hash % ht->array_size);
 }

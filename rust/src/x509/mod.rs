@@ -18,10 +18,10 @@
 // written by Pierre Chifflier  <chifflier@wzdftpd.net>
 
 use crate::common::rust_string_to_c;
-use nom;
+use nom7::Err;
 use std;
 use std::os::raw::c_char;
-use x509_parser::{error::X509Error, parse_x509_der, X509Certificate};
+use x509_parser::prelude::*;
 
 #[repr(u32)]
 pub enum X509DecodeError {
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn rs_x509_decode(
     err_code: *mut u32,
 ) -> *mut X509 {
     let slice = std::slice::from_raw_parts(input, input_len as usize);
-    let res = parse_x509_der(slice);
+    let res = X509Certificate::from_der(slice);
     match res {
         Ok((_rem, cert)) => Box::into_raw(Box::new(X509(cert))),
         Err(e) => {
@@ -112,8 +112,8 @@ pub unsafe extern "C" fn rs_x509_get_validity(
         return -1;
     }
     let x509 = &*ptr;
-    let n_b = x509.0.tbs_certificate.validity.not_before.to_timespec().sec;
-    let n_a = x509.0.tbs_certificate.validity.not_after.to_timespec().sec;
+    let n_b = x509.0.validity().not_before.timestamp();
+    let n_a = x509.0.validity().not_after.timestamp();
     *not_before = n_b;
     *not_after = n_a;
     0
@@ -132,10 +132,10 @@ pub unsafe extern "C" fn rs_x509_free(ptr: *mut X509) {
     drop(Box::from_raw(ptr));
 }
 
-fn x509_parse_error_to_errcode(e: &nom::Err<X509Error>) -> X509DecodeError {
+fn x509_parse_error_to_errcode(e: &Err<X509Error>) -> X509DecodeError {
     match e {
-        nom::Err::Incomplete(_) => X509DecodeError::InvalidLength,
-        nom::Err::Error(e) | nom::Err::Failure(e) => match e {
+        Err::Incomplete(_) => X509DecodeError::InvalidLength,
+        Err::Error(e) | Err::Failure(e) => match e {
             X509Error::InvalidVersion => X509DecodeError::InvalidVersion,
             X509Error::InvalidSerial => X509DecodeError::InvalidSerial,
             X509Error::InvalidAlgorithmIdentifier => X509DecodeError::InvalidAlgorithmIdentifier,

@@ -61,20 +61,18 @@
 
 #include "tree.h"
 
-#define STREAMING_BUFFER_NOFLAGS     0
-#define STREAMING_BUFFER_AUTOSLIDE  (1<<0)
-
 typedef struct StreamingBufferConfig_ {
-    uint32_t flags;
     uint32_t buf_slide;
     uint32_t buf_size;
-    void *(*Malloc)(size_t size);
     void *(*Calloc)(size_t n, size_t size);
     void *(*Realloc)(void *ptr, size_t orig_size, size_t size);
     void (*Free)(void *ptr, size_t size);
 } StreamingBufferConfig;
 
-#define STREAMING_BUFFER_CONFIG_INITIALIZER { 0, 0, 0, NULL, NULL, NULL, NULL, }
+#define STREAMING_BUFFER_CONFIG_INITIALIZER                                                        \
+    {                                                                                              \
+        0, 0, NULL, NULL, NULL,                                                                    \
+    }
 
 /**
  *  \brief block of continues data

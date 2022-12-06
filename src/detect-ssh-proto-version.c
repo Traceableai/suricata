@@ -29,7 +29,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 
 #include "detect.h"
@@ -38,6 +37,7 @@
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-state.h"
+#include "detect-engine-build.h"
 
 #include "flow.h"
 #include "flow-var.h"
@@ -200,7 +200,7 @@ static DetectSshVersionData *DetectSshVersionParse (DetectEngineCtx *de_ctx, con
             pcre2_substring_free((PCRE2_UCHAR *)str_ptr);
             goto error;
         }
-        ssh->len = strlen((char *) ssh->ver);
+        ssh->len = (uint16_t)strlen((char *)ssh->ver);
         pcre2_substring_free((PCRE2_UCHAR *)str_ptr);
 
         SCLogDebug("will look for ssh %s", ssh->ver);
@@ -272,6 +272,7 @@ void DetectSshVersionFree(DetectEngineCtx *de_ctx, void *ptr)
 }
 
 #ifdef UNITTESTS /* UNITTESTS */
+#include "detect-engine-alert.h"
 
 /**
  * \test DetectSshVersionTestParse01 is a test to make sure that we parse

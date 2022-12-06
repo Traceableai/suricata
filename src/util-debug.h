@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2021 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -27,10 +27,8 @@
 #include "suricata-common.h"
 
 #include "threads.h"
-#include "util-enum.h"
 #include "util-error.h"
 #include "util-debug-filters.h"
-#include "util-atomic.h"
 
 /**
  * \brief ENV vars that can be used to set the properties for the logging module
@@ -118,7 +116,7 @@ typedef struct SCLogOPIfaceCtx_ {
     SCLogOPIface iface;
 
     int16_t use_color;
-    int16_t type;
+    SCLogOPType type;
 
     /* the output file to be used if the interface is SC_LOG_IFACE_FILE */
     const char *file;
@@ -552,6 +550,8 @@ void SCLogErr(int x, const char *file, const char *func, const int line,
 #else
 #define FatalErrorOnInit(x, ...) FatalError(x, __VA_ARGS__)
 #endif
+
+#define BOOL2STR(b) (b) ? "true" : "false"
 
 SCLogInitData *SCLogAllocLogInitData(void);
 

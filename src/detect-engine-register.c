@@ -21,9 +21,9 @@
  * \author Victor Julien <victor@inliniac.net>
  */
 
+#include "detect-smb-ntlmssp.h"
 #include "suricata-common.h"
 #include "suricata.h"
-#include "debug.h"
 #include "detect.h"
 #include "flow.h"
 #include "flow-private.h"
@@ -53,6 +53,7 @@
 #include "detect-tls-cert-issuer.h"
 #include "detect-tls-cert-subject.h"
 #include "detect-tls-cert-serial.h"
+#include "detect-tls-random.h"
 #include "detect-tls-ja3-hash.h"
 #include "detect-tls-ja3-string.h"
 #include "detect-tls-ja3s-hash.h"
@@ -65,6 +66,7 @@
 #include "detect-http-ua.h"
 #include "detect-http-host.h"
 
+#include "detect-mark.h"
 #include "detect-nfs-procedure.h"
 #include "detect-nfs-version.h"
 
@@ -77,6 +79,7 @@
 
 #include "detect-base64-decode.h"
 #include "detect-base64-data.h"
+#include "detect-ipaddr.h"
 #include "detect-ipopts.h"
 #include "detect-tcp-flags.h"
 #include "detect-fragbits.h"
@@ -110,6 +113,7 @@
 #include "detect-msg.h"
 #include "detect-rev.h"
 #include "detect-flow.h"
+#include "detect-flow-age.h"
 #include "detect-tcp-window.h"
 #include "detect-ftpbounce.h"
 #include "detect-isdataat.h"
@@ -186,6 +190,7 @@
 #include "detect-krb5-errcode.h"
 #include "detect-krb5-msgtype.h"
 #include "detect-krb5-sname.h"
+#include "detect-krb5-ticket-encryption.h"
 #include "detect-sip-method.h"
 #include "detect-sip-uri.h"
 #include "detect-sip-protocol.h"
@@ -198,6 +203,10 @@
 #include "detect-rfb-name.h"
 #include "detect-target.h"
 #include "detect-template-rust-buffer.h"
+#include "detect-dhcp-leasetime.h"
+#include "detect-dhcp-rebinding-time.h"
+#include "detect-dhcp-renewal-time.h"
+#include "detect-snmp-usm.h"
 #include "detect-snmp-version.h"
 #include "detect-snmp-community.h"
 #include "detect-snmp-pdu_type.h"
@@ -516,6 +525,8 @@ void SigTableSetup(void)
     DetectTlsSerialRegister();
     DetectTlsFingerprintRegister();
     DetectTlsCertsRegister();
+    DetectTlsCertChainLenRegister();
+    DetectTlsRandomRegister();
 
     DetectTlsJa3HashRegister();
     DetectTlsJa3StringRegister();
@@ -543,6 +554,7 @@ void SigTableSetup(void)
     DetectOffsetRegister();
     DetectReplaceRegister();
     DetectFlowRegister();
+    DetectFlowAgeRegister();
     DetectWindowRegister();
     DetectRpcRegister();
     DetectFtpbounceRegister();
@@ -581,6 +593,8 @@ void SigTableSetup(void)
     DetectDceStubDataRegister();
     DetectSmbNamedPipeRegister();
     DetectSmbShareRegister();
+    DetectSmbNtlmsspUserRegister();
+    DetectSmbNtlmsspDomainRegister();
     DetectTlsRegister();
     DetectTlsValidityRegister();
     DetectTlsVersionRegister();
@@ -615,12 +629,14 @@ void SigTableSetup(void)
     DetectTcpmssRegister();
     DetectICMPv6hdrRegister();
     DetectICMPv6mtuRegister();
+    DetectIPAddrBufferRegister();
     DetectIpv4hdrRegister();
     DetectIpv6hdrRegister();
     DetectKrb5CNameRegister();
     DetectKrb5ErrCodeRegister();
     DetectKrb5MsgTypeRegister();
     DetectKrb5SNameRegister();
+    DetectKrb5TicketEncryptionRegister();
     DetectSipMethodRegister();
     DetectSipUriRegister();
     DetectSipProtocolRegister();
@@ -633,6 +649,10 @@ void SigTableSetup(void)
     DetectRfbNameRegister();
     DetectTargetRegister();
     DetectTemplateRustBufferRegister();
+    DetectDHCPLeaseTimeRegister();
+    DetectDHCPRebindingTimeRegister();
+    DetectDHCPRenewalTimeRegister();
+    DetectSNMPUsmRegister();
     DetectSNMPVersionRegister();
     DetectSNMPCommunityRegister();
     DetectSNMPPduTypeRegister();

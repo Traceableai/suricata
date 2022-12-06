@@ -24,6 +24,8 @@
 #ifndef __PACKET_QUEUE_H__
 #define __PACKET_QUEUE_H__
 
+#include "threads.h"
+
 /** \brief simple fifo queue for packets
  *
  *  \note PacketQueueNoLock and PacketQueue need to keep identical
@@ -55,7 +57,6 @@ typedef struct PacketQueue_ {
     SCCondT cond_q;
 } PacketQueue;
 
-#include "decode.h"
 
 void PacketEnqueueNoLock(PacketQueueNoLock *qnl, struct Packet_ *p);
 void PacketEnqueue (PacketQueue *, struct Packet_ *);

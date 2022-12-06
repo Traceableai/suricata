@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -86,7 +85,7 @@ static OutputInitResult OutputSNMPLogInitSub(ConfNode *conf,
 void JsonSNMPLogRegister(void)
 {
     /* Register as an eve sub-module. */
-    OutputRegisterTxSubModule(LOGGER_JSON_SNMP, "eve-log", "JsonSNMPLog", "eve-log.snmp",
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonSNMPLog", "eve-log.snmp",
             OutputSNMPLogInitSub, ALPROTO_SNMP, JsonSNMPLogger, JsonLogThreadInit,
             JsonLogThreadDeinit, NULL);
 

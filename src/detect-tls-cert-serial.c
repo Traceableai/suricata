@@ -25,7 +25,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -41,7 +40,6 @@
 #include "flow-var.h"
 
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-spm.h"
 #include "util-print.h"
 
@@ -75,7 +73,8 @@ void DetectTlsSerialRegister(void)
 {
     sigmatch_table[DETECT_AL_TLS_CERT_SERIAL].name = "tls.cert_serial";
     sigmatch_table[DETECT_AL_TLS_CERT_SERIAL].alias = "tls_cert_serial";
-    sigmatch_table[DETECT_AL_TLS_CERT_SERIAL].desc = "content modifier to match the TLS cert serial buffer";
+    sigmatch_table[DETECT_AL_TLS_CERT_SERIAL].desc =
+            "sticky buffer to match the TLS cert serial buffer";
     sigmatch_table[DETECT_AL_TLS_CERT_SERIAL].url = "/rules/tls-keywords.html#tls-cert-serial";
     sigmatch_table[DETECT_AL_TLS_CERT_SERIAL].Setup = DetectTlsSerialSetup;
 #ifdef UNITTESTS
@@ -201,7 +200,7 @@ static void DetectTlsSerialSetupCallback(const DetectEngineCtx *de_ctx,
         for (u = 0; u < cd->content_len; u++)
         {
             if (islower(cd->content[u])) {
-                cd->content[u] = toupper(cd->content[u]);
+                cd->content[u] = u8_toupper(cd->content[u]);
                 changed = true;
             }
         }

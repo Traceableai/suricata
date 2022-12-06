@@ -33,13 +33,8 @@
 #ifndef __APP_LAYER_HTP_H__
 #define __APP_LAYER_HTP_H__
 
-#include "util-radix-tree.h"
-#include "util-file.h"
-#include "app-layer-htp-mem.h"
-#include "detect-engine-state.h"
-#include "util-streaming-buffer.h"
-#include "app-layer-htp-range.h"
 #include "rust.h"
+#include "app-layer-frames.h"
 
 #include <htp/htp.h>
 
@@ -69,12 +64,9 @@
 // 0x0001 not used
 #define HTP_FLAG_STATE_CLOSED_TS    0x0002    /**< Flag to indicate that HTTP
                                              connection is closed */
-#define HTP_FLAG_STATE_CLOSED_TC    0x0004    /**< Flag to indicate that HTTP
-                                             connection is closed */
-#define HTP_FLAG_STORE_FILES_TS     0x0040
-#define HTP_FLAG_STORE_FILES_TC     0x0080
-#define HTP_FLAG_STORE_FILES_TX_TS  0x0100
-#define HTP_FLAG_STORE_FILES_TX_TC  0x0200
+#define HTP_FLAG_STATE_CLOSED_TC                                                                   \
+    0x0004 /**< Flag to indicate that HTTP                                                         \
+          connection is closed */
 
 enum {
     HTP_BODY_REQUEST_NONE = 0,
@@ -142,6 +134,8 @@ enum {
     HTTP_DECODER_EVENT_MULTIPART_INVALID_HEADER,
 
     HTTP_DECODER_EVENT_TOO_MANY_WARNINGS,
+
+    HTTP_DECODER_EVENT_FAILED_PROTOCOL_CHANGE,
 };
 
 typedef enum HtpSwfCompressType_ {
@@ -241,7 +235,11 @@ typedef struct HtpTxUserData_ {
      */
     uint8_t *boundary;
 
+    HttpRangeContainerBlock *file_range; /**< used to assign track ids to range file */
+
     AppLayerTxData tx_data;
+    FileContainer files_ts;
+    FileContainer files_tc;
     struct timeval request_start_timestamp;
     struct timeval response_end_timestamp;
     uint8_t response_end_time_updated;
@@ -255,19 +253,17 @@ typedef struct HtpState_ {
     Flow *f;                /**< Needed to retrieve the original flow when using HTPLib callbacks */
     uint64_t transaction_cnt;
     uint64_t store_tx_id;
-    FileContainer *files_ts;
-    FileContainer *files_tc;
     const struct HTPCfgRec_ *cfg;
     uint16_t flags;
     uint16_t events;
     uint16_t htp_messages_offset; /**< offset into conn->messages list */
-    uint32_t file_track_id;             /**< used to assign file track ids to files */
-    HttpRangeContainerBlock *file_range; /**< used to assign track ids to range file */
+    uint32_t file_track_id;       /**< used to assign file track ids to files */
     uint64_t last_request_data_stamp;
     uint64_t last_response_data_stamp;
     StreamSlice *slice;
     FrameId request_frame_id;
     FrameId response_frame_id;
+    AppLayerStateData state_data;
 } HtpState;
 
 /** part of the engine needs the request body (e.g. http_client_body keyword) */

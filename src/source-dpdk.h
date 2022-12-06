@@ -24,8 +24,11 @@
 #ifndef __SOURCE_DPDK_H__
 #define __SOURCE_DPDK_H__
 
-#include "queue.h"
-#include "util-dpdk.h"
+#include "suricata-common.h"
+
+#ifdef HAVE_DPDK
+#include <rte_ethdev.h>
+#endif
 
 typedef enum { DPDK_COPY_MODE_NONE, DPDK_COPY_MODE_TAP, DPDK_COPY_MODE_IPS } DpdkCopyModeEnum;
 
@@ -38,6 +41,7 @@ typedef enum { DPDK_COPY_MODE_NONE, DPDK_COPY_MODE_TAP, DPDK_COPY_MODE_IPS } Dpd
 // Offloads
 #define DPDK_RX_CHECKSUM_OFFLOAD (1 << 4) /**< Enable chsum offload */
 
+void DPDKSetTimevalOfMachineStart(void);
 typedef struct DPDKIfaceConfig_ {
 #ifdef HAVE_DPDK
     char iface[RTE_ETH_NAME_MAX_LEN];
@@ -52,6 +56,7 @@ typedef struct DPDKIfaceConfig_ {
     /* DPDK flags */
     uint32_t flags;
     ChecksumValidationMode checksum_mode;
+    uint64_t rss_hf;
     /* set maximum transmission unit of the device in bytes */
     uint16_t mtu;
     uint16_t nb_rx_queues;

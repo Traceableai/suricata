@@ -27,8 +27,9 @@
 
 #ifdef PROFILING
 
-#include "util-profiling-locks.h"
+#include "detect.h"
 #include "util-cpu.h"
+#include "util-profiling-locks.h"
 
 extern int profiling_rules_enabled;
 extern int profiling_packets_enabled;
@@ -277,28 +278,37 @@ PktProfiling *SCProfilePacketStart(void);
 extern int profiling_prefilter_enabled;
 extern thread_local int profiling_prefilter_entered;
 
-#define PREFILTER_PROFILING_START \
-    uint64_t profile_prefilter_start_ = 0; \
-    uint64_t profile_prefilter_end_ = 0; \
-    if (profiling_prefilter_enabled) { \
-        if (profiling_prefilter_entered > 0) { \
-            SCLogError(SC_ERR_FATAL, "Re-entered profiling, exiting."); \
-            abort(); \
-        } \
-        profiling_prefilter_entered++; \
-        profile_prefilter_start_ = UtilCpuGetTicks(); \
+#define PREFILTER_PROFILING_START(det_ctx)                                                         \
+    (det_ctx)->prefilter_bytes = 0;                                                                \
+    (det_ctx)->prefilter_bytes_called = 0;                                                         \
+    uint64_t profile_prefilter_start_ = 0;                                                         \
+    uint64_t profile_prefilter_end_ = 0;                                                           \
+    if (profiling_prefilter_enabled) {                                                             \
+        if (profiling_prefilter_entered > 0) {                                                     \
+            SCLogError(SC_ERR_FATAL, "Re-entered profiling, exiting.");                            \
+            abort();                                                                               \
+        }                                                                                          \
+        profiling_prefilter_entered++;                                                             \
+        profile_prefilter_start_ = UtilCpuGetTicks();                                              \
     }
 
 /* we allow this macro to be called if profiling_prefilter_entered == 0,
  * so that we don't have to refactor some of the detection code. */
-#define PREFILTER_PROFILING_END(ctx, profile_id) \
-    if (profiling_prefilter_enabled && profiling_prefilter_entered) { \
-        profile_prefilter_end_ = UtilCpuGetTicks(); \
-        if (profile_prefilter_end_ > profile_prefilter_start_) \
-            SCProfilingPrefilterUpdateCounter((ctx),(profile_id),(profile_prefilter_end_ - profile_prefilter_start_)); \
-        profiling_prefilter_entered--; \
+#define PREFILTER_PROFILING_END(ctx, profile_id)                                                   \
+    if (profiling_prefilter_enabled && profiling_prefilter_entered) {                              \
+        profile_prefilter_end_ = UtilCpuGetTicks();                                                \
+        if (profile_prefilter_end_ > profile_prefilter_start_)                                     \
+            SCProfilingPrefilterUpdateCounter((ctx), (profile_id),                                 \
+                    (profile_prefilter_end_ - profile_prefilter_start_), (ctx)->prefilter_bytes,   \
+                    (ctx)->prefilter_bytes_called);                                                \
+        profiling_prefilter_entered--;                                                             \
     }
 
+#define PREFILTER_PROFILING_ADD_BYTES(det_ctx, bytes)                                              \
+    (det_ctx)->prefilter_bytes += (bytes);                                                         \
+    (det_ctx)->prefilter_bytes_called++
+
+struct SCProfileDetectCtx_;
 void SCProfilingRulesGlobalInit(void);
 void SCProfilingRuleDestroyCtx(struct SCProfileDetectCtx_ *);
 void SCProfilingRuleInitCounters(DetectEngineCtx *);
@@ -317,7 +327,8 @@ struct SCProfilePrefilterDetectCtx_;
 void SCProfilingPrefilterGlobalInit(void);
 void SCProfilingPrefilterDestroyCtx(DetectEngineCtx *);
 void SCProfilingPrefilterInitCounters(DetectEngineCtx *);
-void SCProfilingPrefilterUpdateCounter(DetectEngineThreadCtx *det_ctx, int id, uint64_t ticks);
+void SCProfilingPrefilterUpdateCounter(DetectEngineThreadCtx *det_ctx, int id, uint64_t ticks,
+        uint64_t bytes, uint64_t bytes_called);
 void SCProfilingPrefilterThreadSetup(struct SCProfilePrefilterDetectCtx_ *, DetectEngineThreadCtx *);
 void SCProfilingPrefilterThreadCleanup(DetectEngineThreadCtx *);
 
@@ -370,8 +381,9 @@ void SCProfilingDump(void);
 #define FLOWWORKER_PROFILING_START(p, id)
 #define FLOWWORKER_PROFILING_END(p, id)
 
-#define PREFILTER_PROFILING_START
+#define PREFILTER_PROFILING_START(ctx)
 #define PREFILTER_PROFILING_END(ctx, profile_id)
+#define PREFILTER_PROFILING_ADD_BYTES(det_ctx, bytes)
 
 #endif /* PROFILING */
 

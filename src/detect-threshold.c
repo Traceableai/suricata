@@ -49,6 +49,7 @@
 #include "detect-threshold.h"
 #include "detect-engine-threshold.h"
 #include "detect-engine-address.h"
+#include "detect-engine-build.h"
 
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
@@ -118,7 +119,7 @@ static DetectThresholdData *DetectThresholdParse(const char *rawstr)
     int second_found = 0, count_found = 0;
     int type_found = 0, track_found = 0;
     int second_pos = 0, count_pos = 0;
-    uint16_t pos = 0;
+    size_t pos = 0;
     int i = 0;
 
     copy_str = SCStrdup(rawstr);
@@ -339,9 +340,11 @@ error:
 #ifdef UNITTESTS
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
+#include "detect-engine-alert.h"
 #include "util-time.h"
 #include "util-hashlist.h"
-
+#include "packet.h"
+#include "action-globals.h"
 /**
  * \test ThresholdTestParse01 is a test for a valid threshold options
  *

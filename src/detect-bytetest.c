@@ -25,11 +25,11 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 #include "detect-engine.h"
 #include "detect-parse.h"
+#include "detect-engine-build.h"
 
 #include "detect-content.h"
 #include "detect-uricontent.h"

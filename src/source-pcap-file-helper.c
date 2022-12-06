@@ -24,9 +24,12 @@
  */
 
 #include "source-pcap-file-helper.h"
+#include "suricata.h"
+#include "util-datalink.h"
 #include "util-checksum.h"
 #include "util-profiling.h"
 #include "source-pcap-file.h"
+#include "util-exception-policy.h"
 
 extern int max_pending_packets;
 extern PcapFileGlobalVars pcap_g;
@@ -59,7 +62,13 @@ void CleanupPcapFileFileVars(PcapFileFileVars *pfv)
 void PcapFileCallbackLoop(char *user, struct pcap_pkthdr *h, u_char *pkt)
 {
     SCEnter();
-
+#ifdef DEBUG
+    if (unlikely((pcap_g.cnt + 1ULL) == g_eps_pcap_packet_loss)) {
+        SCLogNotice("skipping packet %" PRIu64, g_eps_pcap_packet_loss);
+        pcap_g.cnt++;
+        SCReturn;
+    }
+#endif
     PcapFileFileVars *ptv = (PcapFileFileVars *)user;
     Packet *p = PacketGetFromQueueOrAlloc();
 
@@ -70,7 +79,7 @@ void PcapFileCallbackLoop(char *user, struct pcap_pkthdr *h, u_char *pkt)
 
     PKT_SET_SRC(p, PKT_SRC_WIRE);
     p->ts.tv_sec = h->ts.tv_sec;
-    p->ts.tv_usec = h->ts.tv_usec;
+    p->ts.tv_usec = h->ts.tv_usec % 1000000;
     SCLogDebug("p->ts.tv_sec %"PRIuMAX"", (uintmax_t)p->ts.tv_sec);
     p->datalink = ptv->datalink;
     p->pcap_cnt = ++pcap_g.cnt;
@@ -223,6 +232,7 @@ TmEcode InitPcapFile(PcapFileFileVars *pfv)
 
     pfv->datalink = pcap_datalink(pfv->pcap_handle);
     SCLogDebug("datalink %" PRId32 "", pfv->datalink);
+    DatalinkSetGlobalType(pfv->datalink);
 
     if (!PeekFirstPacketTimestamp(pfv))
         SCReturnInt(TM_ECODE_FAILED);

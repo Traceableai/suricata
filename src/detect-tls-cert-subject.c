@@ -25,7 +25,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -42,7 +41,6 @@
 #include "flow-var.h"
 
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-spm.h"
 #include "util-print.h"
 
@@ -71,7 +69,8 @@ void DetectTlsSubjectRegister(void)
 {
     sigmatch_table[DETECT_AL_TLS_CERT_SUBJECT].name = "tls.cert_subject";
     sigmatch_table[DETECT_AL_TLS_CERT_SUBJECT].alias = "tls_cert_subject";
-    sigmatch_table[DETECT_AL_TLS_CERT_SUBJECT].desc = "content modifier to match specifically and only on the TLS cert subject buffer";
+    sigmatch_table[DETECT_AL_TLS_CERT_SUBJECT].desc =
+            "sticky buffer to match specifically and only on the TLS cert subject buffer";
     sigmatch_table[DETECT_AL_TLS_CERT_SUBJECT].url = "/rules/tls-keywords.html#tls-cert-subject";
     sigmatch_table[DETECT_AL_TLS_CERT_SUBJECT].Setup = DetectTlsSubjectSetup;
 #ifdef UNITTESTS

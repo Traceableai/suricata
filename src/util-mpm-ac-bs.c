@@ -51,6 +51,7 @@
 #include "detect.h"
 #include "detect-parse.h"
 #include "detect-engine.h"
+#include "detect-engine-build.h"
 #include "util-mpm-ac-bs.h"
 
 #include "conf.h"
@@ -59,6 +60,7 @@
 #include "util-unittest-helper.h"
 #include "util-memcmp.h"
 #include "util-memcpy.h"
+#include "util-validate.h"
 
 void SCACBSInitCtx(MpmCtx *);
 void SCACBSInitThreadCtx(MpmCtx *, MpmThreadCtx *);
@@ -495,7 +497,8 @@ static inline void SCACBSCreateDeltaTable(MpmCtx *mpm_ctx)
         memset(&q, 0, sizeof(StateQueue));
 
         for (ascii_code = 0; ascii_code < 256; ascii_code++) {
-            SC_AC_BS_STATE_TYPE_U16 temp_state = ctx->goto_table[0][ascii_code];
+            DEBUG_VALIDATE_BUG_ON(ctx->goto_table[0][ascii_code] > UINT16_MAX);
+            SC_AC_BS_STATE_TYPE_U16 temp_state = (uint16_t)ctx->goto_table[0][ascii_code];
             ctx->state_table_u16[0][ascii_code] = temp_state;
             if (temp_state != 0)
                 SCACBSEnqueue(&q, temp_state);
@@ -508,7 +511,8 @@ static inline void SCACBSCreateDeltaTable(MpmCtx *mpm_ctx)
                 int32_t temp_state = ctx->goto_table[r_state][ascii_code];
                 if (temp_state != SC_AC_BS_FAIL) {
                     SCACBSEnqueue(&q, temp_state);
-                    ctx->state_table_u16[r_state][ascii_code] = temp_state;
+                    DEBUG_VALIDATE_BUG_ON(temp_state > UINT16_MAX);
+                    ctx->state_table_u16[r_state][ascii_code] = (uint16_t)temp_state;
                 } else {
                     ctx->state_table_u16[r_state][ascii_code] =
                         ctx->state_table_u16[ctx->failure_table[r_state]][ascii_code];
@@ -1401,6 +1405,7 @@ void SCACBSPrintInfo(MpmCtx *mpm_ctx)
 /*************************************Unittests********************************/
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 
 static int SCACBSTest01(void)
 {
@@ -1847,8 +1852,8 @@ static int SCACBSTest13(void)
     SCACBSInitThreadCtx(&mpm_ctx, &mpm_thread_ctx);
 
     /* 1 match */
-    const char *pat = "abcdefghijklmnopqrstuvwxyzABCD";
-    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, strlen(pat), 0, 0, 0, 0, 0);
+    const char pat[] = "abcdefghijklmnopqrstuvwxyzABCD";
+    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, sizeof(pat) - 1, 0, 0, 0, 0, 0);
     PmqSetup(&pmq);
 
     SCACBSPreparePatterns(&mpm_ctx);
@@ -1881,8 +1886,8 @@ static int SCACBSTest14(void)
     SCACBSInitThreadCtx(&mpm_ctx, &mpm_thread_ctx);
 
     /* 1 match */
-    const char *pat = "abcdefghijklmnopqrstuvwxyzABCDE";
-    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, strlen(pat), 0, 0, 0, 0, 0);
+    const char pat[] = "abcdefghijklmnopqrstuvwxyzABCDE";
+    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, sizeof(pat) - 1, 0, 0, 0, 0, 0);
     PmqSetup(&pmq);
 
     SCACBSPreparePatterns(&mpm_ctx);
@@ -1915,8 +1920,8 @@ static int SCACBSTest15(void)
     SCACBSInitThreadCtx(&mpm_ctx, &mpm_thread_ctx);
 
     /* 1 match */
-    const char *pat = "abcdefghijklmnopqrstuvwxyzABCDEF";
-    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, strlen(pat), 0, 0, 0, 0, 0);
+    const char pat[] = "abcdefghijklmnopqrstuvwxyzABCDEF";
+    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, sizeof(pat) - 1, 0, 0, 0, 0, 0);
     PmqSetup(&pmq);
 
     SCACBSPreparePatterns(&mpm_ctx);
@@ -1949,8 +1954,8 @@ static int SCACBSTest16(void)
     SCACBSInitThreadCtx(&mpm_ctx, &mpm_thread_ctx);
 
     /* 1 match */
-    const char *pat = "abcdefghijklmnopqrstuvwxyzABC";
-    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, strlen(pat), 0, 0, 0, 0, 0);
+    const char pat[] = "abcdefghijklmnopqrstuvwxyzABC";
+    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, sizeof(pat) - 1, 0, 0, 0, 0, 0);
     PmqSetup(&pmq);
 
     SCACBSPreparePatterns(&mpm_ctx);
@@ -1983,8 +1988,8 @@ static int SCACBSTest17(void)
     SCACBSInitThreadCtx(&mpm_ctx, &mpm_thread_ctx);
 
     /* 1 match */
-    const char *pat = "abcdefghijklmnopqrstuvwxyzAB";
-    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, strlen(pat), 0, 0, 0, 0, 0);
+    const char pat[] = "abcdefghijklmnopqrstuvwxyzAB";
+    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, sizeof(pat) - 1, 0, 0, 0, 0, 0);
     PmqSetup(&pmq);
 
     SCACBSPreparePatterns(&mpm_ctx);
@@ -2017,8 +2022,13 @@ static int SCACBSTest18(void)
     SCACBSInitThreadCtx(&mpm_ctx, &mpm_thread_ctx);
 
     /* 1 match */
-    const char *pat = "abcde""fghij""klmno""pqrst""uvwxy""z";
-    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, strlen(pat), 0, 0, 0, 0, 0);
+    const char pat[] = "abcde"
+                       "fghij"
+                       "klmno"
+                       "pqrst"
+                       "uvwxy"
+                       "z";
+    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, sizeof(pat) - 1, 0, 0, 0, 0, 0);
     PmqSetup(&pmq);
 
     SCACBSPreparePatterns(&mpm_ctx);
@@ -2051,8 +2061,8 @@ static int SCACBSTest19(void)
     SCACBSInitThreadCtx(&mpm_ctx, &mpm_thread_ctx);
 
     /* 1 */
-    const char *pat = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, strlen(pat), 0, 0, 0, 0, 0);
+    const char pat[] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, sizeof(pat) - 1, 0, 0, 0, 0, 0);
     PmqSetup(&pmq);
 
     SCACBSPreparePatterns(&mpm_ctx);
@@ -2084,8 +2094,14 @@ static int SCACBSTest20(void)
     SCACBSInitThreadCtx(&mpm_ctx, &mpm_thread_ctx);
 
     /* 1 */
-    const char *pat = "AAAAA""AAAAA""AAAAA""AAAAA""AAAAA""AAAAA""AA";
-    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, strlen(pat), 0, 0, 0, 0, 0);
+    const char pat[] = "AAAAA"
+                       "AAAAA"
+                       "AAAAA"
+                       "AAAAA"
+                       "AAAAA"
+                       "AAAAA"
+                       "AA";
+    MpmAddPatternCS(&mpm_ctx, (uint8_t *)pat, sizeof(pat) - 1, 0, 0, 0, 0, 0);
     PmqSetup(&pmq);
 
     SCACBSPreparePatterns(&mpm_ctx);
@@ -2406,8 +2422,8 @@ static int SCACBSTest29(void)
 
 static int SCACBSTest30(void)
 {
-    uint8_t *buf = (uint8_t *)"onetwothreefourfivesixseveneightnine";
-    uint16_t buflen = strlen((char *)buf);
+    uint8_t buf[] = "onetwothreefourfivesixseveneightnine";
+    uint16_t buflen = sizeof(buf) - 1;
     Packet *p = NULL;
     ThreadVars th_v;
     DetectEngineThreadCtx *det_ctx = NULL;

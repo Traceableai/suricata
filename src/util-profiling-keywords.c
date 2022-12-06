@@ -25,23 +25,14 @@
  */
 
 #include "suricata-common.h"
-#include "decode.h"
-#include "detect.h"
-#include "detect-engine.h"
-#include "conf.h"
-
-#include "tm-threads.h"
-
-#include "util-unittest.h"
-#include "util-byte.h"
 #include "util-profiling.h"
 #include "util-profiling-locks.h"
 
 #ifdef PROFILING
-
-#ifndef MIN
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#endif
+#include "detect-engine.h"
+#include "tm-threads.h"
+#include "util-conf.h"
+#include "util-time.h"
 
 /**
  * Extra data for rule profiling.
@@ -125,12 +116,12 @@ static void DoDump(SCProfileKeywordDetectCtx *rules_ctx, FILE *fp, const char *n
         double avgticks_match = 0;
         double avgticks_no_match = 0;
         if (ticks && d->checks) {
-            avgticks = (ticks / d->checks);
+            avgticks = (double)(ticks / d->checks);
 
             if (d->ticks_match && d->matches)
-                avgticks_match = (d->ticks_match / d->matches);
+                avgticks_match = (double)(d->ticks_match / d->matches);
             if (d->ticks_no_match && (d->checks - d->matches) != 0)
-                avgticks_no_match = (d->ticks_no_match / (d->checks - d->matches));
+                avgticks_no_match = (double)(d->ticks_no_match / (d->checks - d->matches));
         }
 
         fprintf(fp,

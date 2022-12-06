@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2021 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -47,6 +47,7 @@
 #include "util-debug.h"
 #include "util-print.h"
 #include "util-memcmp.h"
+#include "util-profiling.h"
 
 #include "app-layer.h"
 #include "app-layer-parser.h"
@@ -166,11 +167,9 @@ static InspectionBuffer *GetBuffer2ForTX(DetectEngineThreadCtx *det_ctx,
 /** \internal
  *  \brief custom inspect function to utilize the cached headers
  */
-static int DetectEngineInspectBufferHttpHeader(
-        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const DetectEngineAppInspectionEngine *engine,
-        const Signature *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
+static uint8_t DetectEngineInspectBufferHttpHeader(DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
+        const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
 {
     SCEnter();
 
@@ -240,10 +239,8 @@ typedef struct PrefilterMpmHttpHeaderCtx {
  *  \param txv tx to inspect
  *  \param pectx inspection context
  */
-static void PrefilterMpmHttpHeader(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterMpmHttpHeader(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -273,13 +270,12 @@ static void PrefilterMpmHttpHeader(DetectEngineThreadCtx *det_ctx,
     if (data != NULL && data_len >= mpm_ctx->minlen) {
         (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                 &det_ctx->mtcu, &det_ctx->pmq, data, data_len);
+        PREFILTER_PROFILING_ADD_BYTES(det_ctx, data_len);
     }
 }
 
-static void PrefilterMpmHttpTrailer(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterMpmHttpTrailer(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -291,7 +287,7 @@ static void PrefilterMpmHttpTrailer(DetectEngineThreadCtx *det_ctx,
             ((flags & STREAM_TOCLIENT) && !htud->response_has_trailers))) {
         SCReturn;
     }
-    PrefilterMpmHttpHeader(det_ctx, pectx, p, f, txv, idx, flags);
+    PrefilterMpmHttpHeader(det_ctx, pectx, p, f, txv, idx, _txd, flags);
     SCReturn;
 }
 

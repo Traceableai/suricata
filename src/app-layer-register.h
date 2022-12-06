@@ -24,6 +24,8 @@
 #ifndef __APP_LAYER_REGISTER_H__
 #define __APP_LAYER_REGISTER_H__
 
+#include "app-layer-detect-proto.h"
+
 typedef struct AppLayerParser {
     const char *name;
     const char *default_port;
@@ -57,12 +59,13 @@ typedef struct AppLayerParser {
     void *(*LocalStorageAlloc)(void);
     void (*LocalStorageFree)(void *);
 
-    FileContainer *(*StateGetFiles)(void *, uint8_t);
+    FileContainer *(*GetTxFiles)(void *, uint8_t);
 
     AppLayerGetTxIterTuple (*GetTxIterator)(const uint8_t ipproto,
             const AppProto alproto, void *alstate, uint64_t min_tx_id,
             uint64_t max_tx_id, AppLayerGetTxIterState *istate);
 
+    AppLayerStateData *(*GetStateData)(void *state);
     AppLayerTxData *(*GetTxData)(void *tx);
     bool (*ApplyTxConfig)(void *state, void *tx, int mode, AppLayerTxConfig);
 

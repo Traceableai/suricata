@@ -30,6 +30,7 @@
 #include "detect-parse.h"
 
 #include "detect-engine.h"
+#include "detect-engine-build.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-state.h"
 #include "detect-engine-prefilter.h"
@@ -40,6 +41,7 @@
 #include "flow-util.h"
 
 #include "app-layer.h"
+#include "app-layer-parser.h"
 #include "queue.h"
 #include "stream-tcp-reassemble.h"
 
@@ -157,8 +159,7 @@ void DetectDceStubDataRegister(void)
 }
 
 /**
- * \brief Creates a SigMatch for the \"dce_stub_data\" keyword being sent as argument,
- *        and appends it to the Signature(s).
+ * \brief setups the dce_stub_data list
  *
  * \param de_ctx Pointer to the detection engine context
  * \param s      Pointer to signature for the current Signature being parsed
@@ -170,21 +171,17 @@ void DetectDceStubDataRegister(void)
 
 static int DetectDceStubDataSetup(DetectEngineCtx *de_ctx, Signature *s, const char *arg)
 {
-    if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_DCERPC &&
-        s->alproto != ALPROTO_SMB) {
-        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
+    if (DetectSignatureSetAppProto(s, ALPROTO_DCERPC) < 0)
         return -1;
-    }
     if (DetectBufferSetActiveList(s, g_dce_stub_data_buffer_id) < 0)
         return -1;
-
-    s->init_data->init_flags |= SIG_FLAG_INIT_DCERPC;
     return 0;
 }
 
 /************************************Unittests*********************************/
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 
 static int DetectDceStubDataTestParse01(void)
 {
@@ -697,16 +694,13 @@ static int DetectDceStubDataTestParse02(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER | STREAM_START, dcerpc_bind,
                             dcerpc_bind_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     dcerpc_state = f.alstate;
     if (dcerpc_state == NULL) {
@@ -724,16 +718,13 @@ static int DetectDceStubDataTestParse02(void)
         goto end;
 
     /* do detect */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOCLIENT, dcerpc_bindack,
                             dcerpc_bindack_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOSERVER;
     p->flowflags |= FLOW_PKT_TOCLIENT;
@@ -744,16 +735,13 @@ static int DetectDceStubDataTestParse02(void)
     if (PacketAlertCheck(p, 1))
         goto end;
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER | STREAM_EOF, dcerpc_request,
                             dcerpc_request_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOCLIENT;
     p->flowflags |= FLOW_PKT_TOSERVER;
@@ -1441,16 +1429,13 @@ static int DetectDceStubDataTestParse04(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER | STREAM_START, dcerpc_bind,
                             dcerpc_bind_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
     p->flowflags &=~ FLOW_PKT_TOCLIENT;
     p->flowflags |= FLOW_PKT_TOSERVER;
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
@@ -1461,31 +1446,25 @@ static int DetectDceStubDataTestParse04(void)
         goto end;
     }
 
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOCLIENT, dcerpc_bindack,
                             dcerpc_bindack_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
     p->flowflags &=~ FLOW_PKT_TOSERVER;
     p->flowflags |= FLOW_PKT_TOCLIENT;
     SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
 
     /* request1 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER, dcerpc_request1,
                             dcerpc_request1_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOCLIENT;
     p->flowflags |= FLOW_PKT_TOSERVER;
@@ -1496,16 +1475,13 @@ static int DetectDceStubDataTestParse04(void)
         goto end;
 
     /* response1 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOCLIENT, dcerpc_response1,
                             dcerpc_response1_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOSERVER;
     p->flowflags |= FLOW_PKT_TOCLIENT;
@@ -1516,16 +1492,13 @@ static int DetectDceStubDataTestParse04(void)
         goto end;
 
     /* request2 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER, dcerpc_request2,
                             dcerpc_request2_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOCLIENT;
     p->flowflags |= FLOW_PKT_TOSERVER;
@@ -1536,16 +1509,13 @@ static int DetectDceStubDataTestParse04(void)
         goto end;
 
     /* response2 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOCLIENT, dcerpc_response2,
                             dcerpc_response2_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOSERVER;
     p->flowflags |= FLOW_PKT_TOCLIENT;
@@ -1555,16 +1525,13 @@ static int DetectDceStubDataTestParse04(void)
     if (PacketAlertCheck(p, 1) || PacketAlertCheck(p, 2) || PacketAlertCheck(p, 3))
         goto end;
     /* request3 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER, dcerpc_request3,
                             dcerpc_request3_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOCLIENT;
     p->flowflags |= FLOW_PKT_TOSERVER;
@@ -1575,16 +1542,13 @@ static int DetectDceStubDataTestParse04(void)
         goto end;
 
     /* response3 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOCLIENT | STREAM_EOF, dcerpc_response3,
                             dcerpc_response3_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOSERVER;
     p->flowflags |= FLOW_PKT_TOCLIENT;
@@ -1759,16 +1723,13 @@ static int DetectDceStubDataTestParse05(void)
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
     /* request1 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER | STREAM_START, dcerpc_request1,
                             dcerpc_request1_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     dcerpc_state = f.alstate;
     if (dcerpc_state == NULL) {
@@ -1785,16 +1746,13 @@ static int DetectDceStubDataTestParse05(void)
         goto end;
 
     /* response1 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOCLIENT, dcerpc_response1,
                             dcerpc_response1_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOSERVER;
     p->flowflags |= FLOW_PKT_TOCLIENT;
@@ -1805,16 +1763,13 @@ static int DetectDceStubDataTestParse05(void)
         goto end;
 
     /* request2 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER, dcerpc_request2,
                             dcerpc_request2_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOCLIENT;
     p->flowflags |= FLOW_PKT_TOSERVER;
@@ -1825,16 +1780,13 @@ static int DetectDceStubDataTestParse05(void)
         goto end;
 
     /* response2 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOCLIENT, dcerpc_response2,
                             dcerpc_response2_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOSERVER;
     p->flowflags |= FLOW_PKT_TOCLIENT;
@@ -1845,16 +1797,13 @@ static int DetectDceStubDataTestParse05(void)
         goto end;
 
     /* request3 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOSERVER, dcerpc_request3,
                             dcerpc_request3_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOCLIENT;
     p->flowflags |= FLOW_PKT_TOSERVER;
@@ -1865,16 +1814,13 @@ static int DetectDceStubDataTestParse05(void)
         goto end;
 
     /* response3 */
-    FLOWLOCK_WRLOCK(&f);
     r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
                             STREAM_TOCLIENT | STREAM_EOF, dcerpc_response3,
                             dcerpc_response3_len);
     if (r != 0) {
         SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     p->flowflags &=~ FLOW_PKT_TOSERVER;
     p->flowflags |= FLOW_PKT_TOCLIENT;

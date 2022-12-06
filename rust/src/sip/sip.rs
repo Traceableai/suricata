@@ -46,13 +46,18 @@ pub enum SIPEvent {
 }
 
 pub struct SIPState {
+    state_data: AppLayerStateData,
     transactions: Vec<SIPTransaction>,
     tx_id: u64,
 }
 
 impl State<SIPTransaction> for SIPState {
-    fn get_transactions(&self) -> &[SIPTransaction] {
-        &self.transactions
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&SIPTransaction> {
+        self.transactions.get(index)
     }
 }
 
@@ -74,6 +79,7 @@ impl Transaction for SIPTransaction {
 impl SIPState {
     pub fn new() -> SIPState {
         SIPState {
+            state_data: AppLayerStateData::new(),
             transactions: Vec::new(),
             tx_id: 0,
         }
@@ -97,7 +103,7 @@ impl SIPState {
             .transactions
             .iter()
             .position(|tx| tx.id == tx_id + 1);
-        debug_assert!(tx != None);
+        debug_assert!(tx.is_some());
         if let Some(idx) = tx {
             let _ = self.transactions.remove(idx);
         }
@@ -112,7 +118,7 @@ impl SIPState {
     // app-layer-frame-documentation tag start: parse_request
     fn parse_request(&mut self, flow: *const core::Flow, stream_slice: StreamSlice) -> bool {
         let input = stream_slice.as_slice();
-        let _pdu = Frame::new_ts(
+        let _pdu = Frame::new(
             flow,
             &stream_slice,
             input,
@@ -146,7 +152,7 @@ impl SIPState {
 
     fn parse_response(&mut self, flow: *const core::Flow, stream_slice: StreamSlice) -> bool {
         let input = stream_slice.as_slice();
-        let _pdu = Frame::new_tc(flow, &stream_slice, input, input.len() as i64, SIPFrameType::Pdu as u8);
+        let _pdu = Frame::new(flow, &stream_slice, input, input.len() as i64, SIPFrameType::Pdu as u8);
         SCLogDebug!("tc: pdu {:?}", _pdu);
 
         match sip_parse_response(input) {
@@ -188,7 +194,7 @@ impl SIPTransaction {
 // app-layer-frame-documentation tag start: function to add frames
 fn sip_frames_ts(flow: *const core::Flow, stream_slice: &StreamSlice, r: &Request) {
     let oi = stream_slice.as_slice();
-    let _f = Frame::new_ts(
+    let _f = Frame::new(
         flow,
         stream_slice,
         oi,
@@ -197,7 +203,7 @@ fn sip_frames_ts(flow: *const core::Flow, stream_slice: &StreamSlice, r: &Reques
     );
     SCLogDebug!("ts: request_line {:?}", _f);
     let hi = &oi[r.request_line_len as usize..];
-    let _f = Frame::new_ts(
+    let _f = Frame::new(
         flow,
         stream_slice,
         hi,
@@ -207,7 +213,7 @@ fn sip_frames_ts(flow: *const core::Flow, stream_slice: &StreamSlice, r: &Reques
     SCLogDebug!("ts: request_headers {:?}", _f);
     if r.body_len > 0 {
         let bi = &oi[r.body_offset as usize..];
-        let _f = Frame::new_ts(
+        let _f = Frame::new(
             flow,
             stream_slice,
             bi,
@@ -221,14 +227,14 @@ fn sip_frames_ts(flow: *const core::Flow, stream_slice: &StreamSlice, r: &Reques
 
 fn sip_frames_tc(flow: *const core::Flow, stream_slice: &StreamSlice, r: &Response) {
     let oi = stream_slice.as_slice();
-    let _f = Frame::new_tc(flow, stream_slice, oi, r.response_line_len as i64, SIPFrameType::ResponseLine as u8);
+    let _f = Frame::new(flow, stream_slice, oi, r.response_line_len as i64, SIPFrameType::ResponseLine as u8);
     let hi = &oi[r.response_line_len as usize ..];
     SCLogDebug!("tc: response_line {:?}", _f);
-    let _f = Frame::new_tc(flow, stream_slice, hi, r.headers_len as i64, SIPFrameType::ResponseHeaders as u8);
+    let _f = Frame::new(flow, stream_slice, hi, r.headers_len as i64, SIPFrameType::ResponseHeaders as u8);
     SCLogDebug!("tc: response_headers {:?}", _f);
     if r.body_len > 0 {
         let bi = &oi[r.body_offset as usize ..];
-        let _f = Frame::new_tc(flow, stream_slice, bi, r.body_len as i64, SIPFrameType::ResponseBody as u8);
+        let _f = Frame::new(flow, stream_slice, bi, r.body_len as i64, SIPFrameType::ResponseBody as u8);
         SCLogDebug!("tc: response_body {:?}", _f);
     }
 }
@@ -335,8 +341,9 @@ pub unsafe extern "C" fn rs_sip_parse_response(
 }
 
 export_tx_data_get!(rs_sip_get_tx_data, SIPTransaction);
+export_state_data_get!(rs_sip_get_state_data, SIPState);
 
-const PARSER_NAME: &'static [u8] = b"sip\0";
+const PARSER_NAME: &[u8] = b"sip\0";
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_sip_register_parser() {
@@ -363,9 +370,10 @@ pub unsafe extern "C" fn rs_sip_register_parser() {
         get_eventinfo_byid: Some(SIPEvent::get_event_info_by_id),
         localstorage_new: None,
         localstorage_free: None,
-        get_files: None,
+        get_tx_files: None,
         get_tx_iterator: Some(applayer::state_get_tx_iterator::<SIPState, SIPTransaction>),
         get_tx_data: rs_sip_get_tx_data,
+        get_state_data: rs_sip_get_state_data,
         apply_tx_config: None,
         flags: APP_LAYER_PARSER_OPT_UNIDIR_TXS,
         truncate: None,

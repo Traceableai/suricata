@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2014 Open Information Security Foundation
+/* Copyright (C) 2007-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -23,7 +23,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 #include "threads.h"
 #include "threadvars.h"
@@ -31,6 +30,7 @@
 
 #include "detect.h"
 #include "detect-engine-port.h"
+#include "detect-engine-build.h"
 #include "detect-parse.h"
 #include "detect-engine.h"
 #include "detect-content.h"
@@ -62,7 +62,6 @@
 #include "util-memcmp.h"
 #include "util-spm.h"
 #include "util-debug.h"
-#include "util-validate.h"
 
 #include "runmodes.h"
 
@@ -516,7 +515,7 @@ static AppProto AppLayerProtoDetectPPGetProto(Flow *f, const uint8_t *buf, uint3
     const AppLayerProtoDetectProbingParserElement *pe1 = NULL;
     const AppLayerProtoDetectProbingParserElement *pe2 = NULL;
     AppProto alproto = ALPROTO_UNKNOWN;
-    uint32_t *alproto_masks;
+    uint32_t *alproto_masks = NULL;
     uint32_t mask = 0;
     uint8_t idir = (flags & (STREAM_TOSERVER | STREAM_TOCLIENT));
     uint8_t dir = idir;
@@ -556,7 +555,11 @@ again_midstream:
     } else {
         /* first try the destination port */
         pp_port_dp = AppLayerProtoDetectGetProbingParsers(alpd_ctx.ctx_pp, ipproto, dp);
-        alproto_masks = &f->probing_parser_toclient_alproto_masks;
+        if (dir == idir) {
+            // do not update alproto_masks to let a chance to second packet
+            // for instance when sending a junk packet to a DNS server
+            alproto_masks = &f->probing_parser_toclient_alproto_masks;
+        }
         if (pp_port_dp != NULL) {
             SCLogDebug("toclient - Probing parser found for destination port %"PRIu16, dp);
 
@@ -916,6 +919,8 @@ static void AppLayerProtoDetectPrintProbingParsers(AppLayerProtoDetectProbingPar
                         printf("            alproto: ALPROTO_TEMPLATE\n");
                     else if (pp_pe->alproto == ALPROTO_DNP3)
                         printf("            alproto: ALPROTO_DNP3\n");
+                    else if (pp_pe->alproto == ALPROTO_BITTORRENT_DHT)
+                        printf("            alproto: ALPROTO_BITTORRENT_DHT\n");
                     else
                         printf("impossible\n");
 
@@ -999,6 +1004,8 @@ static void AppLayerProtoDetectPrintProbingParsers(AppLayerProtoDetectProbingPar
                     printf("            alproto: ALPROTO_TEMPLATE\n");
                 else if (pp_pe->alproto == ALPROTO_DNP3)
                     printf("            alproto: ALPROTO_DNP3\n");
+                else if (pp_pe->alproto == ALPROTO_BITTORRENT_DHT)
+                    printf("            alproto: ALPROTO_BITTORRENT_DHT\n");
                 else
                     printf("impossible\n");
 
@@ -1703,7 +1710,7 @@ void AppLayerProtoDetectPPRegister(uint8_t ipproto,
         uint16_t port = temp_dp->port;
         if (port == 0 && temp_dp->port2 != 0)
             port++;
-        for ( ; port <= temp_dp->port2; port++) {
+        for (;;) {
             AppLayerProtoDetectInsertNewProbingParser(&alpd_ctx.ctx_pp,
                                                       ipproto,
                                                       port,
@@ -1712,6 +1719,11 @@ void AppLayerProtoDetectPPRegister(uint8_t ipproto,
                                                       direction,
                                                       ProbingParser1,
                                                       ProbingParser2);
+            if (port == temp_dp->port2) {
+                break;
+            } else {
+                port++;
+            }
         }
         temp_dp = temp_dp->next;
     }
@@ -1845,7 +1857,7 @@ int AppLayerProtoDetectSetup(void)
     memset(&alpd_ctx, 0, sizeof(alpd_ctx));
 
     uint16_t spm_matcher = SinglePatternMatchDefaultMatcher();
-    uint16_t mpm_matcher = PatternMatchDefaultMatcher();
+    uint8_t mpm_matcher = PatternMatchDefaultMatcher();
 
     alpd_ctx.spm_global_thread_ctx = SpmInitGlobalThreadCtx(spm_matcher);
     if (alpd_ctx.spm_global_thread_ctx == NULL) {
@@ -1948,8 +1960,14 @@ void AppLayerProtoDetectRegisterAlias(const char *proto_name, const char *proto_
  *  \param expect_proto expected protocol. AppLayer event will be set if
  *                      detected protocol differs from this.
  */
-void AppLayerRequestProtocolChange(Flow *f, uint16_t dp, AppProto expect_proto)
+bool AppLayerRequestProtocolChange(Flow *f, uint16_t dp, AppProto expect_proto)
 {
+    if (FlowChangeProto(f)) {
+        // If we are already changing protocols, from SMTP to TLS for instance,
+        // and that we do not get TLS but HTTP1, which is requesting whange to HTTP2,
+        // we do not proceed the new protocol change
+        return false;
+    }
     FlowSetChangeProtoFlag(f);
     f->protodetect_dp = dp;
     f->alproto_expect = expect_proto;
@@ -1962,6 +1980,7 @@ void AppLayerRequestProtocolChange(Flow *f, uint16_t dp, AppProto expect_proto)
     if (f->alproto_tc == ALPROTO_UNKNOWN) {
         f->alproto_tc = f->alproto;
     }
+    return true;
 }
 
 /** \brief request applayer to wrap up this protocol and rerun protocol
@@ -1972,9 +1991,9 @@ void AppLayerRequestProtocolChange(Flow *f, uint16_t dp, AppProto expect_proto)
  *
  *  \param f flow to act on
  */
-void AppLayerRequestProtocolTLSUpgrade(Flow *f)
+bool AppLayerRequestProtocolTLSUpgrade(Flow *f)
 {
-    AppLayerRequestProtocolChange(f, 443, ALPROTO_TLS);
+    return AppLayerRequestProtocolChange(f, 443, ALPROTO_TLS);
 }
 
 void AppLayerProtoDetectReset(Flow *f)
@@ -2250,6 +2269,7 @@ void AppLayerRegisterExpectationProto(uint8_t proto, AppProto alproto)
 #ifdef UNITTESTS
 
 #include "app-layer-htp.h"
+#include "detect-engine-alert.h"
 
 static AppLayerProtoDetectCtx alpd_ctx_ut;
 
@@ -3456,15 +3476,12 @@ static int AppLayerProtoDetectTest16(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&tv, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOSERVER, http_buf1, http_buf1_len);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     http_state = f->alstate;
     if (http_state == NULL) {
@@ -3550,15 +3567,12 @@ static int AppLayerProtoDetectTest17(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&tv, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOSERVER, http_buf1, http_buf1_len);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     http_state = f->alstate;
     if (http_state == NULL) {
@@ -3646,15 +3660,12 @@ static int AppLayerProtoDetectTest18(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&tv, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOSERVER, http_buf1, http_buf1_len);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     http_state = f->alstate;
     if (http_state == NULL) {
@@ -3738,15 +3749,12 @@ static int AppLayerProtoDetectTest19(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&tv, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(f);
     int r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_FTP,
                                 STREAM_TOSERVER, http_buf1, http_buf1_len);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     /* do detect */
     SigMatchSignatures(&tv, de_ctx, det_ctx, p);

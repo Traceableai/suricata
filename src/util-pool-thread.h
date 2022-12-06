@@ -39,6 +39,9 @@
 #ifndef __UTIL_POOL_THREAD_H__
 #define __UTIL_POOL_THREAD_H__
 
+#include "threads.h"
+#include "util-pool.h"
+
 struct PoolThreadElement_ {
     SCMutex lock;                   /**< lock, should have low contention */
     Pool *pool;                     /**< actual pool */
@@ -54,7 +57,7 @@ typedef struct PoolThread_ {
 
 /** per data item reserved data containing the
  *  thread pool id */
-typedef uint16_t PoolThreadReserved;
+typedef uint16_t PoolThreadId;
 
 void PoolThreadRegisterTests(void);
 
@@ -87,6 +90,10 @@ void *PoolThreadGetById(PoolThread *pt, uint16_t id);
  *  \param pt thread pool
  *  \param data memory block to return, with PoolThreadReserved as it's first member */
 void PoolThreadReturn(PoolThread *pt, void *data);
+
+void PoolThreadLock(PoolThread *pt, PoolThreadId id);
+void PoolThreadReturnRaw(PoolThread *pt, PoolThreadId id, void *data);
+void PoolThreadUnlock(PoolThread *pt, PoolThreadId id);
 
 /** \brief get size of PoolThread (number of 'threads', so array elements)
  *  \param pt thread pool

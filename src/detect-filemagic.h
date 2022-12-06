@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2011 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -25,19 +25,6 @@
 #define __DETECT_FILEMAGIC_H__
 
 #ifdef HAVE_MAGIC
-#include "util-spm-bm.h"
-
-typedef struct DetectFilemagicThreadData {
-    magic_t ctx;
-} DetectFilemagicThreadData;
-
-typedef struct DetectFilemagicData {
-    uint8_t *name; /** name of the file to match */
-    BmCtx *bm_ctx; /** BM context */
-    uint16_t len; /** name length */
-    uint32_t flags;
-} DetectFilemagicData;
-
 /* prototypes */
 int FilemagicThreadLookup(magic_t *ctx, File *file);
 #endif

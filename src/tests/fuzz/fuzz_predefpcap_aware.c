@@ -12,6 +12,7 @@
 #include "app-layer.h"
 #include "tm-queuehandlers.h"
 #include "util-cidr.h"
+#include "util-profiling.h"
 #include "util-proto-name.h"
 #include "detect-engine-tag.h"
 #include "detect-engine-threshold.h"
@@ -23,6 +24,10 @@
 #include "conf-yaml-loader.h"
 #include "pkt-var.h"
 #include "flow-util.h"
+#include "tm-modules.h"
+#include "tmqh-packetpool.h"
+#include "util-conf.h"
+#include "packet.h"
 
 #include <fuzz_pcap.h>
 
@@ -113,7 +118,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     r = FPC_next(&pkts, &header, &pkt);
     p = PacketGetFromAlloc();
     p->ts.tv_sec = header.ts.tv_sec;
-    p->ts.tv_usec = header.ts.tv_usec;
+    p->ts.tv_usec = header.ts.tv_usec % 1000000;
     p->datalink = pkts.datalink;
     while (r > 0) {
         if (PacketCopyData(p, pkt, header.caplen) == 0) {
@@ -135,9 +140,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             }
         }
         r = FPC_next(&pkts, &header, &pkt);
-        PACKET_RECYCLE(p);
+        PacketRecycle(p);
         p->ts.tv_sec = header.ts.tv_sec;
-        p->ts.tv_usec = header.ts.tv_usec;
+        p->ts.tv_usec = header.ts.tv_usec % 1000000;
         p->datalink = pkts.datalink;
         pcap_cnt++;
         p->pcap_cnt = pcap_cnt;

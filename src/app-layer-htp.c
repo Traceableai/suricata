@@ -36,7 +36,6 @@
 #include "suricata.h"
 #include "suricata-common.h"
 #include "conf.h"
-#include "debug.h"
 #include "decode.h"
 #include "threads.h"
 #include "counters.h"
@@ -56,23 +55,28 @@
 #include "app-layer-parser.h"
 
 #include "app-layer.h"
+#include "app-layer-detect-proto.h"
 #include "app-layer-frames.h"
 #include "app-layer-htp.h"
 #include "app-layer-htp-body.h"
 #include "app-layer-htp-file.h"
 #include "app-layer-htp-libhtp.h"
 #include "app-layer-htp-xff.h"
+#include "app-layer-htp-range.h"
+#include "app-layer-htp-mem.h"
 
 #include "util-spm.h"
 #include "util-debug.h"
 #include "util-time.h"
 #include "util-misc.h"
+#include "util-enum.h"
 
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "flow-util.h"
 
 #include "detect-engine.h"
+#include "detect-engine-build.h"
 #include "detect-engine-state.h"
 #include "detect-parse.h"
 
@@ -167,6 +171,7 @@ SCEnumCharMap http_decoder_event_table[] = {
     { "MULTIPART_INVALID_HEADER", HTTP_DECODER_EVENT_MULTIPART_INVALID_HEADER },
 
     { "TOO_MANY_WARNINGS", HTTP_DECODER_EVENT_TOO_MANY_WARNINGS },
+    { "FAILED_PROTOCOL_CHANGE", HTTP_DECODER_EVENT_FAILED_PROTOCOL_CHANGE },
 
     { NULL, -1 },
 };
@@ -194,7 +199,6 @@ static int HTTPGetFrameIdByName(const char *frame_name)
 {
     int id = SCMapEnumNameToValue(frame_name, http_frame_table);
     if (id < 0) {
-        SCLogError(SC_ERR_INVALID_ENUM_MAP, "unknown frame type \"%s\"", frame_name);
         return -1;
     }
     return id;
@@ -362,6 +366,12 @@ static void HtpTxUserDataFree(HtpState *state, HtpTxUserData *htud)
         if (htud->tx_data.de_state != NULL) {
             DetectEngineStateFree(htud->tx_data.de_state);
         }
+        if (htud->file_range) {
+            HTPFileCloseHandleRange(&htud->files_tc, 0, htud->file_range, NULL, 0);
+            HttpRangeFreeBlock(htud->file_range);
+        }
+        FileContainerRecycle(&htud->files_ts);
+        FileContainerRecycle(&htud->files_tc);
         HTPFree(htud, sizeof(HtpTxUserData));
     }
 }
@@ -398,13 +408,6 @@ void HTPStateFree(void *state)
         htp_connp_destroy_all(s->connp);
     }
 
-    if (s->file_range) {
-        HTPFileCloseHandleRange(s->files_tc, 0, s->file_range, NULL, 0);
-        HttpRangeFreeBlock(s->file_range);
-    }
-
-    FileContainerFree(s->files_ts);
-    FileContainerFree(s->files_tc);
     HTPFree(s, sizeof(HtpState));
 
 #ifdef DEBUG
@@ -512,10 +515,11 @@ void AppLayerHtpNeedFileInspection(void)
     SCReturn;
 }
 
-static void AppLayerHtpSetStreamDepthFlag(void *tx, uint8_t flags)
+static void AppLayerHtpSetStreamDepthFlag(void *tx, const uint8_t flags)
 {
     HtpTxUserData *tx_ud = (HtpTxUserData *) htp_tx_get_user_data((htp_tx_t *)tx);
     if (tx_ud) {
+        SCLogDebug("setting HTP_STREAM_DEPTH_SET, flags %02x", flags);
         if (flags & STREAM_TOCLIENT) {
             tx_ud->tcflags |= HTP_STREAM_DEPTH_SET;
         } else {
@@ -526,9 +530,12 @@ static void AppLayerHtpSetStreamDepthFlag(void *tx, uint8_t flags)
 
 static bool AppLayerHtpCheckDepth(const HTPCfgDir *cfg, HtpBody *body, uint8_t flags)
 {
+    SCLogDebug("cfg->body_limit %u stream_depth %u body->content_len_so_far %" PRIu64,
+            cfg->body_limit, FileReassemblyDepth(), body->content_len_so_far);
     if (flags & HTP_STREAM_DEPTH_SET) {
         uint32_t stream_depth = FileReassemblyDepth();
         if (body->content_len_so_far < (uint64_t)stream_depth || stream_depth == 0) {
+            SCLogDebug("true");
             return true;
         }
     } else {
@@ -536,6 +543,7 @@ static bool AppLayerHtpCheckDepth(const HTPCfgDir *cfg, HtpBody *body, uint8_t f
             return true;
         }
     }
+    SCLogDebug("false");
     return false;
 }
 
@@ -964,7 +972,10 @@ static AppLayerResult HTPHandleResponseData(Flow *f, void *htp_state, AppLayerPa
                     }
                     consumed = htp_connp_res_data_consumed(hstate->connp);
                     hstate->slice = NULL;
-                    AppLayerRequestProtocolChange(hstate->f, dp, ALPROTO_HTTP2);
+                    if (!AppLayerRequestProtocolChange(hstate->f, dp, ALPROTO_HTTP2)) {
+                        HTPSetEvent(hstate, NULL, STREAM_TOCLIENT,
+                                HTTP_DECODER_EVENT_FAILED_PROTOCOL_CHANGE);
+                    }
                     // During HTTP2 upgrade, we may consume the HTTP1 part of the data
                     // and we need to parser the remaining part with HTTP2
                     if (consumed > 0 && consumed < input_len) {
@@ -1415,9 +1426,7 @@ static int HtpRequestBodyHandleMultipart(HtpState *hstate, HtpTxUserData *htud, 
             printf("FILEDATA (final chunk) END: \n");
 #endif
             if (!(htud->tsflags & HTP_DONTSTORE)) {
-                if (HTPFileClose(hstate, filedata, filedata_len, flags,
-                            STREAM_TOSERVER) == -1)
-                {
+                if (HTPFileClose(htud, filedata, filedata_len, flags, STREAM_TOSERVER) == -1) {
                     goto end;
                 }
             }
@@ -1438,8 +1447,7 @@ static int HtpRequestBodyHandleMultipart(HtpState *hstate, HtpTxUserData *htud, 
 #endif
 
                 if (!(htud->tsflags & HTP_DONTSTORE)) {
-                    result = HTPFileStoreChunk(hstate, filedata,
-                            filedata_len, STREAM_TOSERVER);
+                    result = HTPFileStoreChunk(htud, filedata, filedata_len, STREAM_TOSERVER);
                     if (result == -1) {
                         goto end;
                     } else if (result == -2) {
@@ -1539,7 +1547,7 @@ static int HtpRequestBodyHandleMultipart(HtpState *hstate, HtpTxUserData *htud, 
                 } else if (result == -2) {
                     htud->tsflags |= HTP_DONTSTORE;
                 } else {
-                    if (HTPFileClose(hstate, NULL, 0, 0, STREAM_TOSERVER) == -1) {
+                    if (HTPFileClose(htud, NULL, 0, 0, STREAM_TOSERVER) == -1) {
                         goto end;
                     }
                 }
@@ -1606,7 +1614,7 @@ static int HtpRequestBodyHandleMultipart(HtpState *hstate, HtpTxUserData *htud, 
                     } else if (result == -2) {
                         htud->tsflags |= HTP_DONTSTORE;
                     } else {
-                        if (HTPFileClose(hstate, NULL, 0, 0, STREAM_TOSERVER) == -1) {
+                        if (HTPFileClose(htud, NULL, 0, 0, STREAM_TOSERVER) == -1) {
                             goto end;
                         }
                     }
@@ -1694,7 +1702,7 @@ static int HtpRequestBodyHandlePOSTorPUT(HtpState *hstate, HtpTxUserData *htud,
         /* otherwise, just store the data */
 
         if (!(htud->tsflags & HTP_DONTSTORE)) {
-            result = HTPFileStoreChunk(hstate, data, data_len, STREAM_TOSERVER);
+            result = HTPFileStoreChunk(htud, data, data_len, STREAM_TOSERVER);
             if (result == -1) {
                 goto end;
             } else if (result == -2) {
@@ -1778,7 +1786,7 @@ static int HtpResponseBodyHandle(HtpState *hstate, HtpTxUserData *htud,
         /* otherwise, just store the data */
 
         if (!(htud->tcflags & HTP_DONTSTORE)) {
-            result = HTPFileStoreChunk(hstate, data, data_len, STREAM_TOCLIENT);
+            result = HTPFileStoreChunk(htud, data, data_len, STREAM_TOCLIENT);
             SCLogDebug("result %d", result);
             if (result == -1) {
                 goto end;
@@ -1828,6 +1836,8 @@ static int HTPCallbackRequestBodyData(htp_tx_data_t *d)
     if (tx_ud == NULL) {
         SCReturnInt(HTP_OK);
     }
+    tx_ud->tx_data.file_flags |= hstate->state_data.file_flags;
+
     if (!tx_ud->response_body_init) {
         tx_ud->response_body_init = 1;
 
@@ -1892,7 +1902,7 @@ static int HTPCallbackRequestBodyData(htp_tx_data_t *d)
     } else {
         if (tx_ud->tsflags & HTP_FILENAME_SET) {
             SCLogDebug("closing file that was being stored");
-            (void)HTPFileClose(hstate, NULL, 0, FILE_TRUNCATED, STREAM_TOSERVER);
+            (void)HTPFileClose(tx_ud, NULL, 0, FILE_TRUNCATED, STREAM_TOSERVER);
             tx_ud->tsflags &= ~HTP_FILENAME_SET;
         }
     }
@@ -1956,6 +1966,7 @@ static int HTPCallbackResponseBodyData(htp_tx_data_t *d)
     if (tx_ud == NULL) {
         SCReturnInt(HTP_OK);
     }
+    tx_ud->tx_data.file_flags |= hstate->state_data.file_flags;
     if (!tx_ud->request_body_init) {
         tx_ud->request_body_init = 1;
     }
@@ -1982,7 +1993,7 @@ static int HTPCallbackResponseBodyData(htp_tx_data_t *d)
     } else {
         if (tx_ud->tcflags & HTP_FILENAME_SET) {
             SCLogDebug("closing file that was being stored");
-            (void)HTPFileClose(hstate, NULL, 0, FILE_TRUNCATED, STREAM_TOCLIENT);
+            (void)HTPFileClose(tx_ud, NULL, 0, FILE_TRUNCATED, STREAM_TOCLIENT);
             tx_ud->tcflags &= ~HTP_FILENAME_SET;
         }
     }
@@ -2110,6 +2121,7 @@ static int HTPCallbackRequestStart(htp_tx_t *tx)
         if (unlikely(tx_ud == NULL)) {
             SCReturnInt(HTP_OK);
         }
+        tx_ud->tx_data.file_tx = STREAM_TOSERVER | STREAM_TOCLIENT; // each http tx may xfer files
         htp_tx_set_user_data(tx, tx_ud);
     }
     TimeGet(&tx_ud->request_start_timestamp);
@@ -2149,6 +2161,8 @@ static int HTPCallbackResponseStart(htp_tx_t *tx)
         if (unlikely(tx_ud == NULL)) {
             SCReturnInt(HTP_OK);
         }
+        tx_ud->tx_data.file_tx =
+                STREAM_TOCLIENT; // each http tx may xfer files. Toserver already missed.
         htp_tx_set_user_data(tx, tx_ud);
     }
     SCReturnInt(HTP_OK);
@@ -2204,7 +2218,7 @@ static int HTPCallbackRequestComplete(htp_tx_t *tx)
     if (htud != NULL) {
         if (htud->tsflags & HTP_FILENAME_SET) {
             SCLogDebug("closing file that was being stored");
-            (void)HTPFileClose(hstate, NULL, 0, 0, STREAM_TOSERVER);
+            (void)HTPFileClose(htud, NULL, 0, 0, STREAM_TOSERVER);
             htud->tsflags &= ~HTP_FILENAME_SET;
             if (abs_right_edge < (uint64_t)UINT32_MAX) {
                 StreamTcpReassemblySetMinInspectDepth(
@@ -2259,7 +2273,7 @@ static int HTPCallbackResponseComplete(htp_tx_t *tx)
     if (htud != NULL) {
         if (htud->tcflags & HTP_FILENAME_SET) {
             SCLogDebug("closing file that was being stored");
-            (void)HTPFileClose(hstate, NULL, 0, 0, STREAM_TOCLIENT);
+            (void)HTPFileClose(htud, NULL, 0, 0, STREAM_TOCLIENT);
             htud->tcflags &= ~HTP_FILENAME_SET;
         }
     }
@@ -2280,7 +2294,10 @@ static int HTPCallbackResponseComplete(htp_tx_t *tx)
                 dp = (uint16_t)tx->request_port_number;
             }
             // both ALPROTO_HTTP1 and ALPROTO_TLS are normal options
-            AppLayerRequestProtocolChange(hstate->f, dp, ALPROTO_UNKNOWN);
+            if (!AppLayerRequestProtocolChange(hstate->f, dp, ALPROTO_UNKNOWN)) {
+                HTPSetEvent(
+                        hstate, htud, STREAM_TOCLIENT, HTTP_DECODER_EVENT_FAILED_PROTOCOL_CHANGE);
+            }
             tx->request_progress = HTP_REQUEST_COMPLETE;
             tx->response_progress = HTP_RESPONSE_COMPLETE;
             
@@ -2303,14 +2320,8 @@ static int HTPCallbackRequestLine(htp_tx_t *tx)
         return HTP_OK;
 
     tx_ud = htp_tx_get_user_data(tx);
-    if (likely(tx_ud == NULL)) {
-        tx_ud = HTPMalloc(sizeof(*tx_ud));
-        if (unlikely(tx_ud == NULL)) {
-            bstr_free(request_uri_normalized);
-            return HTP_OK;
-        }
-        memset(tx_ud, 0, sizeof(*tx_ud));
-        htp_tx_set_user_data(tx, tx_ud);
+    if (unlikely(tx_ud == NULL)) {
+        return HTP_OK;
     }
     if (unlikely(tx_ud->request_uri_normalized != NULL))
         bstr_free(tx_ud->request_uri_normalized);
@@ -2524,12 +2535,9 @@ static void HTPConfigSetDefaultsPhase2(const char *name, HTPCfgRec *cfg_prec)
         cfg_prec->request.inspect_window += (int)(cfg_prec->request.inspect_window *
                                                   ((double)r / RAND_MAX - 0.5) * rdrange / 100);
         SCLogConfig("'%s' server has 'request-body-minimal-inspect-size' set to"
-                  " %d and 'request-body-inspect-window' set to %d after"
-                  " randomization.",
-                  name,
-                  cfg_prec->request.inspect_min_size,
-                  cfg_prec->request.inspect_window);
-
+                    " %u and 'request-body-inspect-window' set to %u after"
+                    " randomization.",
+                name, cfg_prec->request.inspect_min_size, cfg_prec->request.inspect_window);
 
         r = RandomGetWrap();
         cfg_prec->response.inspect_min_size += (int)(cfg_prec->response.inspect_min_size *
@@ -2540,29 +2548,23 @@ static void HTPConfigSetDefaultsPhase2(const char *name, HTPCfgRec *cfg_prec)
                                                    ((double)r / RAND_MAX - 0.5) * rdrange / 100);
 
         SCLogConfig("'%s' server has 'response-body-minimal-inspect-size' set to"
-                  " %d and 'response-body-inspect-window' set to %d after"
-                  " randomization.",
-                  name,
-                  cfg_prec->response.inspect_min_size,
-                  cfg_prec->response.inspect_window);
+                    " %u and 'response-body-inspect-window' set to %u after"
+                    " randomization.",
+                name, cfg_prec->response.inspect_min_size, cfg_prec->response.inspect_window);
     }
 
     htp_config_register_request_line(cfg_prec->cfg, HTPCallbackRequestLine);
 
-    cfg_prec->request.sbcfg.flags = 0;
     cfg_prec->request.sbcfg.buf_size = cfg_prec->request.inspect_window ?
                                        cfg_prec->request.inspect_window : 256;
     cfg_prec->request.sbcfg.buf_slide = 0;
-    cfg_prec->request.sbcfg.Malloc = HTPMalloc;
     cfg_prec->request.sbcfg.Calloc = HTPCalloc;
     cfg_prec->request.sbcfg.Realloc = HTPRealloc;
     cfg_prec->request.sbcfg.Free = HTPFree;
 
-    cfg_prec->response.sbcfg.flags = 0;
     cfg_prec->response.sbcfg.buf_size = cfg_prec->response.inspect_window ?
                                         cfg_prec->response.inspect_window : 256;
     cfg_prec->response.sbcfg.buf_slide = 0;
-    cfg_prec->response.sbcfg.Malloc = HTPMalloc;
     cfg_prec->response.sbcfg.Calloc = HTPCalloc;
     cfg_prec->response.sbcfg.Realloc = HTPRealloc;
     cfg_prec->response.sbcfg.Free = HTPFree;
@@ -3013,18 +3015,18 @@ void AppLayerHtpPrintStats(void)
  *  \param direction flow direction
  *  \retval files files ptr
  */
-static FileContainer *HTPStateGetFiles(void *state, uint8_t direction)
+static FileContainer *HTPGetTxFiles(void *txv, uint8_t direction)
 {
-    if (state == NULL)
-        return NULL;
-
-    HtpState *http_state = (HtpState *)state;
-
-    if (direction & STREAM_TOCLIENT) {
-        SCReturnPtr(http_state->files_tc, "FileContainer");
-    } else {
-        SCReturnPtr(http_state->files_ts, "FileContainer");
+    htp_tx_t *tx = (htp_tx_t *)txv;
+    HtpTxUserData *tx_ud = htp_tx_get_user_data(tx);
+    if (tx_ud) {
+        if (direction & STREAM_TOCLIENT) {
+            SCReturnPtr(&tx_ud->files_tc, "FileContainer");
+        } else {
+            SCReturnPtr(&tx_ud->files_ts, "FileContainer");
+        }
     }
+    SCReturnPtr(NULL, "FileContainer");
 }
 
 static int HTPStateGetAlstateProgress(void *tx, uint8_t direction)
@@ -3105,14 +3107,6 @@ static int HTPStateGetEventInfoById(int event_id, const char **event_name,
     return 0;
 }
 
-static void HTPStateTruncate(void *state, uint8_t direction)
-{
-    FileContainer *fc = HTPStateGetFiles(state, direction);
-    if (fc != NULL) {
-        FileTruncateAllOpenFiles(fc);
-    }
-}
-
 static AppLayerTxData *HTPGetTxData(void *vtx)
 {
     htp_tx_t *tx = (htp_tx_t *)vtx;
@@ -3121,6 +3115,12 @@ static AppLayerTxData *HTPGetTxData(void *vtx)
         return &tx_ud->tx_data;
     }
     return NULL;
+}
+
+static AppLayerStateData *HTPGetStateData(void *vstate)
+{
+    HtpState *s = vstate;
+    return &s->state_data;
 }
 
 static int HTPRegisterPatternsForProtocolDetection(void)
@@ -3195,7 +3195,7 @@ void RegisterHTPParsers(void)
     if (AppLayerParserConfParserEnabled("tcp", proto_name)) {
         AppLayerParserRegisterStateFuncs(IPPROTO_TCP, ALPROTO_HTTP1, HTPStateAlloc, HTPStateFree);
         AppLayerParserRegisterTxFreeFunc(IPPROTO_TCP, ALPROTO_HTTP1, HTPStateTransactionFree);
-        AppLayerParserRegisterGetFilesFunc(IPPROTO_TCP, ALPROTO_HTTP1, HTPStateGetFiles);
+        AppLayerParserRegisterGetTxFilesFunc(IPPROTO_TCP, ALPROTO_HTTP1, HTPGetTxFiles);
         AppLayerParserRegisterGetStateProgressFunc(
                 IPPROTO_TCP, ALPROTO_HTTP1, HTPStateGetAlstateProgress);
         AppLayerParserRegisterGetTxCnt(IPPROTO_TCP, ALPROTO_HTTP1, HTPStateGetTxCnt);
@@ -3207,8 +3207,8 @@ void RegisterHTPParsers(void)
         AppLayerParserRegisterGetEventInfoById(
                 IPPROTO_TCP, ALPROTO_HTTP1, HTPStateGetEventInfoById);
 
-        AppLayerParserRegisterTruncateFunc(IPPROTO_TCP, ALPROTO_HTTP1, HTPStateTruncate);
         AppLayerParserRegisterTxDataFunc(IPPROTO_TCP, ALPROTO_HTTP1, HTPGetTxData);
+        AppLayerParserRegisterStateDataFunc(IPPROTO_TCP, ALPROTO_HTTP1, HTPGetStateData);
 
         AppLayerParserRegisterSetStreamDepthFlag(
                 IPPROTO_TCP, ALPROTO_HTTP1, AppLayerHtpSetStreamDepthFlag);
@@ -3240,6 +3240,8 @@ void RegisterHTPParsers(void)
 }
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
+
 static HTPCfgRec cfglist_backup;
 
 void HtpConfigCreateBackup(void)
@@ -3447,15 +3449,12 @@ static int HTPParserTest01a(void)
         else
             flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -3508,15 +3507,12 @@ static int HTPParserTest02(void)
 
     StreamTcpInitConfig(true);
 
-    FLOWLOCK_WRLOCK(f);
     int r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1,
             STREAM_TOSERVER | STREAM_START | STREAM_EOF, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     http_state = f->alstate;
     if (http_state == NULL) {
@@ -3577,15 +3573,12 @@ static int HTPParserTest03(void)
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
     htp_state = f->alstate;
     if (htp_state == NULL) {
@@ -3637,14 +3630,11 @@ static int HTPParserTest04(void)
 
     StreamTcpInitConfig(true);
 
-    FLOWLOCK_WRLOCK(f);
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1,
             STREAM_TOSERVER | STREAM_START | STREAM_EOF, httpbuf1, httplen1);
     if (r != 0) {
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     htp_state = f->alstate;
     if (htp_state == NULL) {
@@ -3868,15 +3858,12 @@ static int HTPParserTest07(void)
         else
             flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -3966,16 +3953,13 @@ libhtp:\n\
     uint8_t flags = 0;
     flags = STREAM_TOSERVER|STREAM_START|STREAM_EOF;
 
-    FLOWLOCK_WRLOCK(f);
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk returned %" PRId32 ", expected"
                 " 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     htp_state = f->alstate;
     if (htp_state == NULL) {
@@ -4051,15 +4035,12 @@ libhtp:\n\
     uint8_t flags = 0;
     flags = STREAM_TOSERVER|STREAM_START|STREAM_EOF;
 
-    FLOWLOCK_WRLOCK(f);
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk returned %" PRId32 ", expected"
                 " 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     htp_state = f->alstate;
     if (htp_state == NULL) {
@@ -4125,15 +4106,12 @@ static int HTPParserTest10(void)
         else
             flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -4216,15 +4194,12 @@ static int HTPParserTest11(void)
         else
             flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -4300,15 +4275,12 @@ static int HTPParserTest12(void)
         else
             flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -4387,15 +4359,12 @@ static int HTPParserTest13(void)
         else
             flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -4797,16 +4766,13 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
             result = 0;
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -5176,15 +5142,12 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -5342,15 +5305,12 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -5478,15 +5438,12 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -5587,15 +5544,12 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -5696,15 +5650,12 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -5806,15 +5757,12 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -5913,15 +5861,12 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -6021,15 +5966,12 @@ libhtp:\n\
         else if (u == (httplen1 - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, &httpbuf1[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
 
     htp_state = f->alstate;
@@ -6125,8 +6067,7 @@ static int HTPBodyReassemblyTest01(void)
         goto end;
     }
 
-    if (hstate.files_ts != NULL)
-        goto end;
+    FAIL_IF_NOT_NULL(htud.files_ts.head);
 
     result = 1;
 end:
@@ -6175,24 +6116,18 @@ libhtp:\n\
     StreamTcpInitConfig(true);
 
     SCLogDebug("\n>>>> processing chunk 1 <<<<\n");
-    FLOWLOCK_WRLOCK(f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOSERVER | STREAM_START, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
     SCLogDebug("\n>>>> processing chunk 1 again <<<<\n");
-    FLOWLOCK_WRLOCK(f);
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     http_state = f->alstate;
     if (http_state == NULL) {
@@ -6200,14 +6135,11 @@ libhtp:\n\
         goto end;
     }
 
-    FLOWLOCK_WRLOCK(f);
     AppLayerDecoderEvents *decoder_events = AppLayerParserGetDecoderEvents(f->alparser);
     if (decoder_events != NULL) {
         printf("app events: ");
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
     result = 1;
 end:
     if (alp_tctx != NULL)
@@ -6390,15 +6322,12 @@ libhtp:\n\
         else if (u == (len - 1)) flags = STREAM_TOSERVER|STREAM_EOF;
         else flags = STREAM_TOSERVER;
 
-        FLOWLOCK_WRLOCK(f);
         r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, (uint8_t *)&httpbuf[u], 1);
         if (r != 0) {
             printf("toserver chunk %" PRIu32 " returned %" PRId32 ", expected"
                     " 0: ", u, r);
-            FLOWLOCK_UNLOCK(f);
             goto end;
         }
-        FLOWLOCK_UNLOCK(f);
     }
     htp_state = f->alstate;
     if (htp_state == NULL) {
@@ -6415,16 +6344,13 @@ libhtp:\n\
         goto end;
     }
 
-    FLOWLOCK_WRLOCK(f);
     void *txtmp = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
     AppLayerDecoderEvents *decoder_events =
             AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP1, txtmp);
     if (decoder_events != NULL) {
         printf("app events: ");
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     result = 1;
 end:
@@ -6474,14 +6400,11 @@ static int HTPParserTest16(void)
 
     uint8_t flags = STREAM_TOSERVER|STREAM_START|STREAM_EOF;
 
-    FLOWLOCK_WRLOCK(f);
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, flags, (uint8_t *)httpbuf, len);
     if (r != 0) {
         printf("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     htp_state = f->alstate;
     if (htp_state == NULL) {
@@ -6500,16 +6423,13 @@ static int HTPParserTest16(void)
 
 #ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 //these events are disabled during fuzzing as they are too noisy and consume much resource
-    FLOWLOCK_WRLOCK(f);
     void *txtmp = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, f->alstate, 0);
     AppLayerDecoderEvents *decoder_events =
             AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP1, txtmp);
     if (decoder_events == NULL) {
         printf("no app events: ");
-        FLOWLOCK_UNLOCK(f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(f);
 
     if (decoder_events->events[0] != HTTP_DECODER_EVENT_METHOD_DELIM_NON_COMPLIANT) {
         printf("HTTP_DECODER_EVENT_METHOD_DELIM_NON_COMPLIANT not set: ");
@@ -6879,7 +6799,7 @@ static int HTPParserTest25(void)
             NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOCLIENT, (uint8_t *)str, strlen(str));
     FAIL_IF_NOT(r == 0);
 
-    AppLayerParserTransactionsCleanup(f);
+    AppLayerParserTransactionsCleanup(f, STREAM_TOCLIENT);
 
     uint64_t ret[4];
     UTHAppLayerParserStateGetIds(f->alparser, &ret[0], &ret[1], &ret[2], &ret[3]);
@@ -6891,7 +6811,7 @@ static int HTPParserTest25(void)
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOSERVER | STREAM_EOF,
             (uint8_t *)str, strlen(str));
     FAIL_IF_NOT(r == 0);
-    AppLayerParserTransactionsCleanup(f);
+    AppLayerParserTransactionsCleanup(f, STREAM_TOCLIENT);
 
     UTHAppLayerParserStateGetIds(f->alparser, &ret[0], &ret[1], &ret[2], &ret[3]);
     FAIL_IF_NOT(ret[0] == 8); // inspect_id[0] not updated by ..Cleanup() until full tx is done
@@ -6902,7 +6822,7 @@ static int HTPParserTest25(void)
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_HTTP1, STREAM_TOCLIENT | STREAM_EOF,
             (uint8_t *)str, strlen(str));
     FAIL_IF_NOT(r == 0);
-    AppLayerParserTransactionsCleanup(f);
+    AppLayerParserTransactionsCleanup(f, STREAM_TOCLIENT);
 
     UTHAppLayerParserStateGetIds(f->alparser, &ret[0], &ret[1], &ret[2], &ret[3]);
     FAIL_IF_NOT(ret[0] == 9); // inspect_id[0]
@@ -7031,7 +6951,10 @@ libhtp:\n\
     http_state = f.alstate;
     FAIL_IF_NULL(http_state);
 
-    FileContainer *ffc = HTPStateGetFiles(http_state, STREAM_TOCLIENT);
+    void *tx_ptr = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP1, http_state, 0);
+    FAIL_IF_NULL(tx_ptr);
+
+    FileContainer *ffc = HTPGetTxFiles(tx_ptr, STREAM_TOCLIENT);
     FAIL_IF_NULL(ffc);
 
     File *ptr = ffc->head;

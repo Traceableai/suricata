@@ -38,9 +38,8 @@
 #include "util-debug.h"
 #include "util-print.h"
 #include "util-misc.h"
-
-#define PARSE_REGEX         "([a-z]+)(?:,\\s*([\\-_A-z0-9\\s\\.]+)){1,4}"
-static DetectParseRegex parse_regex;
+#include "util-path.h"
+#include "util-conf.h"
 
 int DetectDatasetMatch (ThreadVars *, DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
@@ -54,8 +53,6 @@ void DetectDatasetRegister (void)
     sigmatch_table[DETECT_DATASET].url = "/rules/dataset-keywords.html#dataset";
     sigmatch_table[DETECT_DATASET].Setup = DetectDatasetSetup;
     sigmatch_table[DETECT_DATASET].Free  = DetectDatasetFree;
-
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 /*
@@ -134,13 +131,13 @@ static int DetectDatasetParse(const char *str, char *cmd, int cmd_len, char *nam
         }
 
         if (!cmd_set) {
-            if (val) {
+            if (val && strlen(val) != 0) {
                 return -1;
             }
             strlcpy(cmd, key, cmd_len);
             cmd_set = true;
         } else if (!name_set) {
-            if (val) {
+            if (val && strlen(val) != 0) {
                 return -1;
             }
             strlcpy(name, key, name_len);
@@ -159,6 +156,12 @@ static int DetectDatasetParse(const char *str, char *cmd, int cmd_len, char *nam
                     *type = DATASET_TYPE_SHA256;
                 } else if (strcmp(val, "string") == 0) {
                     *type = DATASET_TYPE_STRING;
+                } else if (strcmp(val, "ipv4") == 0) {
+                    *type = DATASET_TYPE_IPV4;
+                } else if (strcmp(val, "ipv6") == 0) {
+                    *type = DATASET_TYPE_IPV6;
+                } else if (strcmp(val, "ip") == 0) {
+                    *type = DATASET_TYPE_IPV6;
                 } else {
                     SCLogError(SC_ERR_INVALID_SIGNATURE, "bad type %s", val);
                     return -1;

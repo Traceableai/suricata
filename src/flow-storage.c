@@ -29,6 +29,7 @@
 #include "flow-storage.h"
 #include "flow-hash.h"
 #include "flow-util.h"
+#include "util-storage.h"
 #include "util-unittest.h"
 
 unsigned int FlowStorageSize(void)
@@ -36,7 +37,7 @@ unsigned int FlowStorageSize(void)
     return StorageGetSize(STORAGE_FLOW);
 }
 
-void *FlowGetStorageById(Flow *f, FlowStorageId id)
+void *FlowGetStorageById(const Flow *f, FlowStorageId id)
 {
     return StorageGetById((Storage *)((void *)f + sizeof(Flow)), STORAGE_FLOW, id.id);
 }

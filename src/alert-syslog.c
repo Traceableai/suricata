@@ -25,7 +25,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "flow.h"
 #include "conf.h"
 
@@ -49,6 +48,7 @@
 #include "util-syslog.h"
 #include "util-optimize.h"
 #include "util-logopenfile.h"
+#include "action-globals.h"
 
 #ifndef OS_WIN32
 
@@ -367,7 +367,7 @@ static TmEcode AlertSyslogDecoderEvent(ThreadVars *tv, const Packet *p, void *da
     return TM_ECODE_OK;
 }
 
-static int AlertSyslogCondition(ThreadVars *tv, const Packet *p)
+static int AlertSyslogCondition(ThreadVars *tv, void *thread_data, const Packet *p)
 {
     return (p->alerts.cnt > 0 ? TRUE : FALSE);
 }

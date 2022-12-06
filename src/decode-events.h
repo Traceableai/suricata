@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -58,8 +58,8 @@ enum {
     ICMPV6_IPV6_UNKNOWN_VER,            /**< unknown version in icmpv6 packet */
     ICMPV6_IPV6_TRUNC_PKT,              /**< truncated icmpv6 packet */
     ICMPV6_MLD_MESSAGE_WITH_INVALID_HL, /**< invalid MLD that doesn't have HL 1 */
-    ICMPV6_UNASSIGNED_TYPE,             /**< unsassigned ICMPv6 type */
-    ICMPV6_EXPERIMENTATION_TYPE,        /**< uprivate experimentation ICMPv6 type */
+    ICMPV6_UNASSIGNED_TYPE,             /**< unassigned ICMPv6 type */
+    ICMPV6_EXPERIMENTATION_TYPE,        /**< private experimentation ICMPv6 type */
 
     /* IPV6 EVENTS */
     IPV6_PKT_TOO_SMALL,     /**< ipv6 packet smaller than minimum size */
@@ -164,7 +164,7 @@ enum {
     /* ESP EVENTS */
     ESP_PKT_TOO_SMALL, /**< esp packet smaller than minimum size */
 
-    /* Fragmentation reasembly events. */
+    /* Fragmentation reassembly events. */
     IPV4_FRAG_PKT_TOO_LARGE,
     IPV6_FRAG_PKT_TOO_LARGE,
     IPV4_FRAG_OVERLAP,
@@ -277,6 +277,7 @@ enum {
     STREAM_PKT_BROKEN_ACK,
     STREAM_RST_INVALID_ACK,
     STREAM_PKT_RETRANSMISSION,
+    STREAM_PKT_SPURIOUS_RETRANSMISSION,
     STREAM_PKT_BAD_WINDOW_UPDATE,
 
     STREAM_SUSPECTED_RST_INJECT,
@@ -286,6 +287,7 @@ enum {
     STREAM_REASSEMBLY_NO_SEGMENT,
     STREAM_REASSEMBLY_SEQ_GAP,
     STREAM_REASSEMBLY_OVERLAP_DIFFERENT_DATA,
+    STREAM_REASSEMBLY_DEPTH_REACHED,
 
     /* should always be last! */
     DECODE_EVENT_MAX,

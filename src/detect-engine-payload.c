@@ -36,6 +36,7 @@
 #include "detect-engine-prefilter.h"
 #include "detect-engine-state.h"
 #include "detect-engine-payload.h"
+#include "detect-engine-build.h"
 
 #include "stream.h"
 #include "stream-tcp.h"
@@ -46,7 +47,7 @@
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-validate.h"
-
+#include "util-profiling.h"
 #include "util-mpm-ac.h"
 
 struct StreamMpmData {
@@ -54,7 +55,8 @@ struct StreamMpmData {
     const MpmCtx *mpm_ctx;
 };
 
-static int StreamMpmFunc(void *cb_data, const uint8_t *data, const uint32_t data_len)
+static int StreamMpmFunc(
+        void *cb_data, const uint8_t *data, const uint32_t data_len, const uint64_t _offset)
 {
     struct StreamMpmData *smd = cb_data;
     if (data_len >= smd->mpm_ctx->minlen) {
@@ -65,6 +67,7 @@ static int StreamMpmFunc(void *cb_data, const uint8_t *data, const uint32_t data
         (void)mpm_table[smd->mpm_ctx->mpm_type].Search(smd->mpm_ctx,
                 &smd->det_ctx->mtcs, &smd->det_ctx->pmq,
                 data, data_len);
+        PREFILTER_PROFILING_ADD_BYTES(smd->det_ctx, data_len);
     }
     return 0;
 }
@@ -99,6 +102,7 @@ static void PrefilterPktStream(DetectEngineThreadCtx *det_ctx,
             (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                     &det_ctx->mtc, &det_ctx->pmq,
                     p->payload, p->payload_len);
+            PREFILTER_PROFILING_ADD_BYTES(det_ctx, p->payload_len);
         }
     }
 }
@@ -122,6 +126,8 @@ static void PrefilterPktPayload(DetectEngineThreadCtx *det_ctx,
     (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
             &det_ctx->mtc, &det_ctx->pmq,
             p->payload, p->payload_len);
+
+    PREFILTER_PROFILING_ADD_BYTES(det_ctx, p->payload_len);
 }
 
 int PrefilterPktPayloadRegister(DetectEngineCtx *de_ctx,
@@ -144,8 +150,8 @@ int PrefilterPktPayloadRegister(DetectEngineCtx *de_ctx,
  *  \retval 0 no match
  *  \retval 1 match
  */
-int DetectEngineInspectPacketPayload(DetectEngineCtx *de_ctx,
-        DetectEngineThreadCtx *det_ctx, const Signature *s, Flow *f, Packet *p)
+uint8_t DetectEngineInspectPacketPayload(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+        const Signature *s, Flow *f, Packet *p)
 {
     SCEnter();
     int r = 0;
@@ -185,10 +191,9 @@ int DetectEngineInspectPacketPayload(DetectEngineCtx *de_ctx,
  *  \retval 0 no match
  *  \retval 1 match
  */
-static int DetectEngineInspectStreamUDPPayload(DetectEngineCtx *de_ctx,
-        DetectEngineThreadCtx *det_ctx,
-        const Signature *s, const SigMatchData *smd,
-        Flow *f, Packet *p)
+static uint8_t DetectEngineInspectStreamUDPPayload(DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx, const Signature *s, const SigMatchData *smd, Flow *f,
+        Packet *p)
 {
     SCEnter();
     int r = 0;
@@ -221,7 +226,8 @@ struct StreamContentInspectData {
     Flow *f;
 };
 
-static int StreamContentInspectFunc(void *cb_data, const uint8_t *data, const uint32_t data_len)
+static int StreamContentInspectFunc(
+        void *cb_data, const uint8_t *data, const uint32_t data_len, const uint64_t _offset)
 {
     SCEnter();
     int r = 0;
@@ -279,7 +285,8 @@ struct StreamContentInspectEngineData {
     Flow *f;
 };
 
-static int StreamContentInspectEngineFunc(void *cb_data, const uint8_t *data, const uint32_t data_len)
+static int StreamContentInspectEngineFunc(
+        void *cb_data, const uint8_t *data, const uint32_t data_len, const uint64_t _offset)
 {
     SCEnter();
     int r = 0;
@@ -311,7 +318,7 @@ static int StreamContentInspectEngineFunc(void *cb_data, const uint8_t *data, co
  *
  *  Returns "can't match" if depth is reached.
  */
-int DetectEngineInspectStream(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+uint8_t DetectEngineInspectStream(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
         uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
 {
@@ -366,6 +373,7 @@ int DetectEngineInspectStream(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *de
 }
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 
 /** \test Not the first but the second occurence of "abc" should be used
   *       for the 2nd match */

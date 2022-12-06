@@ -24,7 +24,6 @@
 #include "suricata-common.h"
 #include "suricata.h"
 
-#include "debug.h"
 #include "detect.h"
 #include "flow.h"
 #include "conf.h"
@@ -42,6 +41,7 @@
 #include "util-unittest.h"
 
 #include "util-debug.h"
+#include "util-validate.h"
 #include "util-buffer.h"
 
 #include "output.h"
@@ -136,7 +136,8 @@ static void AlertDebugLogPktVars(AlertDebugLogThread *aft, const Packet *p)
 
 /** \todo doc
  * assume we have aft lock */
-static int AlertDebugPrintStreamSegmentCallback(const Packet *p, void *data, const uint8_t *buf, uint32_t buflen)
+static int AlertDebugPrintStreamSegmentCallback(
+        const Packet *p, TcpSegment *seg, void *data, const uint8_t *buf, uint32_t buflen)
 {
     AlertDebugLogThread *aft = (AlertDebugLogThread *)data;
 
@@ -175,7 +176,8 @@ static TmEcode AlertDebugLogger(ThreadVars *tv, const Packet *p, void *thread_da
     if (PKT_IS_IPV4(p)) {
         PrintInet(AF_INET, (const void *)GET_IPV4_SRC_ADDR_PTR(p), srcip, sizeof(srcip));
         PrintInet(AF_INET, (const void *)GET_IPV4_DST_ADDR_PTR(p), dstip, sizeof(dstip));
-    } else if (PKT_IS_IPV6(p)) {
+    } else {
+        DEBUG_VALIDATE_BUG_ON(!(PKT_IS_IPV6(p)));
         PrintInet(AF_INET6, (const void *)GET_IPV6_SRC_ADDR(p), srcip, sizeof(srcip));
         PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p), dstip, sizeof(dstip));
     }
@@ -291,9 +293,9 @@ static TmEcode AlertDebugLogger(ThreadVars *tv, const Packet *p, void *thread_da
             /* IDS mode reverse the data */
             /** \todo improve the order selection policy */
             if (p->flowflags & FLOW_PKT_TOSERVER) {
-                flag = FLOW_PKT_TOCLIENT;
+                flag = STREAM_DUMP_TOCLIENT;
             } else {
-                flag = FLOW_PKT_TOSERVER;
+                flag = STREAM_DUMP_TOSERVER;
             }
             ret = StreamSegmentForEach((const Packet *)p, flag,
                                  AlertDebugPrintStreamSegmentCallback,
@@ -466,7 +468,7 @@ error:
     return result;
 }
 
-static int AlertDebugLogCondition(ThreadVars *tv, const Packet *p)
+static int AlertDebugLogCondition(ThreadVars *tv, void *thread_data, const Packet *p)
 {
     return (p->alerts.cnt ? TRUE : FALSE);
 }

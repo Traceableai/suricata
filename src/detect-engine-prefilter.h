@@ -24,7 +24,22 @@
 #ifndef __DETECT_ENGINE_PREFILTER_H__
 #define __DETECT_ENGINE_PREFILTER_H__
 
+#include "detect.h"
 #include "detect-engine-state.h"
+
+// TODO
+typedef struct DetectTransaction_ {
+    void *tx_ptr;
+    const uint64_t tx_id;
+    struct AppLayerTxData *tx_data_ptr;
+    DetectEngineStateDirection *de_state;
+    const uint64_t detect_flags; /* detect flags get/set from/to applayer */
+    uint64_t prefilter_flags; /* prefilter flags for direction, to be updated by prefilter code */
+    const uint64_t
+            prefilter_flags_orig; /* prefilter flags for direction, before prefilter has run */
+    const int tx_progress;
+    const int tx_end_state;
+} DetectTransaction;
 
 typedef struct PrefilterStore_ {
     const char *name;
@@ -44,10 +59,8 @@ int PrefilterAppendPayloadEngine(DetectEngineCtx *de_ctx, SigGroupHead *sgh,
         void *pectx, void (*FreeFunc)(void *pectx),
         const char *name);
 int PrefilterAppendTxEngine(DetectEngineCtx *de_ctx, SigGroupHead *sgh,
-        void (*PrefilterTx)(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p, Flow *f,
-                void *tx, const uint64_t idx, const uint8_t flags),
-        const AppProto alproto, const int tx_min_progress, void *pectx,
-        void (*FreeFunc)(void *pectx), const char *name);
+        PrefilterTxFn PrefilterTxFunc, const AppProto alproto, const int tx_min_progress,
+        void *pectx, void (*FreeFunc)(void *pectx), const char *name);
 int PrefilterAppendFrameEngine(DetectEngineCtx *de_ctx, SigGroupHead *sgh,
         PrefilterFrameFn PrefilterFrameFunc, AppProto alproto, uint8_t frame_type, void *pectx,
         void (*FreeFunc)(void *pectx), const char *name);

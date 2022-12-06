@@ -34,7 +34,7 @@ use std::collections::hash_map::Entry::{Occupied, Vacant};
 use crate::filecontainer::*;
 
 #[derive(Debug)]
-pub struct FileChunk {
+struct FileChunk {
     contains_gap: bool,
     chunk: Vec<u8>,
 }
@@ -66,6 +66,8 @@ pub struct FileTransferTracker {
 
     chunks: HashMap<u64, FileChunk>,
     cur_ooo_chunk_offset: u64,
+
+    in_flight: u64,
 }
 
 impl FileTransferTracker {
@@ -77,15 +79,14 @@ impl FileTransferTracker {
     }
 
     pub fn is_done(&self) -> bool {
-        self.file_open == false
+        !self.file_open
     }
 
     fn open(&mut self, config: &'static SuricataFileContext,
             files: &mut FileContainer, flags: u16, name: &[u8]) -> i32
     {
-        let r = files.file_open(config, &self.track_id, name, flags);
+        let r = files.file_open(config, self.track_id, name, flags);
         if r == 0 {
-            files.file_set_txid_on_last_file(self.tx_id);
             self.file_open = true;
         }
         r
@@ -111,7 +112,7 @@ impl FileTransferTracker {
     }
 
     pub fn create(&mut self, _name: &[u8], _file_size: u64) {
-        if self.file_open == true { panic!("close existing file first"); }
+        if self.file_open { panic!("close existing file first"); }
 
         SCLogDebug!("CREATE: name {:?} file_size {}", _name, _file_size);
     }
@@ -145,13 +146,13 @@ impl FileTransferTracker {
         self.fill_bytes = fill_bytes;
         self.chunk_is_last = is_last;
 
-        if self.file_open == false {
+        if !self.file_open {
             SCLogDebug!("NEW CHUNK: FILE OPEN");
             self.track_id = *xid;
             self.open(config, files, flags, name);
         }
 
-        if self.file_open == true {
+        if self.file_open {
             let res = self.update(files, flags, data, 0);
             SCLogDebug!("NEW CHUNK: update res {:?}", res);
             return res;
@@ -164,7 +165,7 @@ impl FileTransferTracker {
     /// If gap_size > 0 'data' should not be used.
     /// return how much we consumed of data
     pub fn update(&mut self, files: &mut FileContainer, flags: u16, data: &[u8], gap_size: u32) -> u32 {
-        let mut consumed = 0 as usize;
+        let mut consumed = 0_usize;
         let is_gap = gap_size > 0;
         if is_gap || gap_size > 0 {
             SCLogDebug!("is_gap {} size {} ooo? {}", is_gap, gap_size, self.chunk_is_ooo);
@@ -172,7 +173,7 @@ impl FileTransferTracker {
 
         if self.chunk_left == 0 && self.fill_bytes == 0 {
             //SCLogDebug!("UPDATE: nothing to do");
-            if self.chunk_is_last == true {
+            if self.chunk_is_last {
                 SCLogDebug!("last empty chunk, closing");
                 self.close(files, flags);
                 self.chunk_is_last = false;
@@ -198,7 +199,7 @@ impl FileTransferTracker {
             if self.chunk_left <= data.len() as u32 {
                 let d = &data[0..self.chunk_left as usize];
 
-                if self.chunk_is_ooo == false {
+                if !self.chunk_is_ooo {
                     let res = files.file_append(&self.track_id, d, is_gap);
                     match res {
                         0   => { },
@@ -224,6 +225,9 @@ impl FileTransferTracker {
                     self.cur_ooo += d.len() as u64;
                     c.contains_gap |= is_gap;
                     c.chunk.extend(d);
+
+                    self.in_flight += d.len() as u64;
+                    SCLogDebug!("{:p} in_flight {}", self, self.in_flight);
                 }
 
                 consumed += self.chunk_left as usize;
@@ -242,11 +246,13 @@ impl FileTransferTracker {
                 } else {
                     self.chunk_left = 0;
 
-                    if self.chunk_is_ooo == false {
+                    if !self.chunk_is_ooo {
                         loop {
                             let _offset = self.tracked;
                             match self.chunks.remove(&self.tracked) {
                                 Some(c) => {
+                                    self.in_flight -= c.chunk.len() as u64;
+
                                     let res = files.file_append(&self.track_id, &c.chunk, c.contains_gap);
                                     match res {
                                         0   => { },
@@ -277,7 +283,7 @@ impl FileTransferTracker {
                         self.cur_ooo_chunk_offset = 0;
                     }
                 }
-                if self.chunk_is_last == true {
+                if self.chunk_is_last {
                     SCLogDebug!("last chunk, closing");
                     self.close(files, flags);
                     self.chunk_is_last = false;
@@ -286,7 +292,7 @@ impl FileTransferTracker {
                 }
 
             } else {
-                if self.chunk_is_ooo == false {
+                if !self.chunk_is_ooo {
                     let res = files.file_append(&self.track_id, data, is_gap);
                     match res {
                         0   => { },
@@ -307,6 +313,7 @@ impl FileTransferTracker {
                     c.chunk.extend(data);
                     c.contains_gap |= is_gap;
                     self.cur_ooo += data.len() as u64;
+                    self.in_flight += data.len() as u64;
                 }
 
                 self.chunk_left -= data.len() as u32;
@@ -318,5 +325,12 @@ impl FileTransferTracker {
 
     pub fn get_queued_size(&self) -> u64 {
         self.cur_ooo
+    }
+
+    pub fn get_inflight_size(&self) -> u64 {
+        self.in_flight
+    }
+    pub fn get_inflight_cnt(&self) -> usize {
+        self.chunks.len()
     }
 }

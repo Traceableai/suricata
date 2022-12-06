@@ -27,6 +27,7 @@
 #include "suricata-common.h"
 #include "suricata.h"
 #include "decode.h"
+#include "packet.h"
 #include "packet-queue.h"
 #include "threads.h"
 #include "threadvars.h"
@@ -37,6 +38,7 @@
 #include "conf.h"
 #include "util-byte.h"
 #include "util-privs.h"
+#include "util-datalink.h"
 #include "util-device.h"
 #include "runmodes.h"
 
@@ -97,6 +99,8 @@ TmEcode NoIPFWSupportExit(ThreadVars *tv, const void *initdata, void **data)
 
 #else /* We have IPFW compiled in */
 
+#include "action-globals.h"
+
 extern int max_pending_packets;
 
 /**
@@ -128,7 +132,6 @@ static SCMutex ipfw_init_lock;
 /* IPFW Prototypes */
 static void *IPFWGetQueue(int number);
 static TmEcode ReceiveIPFWThreadInit(ThreadVars *, const void *, void **);
-static TmEcode ReceiveIPFW(ThreadVars *, Packet *, void *);
 static TmEcode ReceiveIPFWLoop(ThreadVars *tv, void *data, void *slot);
 static void ReceiveIPFWThreadExitStats(ThreadVars *, void *);
 static TmEcode ReceiveIPFWThreadDeinit(ThreadVars *, void *);
@@ -239,6 +242,11 @@ TmEcode ReceiveIPFWLoop(ThreadVars *tv, void *data, void *slot)
 
     SCLogInfo("Thread '%s' will run on port %d (item %d)",
               tv->name, nq->port_num, ptv->ipfw_index);
+
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
+
     while (1) {
         if (unlikely(suricata_ctl_flags != 0)) {
             SCReturnInt(TM_ECODE_OK);
@@ -322,7 +330,6 @@ TmEcode ReceiveIPFWLoop(ThreadVars *tv, void *data, void *slot)
 TmEcode ReceiveIPFWThreadInit(ThreadVars *tv, const void *initdata, void **data)
 {
     struct timeval timev;
-    int flag;
     IPFWThreadVars *ntv = (IPFWThreadVars *) initdata;
     IPFWQueueVars *nq = IPFWGetQueue(ntv->ipfw_index);
 
@@ -334,7 +341,11 @@ TmEcode ReceiveIPFWThreadInit(ThreadVars *tv, const void *initdata, void **data)
 
     IPFWMutexInit(nq);
     /* We need a divert socket to play with */
+#ifdef PF_DIVERT
+    if ((nq->fd = socket(PF_DIVERT, SOCK_RAW, 0)) == -1) {
+#else
     if ((nq->fd = socket(PF_INET, SOCK_RAW, IPPROTO_DIVERT)) == -1) {
+#endif
         SCLogError(SC_ERR_IPFW_SOCK,"Can't create divert socket: %s", strerror(errno));
         SCReturnInt(TM_ECODE_FAILED);
     }
@@ -346,15 +357,6 @@ TmEcode ReceiveIPFWThreadInit(ThreadVars *tv, const void *initdata, void **data)
 
     if (setsockopt(nq->fd, SOL_SOCKET, SO_RCVTIMEO, &timev, sizeof(timev)) == -1) {
         SCLogError(SC_ERR_IPFW_SETSOCKOPT,"Can't set IPFW divert socket timeout: %s", strerror(errno));
-        SCReturnInt(TM_ECODE_FAILED);
-    }
-
-    /* set SO_BROADCAST on the divert socket, otherwise sendto()
-     * returns EACCES when reinjecting broadcast packets. */
-    flag = 1;
-
-    if (setsockopt(nq->fd, SOL_SOCKET, SO_BROADCAST, &flag, sizeof(flag)) == -1) {
-        SCLogError(SC_ERR_IPFW_SETSOCKOPT,"Can't set IPFW divert socket broadcast flag: %s", strerror(errno));
         SCReturnInt(TM_ECODE_FAILED);
     }
 
@@ -371,6 +373,7 @@ TmEcode ReceiveIPFWThreadInit(ThreadVars *tv, const void *initdata, void **data)
     }
 
     ntv->datalink = DLT_RAW;
+    DatalinkSetGlobalType(DLT_RAW);
 
     *data = (void *)ntv;
 
@@ -533,7 +536,7 @@ TmEcode IPFWSetVerdict(ThreadVars *tv, IPFWThreadVars *ptv, Packet *p)
     IPFWpoll.events = POLLWRNORM;
 #endif
 
-    if (PacketTestAction(p, ACTION_DROP)) {
+    if (PacketCheckAction(p, ACTION_DROP)) {
         verdict = IPFW_DROP;
     } else {
         verdict = IPFW_ACCEPT;

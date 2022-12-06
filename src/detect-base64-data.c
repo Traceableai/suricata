@@ -21,6 +21,7 @@
 #include "detect-engine-content-inspection.h"
 #include "detect-parse.h"
 #include "detect-base64-data.h"
+#include "detect-engine-build.h"
 
 #include "util-unittest.h"
 
@@ -75,8 +76,6 @@ int DetectBase64DataDoMatch(DetectEngineCtx *de_ctx,
 }
 
 #ifdef UNITTESTS
-
-#include "detect-engine.h"
 
 static int g_file_data_buffer_id = 0;
 

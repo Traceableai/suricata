@@ -24,28 +24,17 @@
  */
 
 #include "suricata-common.h"
-#include "threads.h"
 #include "util-debug.h"
-#include "util-error.h"
-#include "util-enum.h"
-#include "util-debug-filters.h"
 
-#include "decode.h"
-#include "detect.h"
-#include "packet-queue.h"
-#include "threadvars.h"
 #include "output.h"
 
-#include "tm-queuehandlers.h"
-#include "tm-queues.h"
-#include "tm-threads.h"
+#include "suricata.h"
 
-#include "util-unittest.h"
+#include "util-conf.h"
+#include "util-enum.h"
+#include "util-path.h"
 #include "util-syslog.h"
-#include "rust.h"
-
-
-#include "conf.h"
+#include "util-time.h"
 
 /* holds the string-enum mapping for the enums held in the table SCLogLevel */
 SCEnumCharMap sc_log_level_map[ ] = {
@@ -367,17 +356,8 @@ static SCError SCLogMessageGetBuffer(
 
             case SC_LOG_FMT_TM:
                 temp_fmt[0] = '\0';
-/* disabled to prevent dead lock:
- * log or alloc (which calls log on error) can call TmThreadsGetCallingThread
- * which will lock tv_root_lock. This can happen while we already hold this
- * lock. */
-#if 0
-                ThreadVars *tv = TmThreadsGetCallingThread();
-                cw = snprintf(temp, SC_LOG_MAX_LOG_MSG_LEN - (temp - *msg),
-                              "%s%s", substr, ((tv != NULL)? tv->name: "UNKNOWN TM"));
-#endif
-                cw = snprintf(temp, SC_LOG_MAX_LOG_MSG_LEN - (temp - buffer),
-                              "%s%s", substr, "N/A");
+                cw = snprintf(temp, SC_LOG_MAX_LOG_MSG_LEN - (temp - buffer), "%s%s%s%s", substr,
+                        yellow, t_thread_name, reset);
                 if (cw < 0)
                     return SC_ERR_SPRINTF;
                 temp += cw;
@@ -751,7 +731,7 @@ static inline SCLogOPIfaceCtx *SCLogInitFileOPIface(const char *file, uint32_t u
 
 #ifndef OS_WIN32
     if (userid != 0 || groupid != 0) {
-        if (chown(file, userid, groupid) == -1) {
+        if (fchown(fileno(iface_ctx->file_d), userid, groupid) == -1) {
             SCLogWarning(SC_WARN_CHOWN, "Failed to change ownership of file %s: %s", file,
                     strerror(errno));
         }

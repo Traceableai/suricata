@@ -23,11 +23,12 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "util-print.h"
 
+#include "flow.h"
 #include "stream-tcp.h"
 #include "app-layer-frames.h"
+#include "app-layer-parser.h"
 
 static void FrameDebug(const char *prefix, const Frames *frames, const Frame *frame)
 {
@@ -70,7 +71,7 @@ Frame *FrameGetByIndex(Frames *frames, const uint32_t idx)
         FrameDebug("get_by_idx(s)", frames, frame);
         return frame;
     } else {
-        const uint16_t o = idx - FRAMES_STATIC_CNT;
+        const uint32_t o = idx - FRAMES_STATIC_CNT;
         Frame *frame = &frames->dframes[o];
         FrameDebug("get_by_idx(d)", frames, frame);
         return frame;
@@ -224,23 +225,6 @@ static inline uint64_t FrameLeftEdge(
         }
     }
 }
-#if 0
-static inline uint64_t FramesLeftEdge(const TcpStream *stream, const Frames *frames)
-{
-    uint64_t le = STREAM_APP_PROGRESS(stream);
-    for (uint16_t i = 0; i < frames->cnt; i++) {
-        if (i < FRAMES_STATIC_CNT) {
-            const Frame *frame = &frames->sframes[i];
-            le = MIN(le, FrameLeftEdge(stream, frame));
-        } else {
-            const uint16_t o = i - FRAMES_STATIC_CNT;
-            const Frame *frame = &frames->dframes[o];
-            le = MIN(le, FrameLeftEdge(stream, frame));
-        }
-    }
-    return le;
-}
-#endif
 
 /** Stream buffer slides forward, we need to update and age out
  *  frame offsets/frames. Aging out means we move existing frames
@@ -274,12 +258,6 @@ static int FrameSlide(const char *ds, Frames *frames, const TcpStream *stream, c
     BUG_ON(frames == NULL);
     SCLogDebug("%s frames %p: sliding %u bytes", ds, frames, slide);
     uint64_t le = STREAM_APP_PROGRESS(stream);
-
-    if (slide >= frames->progress_rel)
-        frames->progress_rel = 0;
-    else
-        frames->progress_rel -= slide;
-
     const uint64_t next_base = STREAM_BASE_OFFSET(stream) + slide;
     const uint16_t start = frames->cnt;
     uint16_t removed = 0;
@@ -346,24 +324,6 @@ static int FrameSlide(const char *ds, Frames *frames, const TcpStream *stream, c
     BUG_ON(o > le);
     BUG_ON(x != start - removed);
     return 0;
-}
-
-void AppLayerFramesUpdateProgress(
-        Flow *f, TcpStream *stream, const uint64_t progress, const uint8_t direction)
-{
-    FramesContainer *frames_container = AppLayerFramesGetContainer(f);
-    if (frames_container == NULL)
-        return;
-
-    Frames *frames;
-    if (direction == STREAM_TOSERVER) {
-        frames = &frames_container->toserver;
-    } else {
-        frames = &frames_container->toclient;
-    }
-
-    const uint32_t slide = progress - STREAM_APP_PROGRESS(stream);
-    frames->progress_rel += slide;
 }
 
 void AppLayerFramesSlide(Flow *f, const uint32_t slide, const uint8_t direction)
@@ -711,7 +671,7 @@ static void FramePrune(Frames *frames, const TcpStream *stream, const bool eof)
     SCLogDebug("start: left edge %" PRIu64 ", left_edge_rel %u, stream base %" PRIu64,
             (uint64_t)frames->left_edge_rel + STREAM_BASE_OFFSET(stream), frames->left_edge_rel,
             STREAM_BASE_OFFSET(stream));
-    const uint64_t abs_offset = STREAM_BASE_OFFSET(stream) + (uint64_t)frames->progress_rel;
+    const uint64_t abs_offset = STREAM_BASE_OFFSET(stream);
     const uint64_t acked = StreamTcpGetUsable(stream, eof);
     uint64_t le = STREAM_APP_PROGRESS(stream);
 
@@ -820,8 +780,7 @@ void FramesPrune(Flow *f, Packet *p)
         frames = &frames_container->toclient;
     }
 
-    const bool eof = ssn->state == TCP_CLOSED || PKT_IS_PSEUDOPKT(p) ||
-                     (ssn->flags & STREAMTCP_FLAG_APP_LAYER_DISABLED);
+    const bool eof = ssn->state == TCP_CLOSED || PKT_IS_PSEUDOPKT(p);
     SCLogDebug("eof %s", eof ? "TRUE" : "false");
     FramePrune(frames, stream, eof);
 }

@@ -117,9 +117,9 @@ void DetectRunPrefilterTx(DetectEngineThreadCtx *det_ctx,
             }
         }
 
-        PREFILTER_PROFILING_START;
-        engine->cb.PrefilterTx(det_ctx, engine->pectx,
-                p, p->flow, tx->tx_ptr, tx->tx_id, flow_flags);
+        PREFILTER_PROFILING_START(det_ctx);
+        engine->cb.PrefilterTx(det_ctx, engine->pectx, p, p->flow, tx->tx_ptr, tx->tx_id,
+                tx->tx_data_ptr, flow_flags);
         PREFILTER_PROFILING_END(det_ctx, engine->gid);
 
         if (tx->tx_progress > engine->ctx.tx_min_progress && engine->is_last_for_progress) {
@@ -159,7 +159,7 @@ void Prefilter(DetectEngineThreadCtx *det_ctx, const SigGroupHead *sgh,
         /* run packet engines */
         PrefilterEngine *engine = sgh->pkt_engines;
         do {
-            PREFILTER_PROFILING_START;
+            PREFILTER_PROFILING_START(det_ctx);
             engine->cb.Prefilter(det_ctx, p, engine->pectx);
             PREFILTER_PROFILING_END(det_ctx, engine->gid);
 
@@ -178,7 +178,7 @@ void Prefilter(DetectEngineThreadCtx *det_ctx, const SigGroupHead *sgh,
         PACKET_PROFILING_DETECT_START(p, PROF_DETECT_PF_PAYLOAD);
         PrefilterEngine *engine = sgh->payload_engines;
         while (1) {
-            PREFILTER_PROFILING_START;
+            PREFILTER_PROFILING_START(det_ctx);
             engine->cb.Prefilter(det_ctx, p, engine->pectx);
             PREFILTER_PROFILING_END(det_ctx, engine->gid);
 
@@ -268,12 +268,8 @@ int PrefilterAppendPayloadEngine(DetectEngineCtx *de_ctx, SigGroupHead *sgh,
 }
 
 int PrefilterAppendTxEngine(DetectEngineCtx *de_ctx, SigGroupHead *sgh,
-        void (*PrefilterTxFunc)(DetectEngineThreadCtx *det_ctx, const void *pectx,
-            Packet *p, Flow *f, void *tx,
-            const uint64_t idx, const uint8_t flags),
-        AppProto alproto, int tx_min_progress,
-        void *pectx, void (*FreeFunc)(void *pectx),
-        const char *name)
+        PrefilterTxFn PrefilterTxFunc, AppProto alproto, int tx_min_progress, void *pectx,
+        void (*FreeFunc)(void *pectx), const char *name)
 {
     if (sgh == NULL || PrefilterTxFunc == NULL || pectx == NULL)
         return -1;
@@ -286,7 +282,9 @@ int PrefilterAppendTxEngine(DetectEngineCtx *de_ctx, SigGroupHead *sgh,
     e->PrefilterTx = PrefilterTxFunc;
     e->pectx = pectx;
     e->alproto = alproto;
-    e->tx_min_progress = tx_min_progress;
+    // TODO change function prototype ?
+    DEBUG_VALIDATE_BUG_ON(tx_min_progress > UINT8_MAX);
+    e->tx_min_progress = (uint8_t)tx_min_progress;
     e->Free = FreeFunc;
 
     if (sgh->init->tx_engines == NULL) {
@@ -498,7 +496,7 @@ void PrefilterSetupRuleGroup(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
         }
         memset(sgh->tx_engines, 0x00, (cnt * sizeof(PrefilterEngine)));
 
-        uint32_t local_id = 0;
+        uint16_t local_id = 0;
         PrefilterEngine *e = sgh->tx_engines;
         for (el = sgh->init->tx_engines ; el != NULL; el = el->next) {
             e->local_id = local_id++;
@@ -599,9 +597,8 @@ static uint32_t PrefilterStoreHashFunc(HashListTable *ht, void *data, uint16_t d
     PrefilterStore *ctx = data;
 
     uint32_t hash = strlen(ctx->name);
-    uint16_t u;
 
-    for (u = 0; u < strlen(ctx->name); u++) {
+    for (size_t u = 0; u < strlen(ctx->name); u++) {
         hash += ctx->name[u];
     }
 
@@ -717,10 +714,8 @@ typedef struct PrefilterMpmCtx {
  *  \param txv tx to inspect
  *  \param pectx inspection context
  */
-static void PrefilterMpm(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterMpm(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p, Flow *f,
+        void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -742,6 +737,7 @@ static void PrefilterMpm(DetectEngineThreadCtx *det_ctx,
     if (data != NULL && data_len >= mpm_ctx->minlen) {
         (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                 &det_ctx->mtcu, &det_ctx->pmq, data, data_len);
+        PREFILTER_PROFILING_ADD_BYTES(det_ctx, data_len);
     }
 }
 
@@ -812,6 +808,7 @@ static void PrefilterMpmPkt(DetectEngineThreadCtx *det_ctx,
     if (data != NULL && data_len >= mpm_ctx->minlen) {
         (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                 &det_ctx->mtcu, &det_ctx->pmq, data, data_len);
+        PREFILTER_PROFILING_ADD_BYTES(det_ctx, data_len);
     }
 }
 

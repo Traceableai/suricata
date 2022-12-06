@@ -26,45 +26,14 @@
  * This file provides a HTTP protocol support for the engine using HTP library.
  */
 
-#include "suricata.h"
 #include "suricata-common.h"
-#include "debug.h"
-#include "decode.h"
-#include "threads.h"
-
-#include "util-print.h"
-#include "util-pool.h"
-#include "util-radix-tree.h"
-
-#include "stream-tcp-private.h"
-#include "stream-tcp-reassemble.h"
-#include "stream-tcp.h"
-#include "stream.h"
-
-#include "app-layer-protos.h"
-#include "app-layer-parser.h"
 #include "app-layer-htp.h"
+#include "app-layer-htp-mem.h"
 #include "app-layer-htp-body.h"
+#include "util-streaming-buffer.h"
+#include "util-print.h"
 
-#include "util-spm.h"
-#include "util-debug.h"
-#include "app-layer-htp-file.h"
-#include "util-time.h"
-
-#include "util-unittest.h"
-#include "util-unittest-helper.h"
-#include "flow-util.h"
-
-#include "detect-engine.h"
-#include "detect-engine-state.h"
-#include "detect-parse.h"
-
-#include "conf.h"
-
-#include "util-memcmp.h"
-
-static StreamingBufferConfig default_cfg = {
-    0, 0, 3072, HTPMalloc, HTPCalloc, HTPRealloc, HTPFree };
+static StreamingBufferConfig default_cfg = { 0, 3072, HTPCalloc, HTPRealloc, HTPFree };
 
 /**
  * \brief Append a chunk of body to the HtpBody struct

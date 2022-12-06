@@ -25,7 +25,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -183,7 +182,7 @@ static TmEcode JsonIKELogThreadDeinit(ThreadVars *t, void *data)
 void JsonIKELogRegister(void)
 {
     /* Register as an eve sub-module. */
-    OutputRegisterTxSubModule(LOGGER_JSON_IKE, "eve-log", "JsonIKELog", "eve-log.ike",
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonIKELog", "eve-log.ike",
             OutputIKELogInitSub, ALPROTO_IKE, JsonIKELogger, JsonIKELogThreadInit,
             JsonIKELogThreadDeinit, NULL);
 }

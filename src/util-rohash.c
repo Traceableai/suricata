@@ -39,8 +39,8 @@
 #include "util-unittest.h"
 #include "util-memcmp.h"
 #include "util-hash-lookup3.h"
-#include "queue.h"
 #include "util-rohash.h"
+#include "util-debug.h"
 
 /** item_size data beyond this header */
 typedef struct ROHashTableItem_ {
@@ -102,8 +102,9 @@ void ROHashFree(ROHashTable *table)
 
 uint32_t ROHashMemorySize(ROHashTable *table)
 {
-    return (uint32_t)(hashsize(table->hash_bits) * sizeof(ROHashTableOffsets) +
-            table->items * table->item_size + sizeof(ROHashTable));
+    uint32_t r1 = hashsize(table->hash_bits) * sizeof(ROHashTableOffsets);
+    uint32_t r2 = table->items * table->item_size;
+    return (uint32_t)(r1 + r2 + sizeof(ROHashTable));
 }
 
 /**

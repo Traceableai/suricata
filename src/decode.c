@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2019 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -48,32 +48,52 @@
  */
 
 #include "suricata-common.h"
-#include "suricata.h"
-#include "conf.h"
 #include "decode.h"
-#include "decode-teredo.h"
-#include "util-debug.h"
-#include "util-mem.h"
-#include "app-layer-detect-proto.h"
-#include "app-layer.h"
-#include "tm-threads.h"
-#include "util-error.h"
-#include "util-print.h"
-#include "tmqh-packetpool.h"
-#include "util-profiling.h"
-#include "pkt-var.h"
-#include "util-mpm-ac.h"
-#include "util-hash-string.h"
-#include "output.h"
-#include "output-flow.h"
+
+#include "packet.h"
+#include "flow.h"
 #include "flow-storage.h"
+#include "tmqh-packetpool.h"
+#include "app-layer.h"
+#include "output.h"
+
+#include "decode-vxlan.h"
+#include "decode-geneve.h"
+#include "decode-erspan.h"
+#include "decode-teredo.h"
+
+#include "util-hash.h"
+#include "util-hash-string.h"
+#include "util-print.h"
+#include "util-profiling.h"
 #include "util-validate.h"
+#include "action-globals.h"
 
 uint32_t default_packet_size = 0;
 extern bool stats_decoder_events;
 extern const char *stats_decoder_events_prefix;
 extern bool stats_stream_events;
 uint8_t decoder_max_layers = PKT_DEFAULT_MAX_DECODED_LAYERS;
+uint16_t packet_alert_max = PACKET_ALERT_MAX;
+
+/**
+ * \brief Initialize PacketAlerts with dynamic alerts array size
+ *
+ */
+PacketAlert *PacketAlertCreate(void)
+{
+    PacketAlert *pa_array = SCCalloc(packet_alert_max, sizeof(PacketAlert));
+    BUG_ON(pa_array == NULL);
+
+    return pa_array;
+}
+
+void PacketAlertFree(PacketAlert *pa)
+{
+    if (pa != NULL) {
+        SCFree(pa);
+    }
+}
 
 static int DecodeTunnel(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint32_t,
         enum DecodeTunnelProto) WARN_UNUSED;
@@ -85,10 +105,12 @@ static int DecodeTunnel(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, const 
         case DECODE_TUNNEL_PPP:
             return DecodePPP(tv, dtv, p, pkt, len);
         case DECODE_TUNNEL_IPV4:
-            return DecodeIPV4(tv, dtv, p, pkt, len);
+            DEBUG_VALIDATE_BUG_ON(len > UINT16_MAX);
+            return DecodeIPV4(tv, dtv, p, pkt, (uint16_t)len);
         case DECODE_TUNNEL_IPV6:
         case DECODE_TUNNEL_IPV6_TEREDO:
-            return DecodeIPV6(tv, dtv, p, pkt, len);
+            DEBUG_VALIDATE_BUG_ON(len > UINT16_MAX);
+            return DecodeIPV6(tv, dtv, p, pkt, (uint16_t)len);
         case DECODE_TUNNEL_VLAN:
             return DecodeVLAN(tv, dtv, p, pkt, len);
         case DECODE_TUNNEL_ETHERNET:
@@ -111,7 +133,7 @@ static int DecodeTunnel(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, const 
  */
 void PacketFree(Packet *p)
 {
-    PACKET_DESTRUCTOR(p);
+    PacketDestructor(p);
     SCFree(p);
 }
 
@@ -150,15 +172,12 @@ void PacketUpdateEngineEventCounters(ThreadVars *tv,
  */
 Packet *PacketGetFromAlloc(void)
 {
-    Packet *p = SCMalloc(SIZE_OF_PACKET);
+    Packet *p = SCCalloc(1, SIZE_OF_PACKET);
     if (unlikely(p == NULL)) {
         return NULL;
     }
-
-    memset(p, 0, SIZE_OF_PACKET);
-    PACKET_INITIALIZE(p);
+    PacketInit(p);
     p->ReleasePacket = PacketFree;
-    p->flags |= PKT_ALLOC;
 
     SCLogDebug("allocated a new packet only using alloc...");
 
@@ -171,11 +190,11 @@ Packet *PacketGetFromAlloc(void)
  */
 void PacketFreeOrRelease(Packet *p)
 {
-    if (p->flags & PKT_ALLOC)
-        PacketFree(p);
-    else {
+    if (likely(p->pool != NULL)) {
         p->ReleasePacket = PacketPoolReturnPacket;
         PacketPoolReturnPacket(p);
+    } else {
+        PacketFree(p);
     }
 }
 
@@ -293,6 +312,11 @@ Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *pare
 
     SCEnter();
 
+    if (parent->nb_decoded_layers + 1 >= decoder_max_layers) {
+        ENGINE_SET_INVALID_EVENT(parent, GENERIC_TOO_MANY_LAYERS);
+        SCReturnPtr(NULL, "Packet");
+    }
+
     /* get us a packet */
     Packet *p = PacketGetFromQueueOrAlloc();
     if (unlikely(p == NULL)) {
@@ -301,7 +325,10 @@ Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *pare
 
     /* copy packet and set length, proto */
     PacketCopyData(p, pkt, len);
+    DEBUG_VALIDATE_BUG_ON(parent->recursion_level == 255);
     p->recursion_level = parent->recursion_level + 1;
+    DEBUG_VALIDATE_BUG_ON(parent->nb_decoded_layers >= decoder_max_layers);
+    p->nb_decoded_layers = parent->nb_decoded_layers + 1;
     p->ts.tv_sec = parent->ts.tv_sec;
     p->ts.tv_usec = parent->ts.tv_usec;
     p->datalink = DLT_RAW;
@@ -430,11 +457,17 @@ void PacketBypassCallback(Packet *p)
                 (state == FLOW_STATE_CAPTURE_BYPASSED)) {
             return;
         }
-        FlowBypassInfo *fc = SCCalloc(sizeof(FlowBypassInfo), 1);
-        if (fc) {
-            FlowSetStorageById(p->flow, GetFlowBypassInfoID(), fc);
-        } else {
-            return;
+
+        FlowBypassInfo *fc;
+
+        fc = FlowGetStorageById(p->flow, GetFlowBypassInfoID());
+        if (fc == NULL) {
+            fc = SCCalloc(sizeof(FlowBypassInfo), 1);
+            if (fc) {
+                FlowSetStorageById(p->flow, GetFlowBypassInfoID(), fc);
+            } else {
+                return;
+            }
         }
     }
     if (p->BypassPacketsFlow && p->BypassPacketsFlow(p)) {
@@ -532,6 +565,9 @@ void DecodeRegisterPerfCounters(DecodeThreadVars *dtv, ThreadVars *tv)
     dtv->counter_nsh = StatsRegisterMaxCounter("decoder.nsh", tv);
     dtv->counter_flow_memcap = StatsRegisterCounter("flow.memcap", tv);
 
+    dtv->counter_tcp_active_sessions = StatsRegisterCounter("tcp.active_sessions", tv);
+    dtv->counter_flow_total = StatsRegisterCounter("flow.total", tv);
+    dtv->counter_flow_active = StatsRegisterCounter("flow.active", tv);
     dtv->counter_flow_tcp = StatsRegisterCounter("flow.tcp", tv);
     dtv->counter_flow_udp = StatsRegisterCounter("flow.udp", tv);
     dtv->counter_flow_icmp4 = StatsRegisterCounter("flow.icmpv4", tv);
@@ -746,11 +782,49 @@ const char *PktSrcToString(enum PktSrcEnum pkt_src)
     return pkt_src_str;
 }
 
+const char *PacketDropReasonToString(enum PacketDropReason r)
+{
+    switch (r) {
+        case PKT_DROP_REASON_DECODE_ERROR:
+            return "decode error";
+        case PKT_DROP_REASON_DEFRAG_ERROR:
+            return "defrag error";
+        case PKT_DROP_REASON_DEFRAG_MEMCAP:
+            return "defrag memcap";
+        case PKT_DROP_REASON_FLOW_MEMCAP:
+            return "flow memcap";
+        case PKT_DROP_REASON_FLOW_DROP:
+            return "flow drop";
+        case PKT_DROP_REASON_STREAM_ERROR:
+            return "stream error";
+        case PKT_DROP_REASON_STREAM_MEMCAP:
+            return "stream memcap";
+        case PKT_DROP_REASON_STREAM_MIDSTREAM:
+            return "stream midstream";
+        case PKT_DROP_REASON_APPLAYER_ERROR:
+            return "applayer error";
+        case PKT_DROP_REASON_APPLAYER_MEMCAP:
+            return "applayer memcap";
+        case PKT_DROP_REASON_RULES:
+            return "rules";
+        case PKT_DROP_REASON_RULES_THRESHOLD:
+            return "threshold detection_filter";
+        case PKT_DROP_REASON_NFQ_ERROR:
+            return "nfq error";
+        case PKT_DROP_REASON_INNER_PACKET:
+            return "tunnel packet drop";
+        case PKT_DROP_REASON_NOT_SET:
+            return NULL;
+    }
+    return NULL;
+}
+
+/* TODO drop reason stats! */
 void CaptureStatsUpdate(ThreadVars *tv, CaptureStats *s, const Packet *p)
 {
-    if (unlikely(PacketTestAction(p, (ACTION_REJECT | ACTION_REJECT_DST | ACTION_REJECT_BOTH)))) {
+    if (unlikely(PacketCheckAction(p, ACTION_REJECT_ANY))) {
         StatsIncr(tv, s->counter_ips_rejected);
-    } else if (unlikely(PacketTestAction(p, ACTION_DROP))) {
+    } else if (unlikely(PacketCheckAction(p, ACTION_DROP))) {
         StatsIncr(tv, s->counter_ips_blocked);
     } else if (unlikely(p->flags & PKT_STREAM_MODIFIED)) {
         StatsIncr(tv, s->counter_ips_replaced);
@@ -778,9 +852,24 @@ void DecodeGlobalConfig(void)
         if (value < 0 || value > UINT8_MAX) {
             SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid value for decoder.max-layers");
         } else {
-            decoder_max_layers = value;
+            decoder_max_layers = (uint8_t)value;
         }
     }
+    PacketAlertGetMaxConfig();
+}
+
+void PacketAlertGetMaxConfig(void)
+{
+    intmax_t max = 0;
+    if (ConfGetInt("packet-alert-max", &max) == 1) {
+        if (max <= 0 || max > UINT8_MAX) {
+            SCLogWarning(SC_ERR_INVALID_VALUE,
+                    "Invalid value for packet-alert-max, default value set instead");
+        } else {
+            packet_alert_max = (uint16_t)max;
+        }
+    }
+    SCLogDebug("detect->packet_alert_max set to %d", packet_alert_max);
 }
 
 /**

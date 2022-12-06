@@ -26,7 +26,6 @@
 #ifndef __FLOW_STORAGE_H__
 #define __FLOW_STORAGE_H__
 
-#include "util-storage.h"
 #include "flow.h"
 
 typedef struct FlowStorageId {
@@ -35,7 +34,7 @@ typedef struct FlowStorageId {
 
 unsigned int FlowStorageSize(void);
 
-void *FlowGetStorageById(Flow *h, FlowStorageId id);
+void *FlowGetStorageById(const Flow *h, FlowStorageId id);
 int FlowSetStorageById(Flow *h, FlowStorageId id, void *ptr);
 void *FlowAllocStorageById(Flow *h, FlowStorageId id);
 

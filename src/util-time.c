@@ -59,10 +59,12 @@
 #endif
 
 #include "suricata-common.h"
+#include "suricata.h"
 #include "detect.h"
 #include "threads.h"
 #include "tm-threads.h"
 #include "util-debug.h"
+#include "util-time.h"
 
 #ifdef UNITTESTS
 static struct timeval current_time = { 0, 0 };
@@ -237,9 +239,9 @@ void CreateUtcIsoTimeString (const struct timeval *ts, char *str, size_t size)
     struct tm local_tm;
     memset(&local_tm, 0, sizeof(local_tm));
     struct tm *t = (struct tm*)SCUtcTime(time, &local_tm);
-    char time_fmt[64] = { 0 };
 
     if (likely(t != NULL)) {
+        char time_fmt[64] = { 0 };
         strftime(time_fmt, sizeof(time_fmt), "%Y-%m-%dT%H:%M:%S", t);
         snprintf(str, size, time_fmt, ts->tv_usec);
     } else {
@@ -249,7 +251,7 @@ void CreateUtcIsoTimeString (const struct timeval *ts, char *str, size_t size)
 
 void CreateFormattedTimeString (const struct tm *t, const char *fmt, char *str, size_t size)
 {
-    if (likely(t != NULL && fmt != NULL && str != NULL)) {
+    if (likely(t != NULL)) {
         strftime(str, size, fmt, t);
     } else {
         snprintf(str, size, "ts-error");
@@ -646,4 +648,9 @@ uint64_t SCGetSecondsUntil (const char *str, time_t epoch)
 uint64_t SCTimespecAsEpochMillis(const struct timespec* ts)
 {
     return ts->tv_sec * 1000L + ts->tv_nsec / 1000000L;
+}
+
+uint64_t TimeDifferenceMicros(struct timeval t0, struct timeval t1)
+{
+    return (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000 + (t1.tv_usec - t1.tv_usec);
 }

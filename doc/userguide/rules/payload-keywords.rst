@@ -273,40 +273,90 @@ You can also use the negation (!) before isdataat.
 bsize
 -----
 
-With the bsize keyword, you can match on the length of the buffer. This adds precision to the content match, previously this could have been done with isdataat.
+With the ``bsize`` keyword, you can match on the length of the buffer. This adds
+precision to the content match, previously this could have been done with ``isdataat``.
+
+An optional operator can be specified; if no operator is present, the operator will
+default to '='. When a relational operator is used, e.g., '<', '>' or '<>' (range),
+the bsize value will be compared using the relational operator. Ranges are inclusive.
+
+If one or more ``content`` keywords precedes ``bsize``, each occurrence of ``content``
+will be inspected and an error will be raised if the content length and the bsize
+value prevent a match.
 
 Format::
 
   bsize:<number>;
+  bsize:=<number>;
+  bsize:<<number>;
+  bsize:><number>;
+  bsize:<lo-number><><hi-number>;
 
-Example of bsize in a rule:
+Examples of ``bsize`` in a rule:
 
 .. container:: example-rule
 
-   alert dns any any -> any any (msg:"test bsize rule"; dns.query; content:"google.com"; bsize:10; sid:123; rev:1;)
+   alert dns any any -> any any (msg:"bsize exact buffer size"; dns.query; content:"google.com"; bsize:10; sid:1; rev:1;)
+
+   alert dns any any -> any any (msg:"bsize less than value"; dns.query; content:"google.com"; bsize:<25; sid:2; rev:1;)
+
+   alert dns any any -> any any (msg:"bsize buffer less than or equal value"; dns.query; content:"google.com"; bsize:<=20; sid:3; rev:1;)
+
+   alert dns any any -> any any (msg:"bsize buffer greater than value"; dns.query; content:"google.com"; bsize:>8; sid:4; rev:1;)
+
+   alert dns any any -> any any (msg:"bsize buffer greater than or equal value"; dns.query; content:"google.com"; bsize:>=8; sid:5; rev:1;)
+
+   alert dns any any -> any any (msg:"bsize buffer range value"; dns.query; content:"google.com"; bsize:8<>20; sid:6; rev:1;)
+
+
+.. container:: example-rule
+
+   alert dns any any -> any any (msg:"test bsize rule"; dns.query; content:"short"; bsize:<10; sid:124; rev:1;)
+
+.. container:: example-rule
+
+   alert dns any any -> any any (msg:"test bsize rule"; dns.query; content:"longer string"; bsize:>10; sid:125; rev:1;)
+
+.. container:: example-rule
+
+   alert dns any any -> any any (msg:"test bsize rule"; dns.query; content:"middle"; bsize:6<>15; sid:126; rev:1;)
 
 dsize
 -----
 
 With the dsize keyword, you can match on the size of the packet
-payload. You can use the keyword for example to look for abnormal
+payload/data. You can use the keyword for example to look for abnormal
 sizes of payloads which are equal to some n i.e. 'dsize:n'
 not equal 'dsize:!n' less than 'dsize:<n' or greater than 'dsize:>n'
 This may be convenient in detecting buffer overflows.
+
+dsize cannot be used when using app/streamlayer protocol keywords (i.e. http.uri)
 
 Format::
 
   dsize:[<>!]number; || dsize:min<>max;
 
-Example of dsize in a rule:
+Examples of dsize values:
 
 .. container:: example-rule
 
-    alert udp $EXTERNAL_NET any -> $HOME_NET 65535 (msg:"GPL DELETED EXPLOIT LANDesk Management Suite Alerting Service buffer overflow"; :example-rule-emphasis:`dsize:>268;` reference: bugtraq,23483; reference: cve,2007-1674; classtype: attempted-admin; sid:100000928; rev:1;)
-    alert tcp $EXTERNAL_NET any -> $HOME_NET 8081 (msg:"Example Negation"; :example-rule-emphasis:`dsize:!10;` sid:123; rev:1;)
+   alert tcp any any -> any any (msg:"dsize exact size"; dsize:10; sid:1; rev:1;)
+
+   alert tcp any any -> any any (msg:"dsize less than value"; dsize:<10; sid:2; rev:1;)
+
+   alert tcp any any -> any any (msg:"dsize less than or equal value"; dsize:<=10; sid:3; rev:1;)
+
+   alert tcp any any -> any any (msg:"dsize greater than value"; dsize:>8; sid:4; rev:1;)
+
+   alert tcp any any -> any any (msg:"dsize greater than or equal value"; dsize:>=10; sid:5; rev:1;)
+
+   alert tcp any any -> any any (msg:"dsize range value"; dsize:8<>20; sid:6; rev:1;)
+
+   alert tcp any any -> any any (msg:"dsize not equal value"; dsize:!9; sid:7; rev:1;)
 
 byte_test
 ---------
+
 The ``byte_test`` keyword extracts ``<num of bytes>`` and performs an operation selected
 with ``<operator>`` against the value in ``<test value>`` at a particular ``<offset>``.
 The ``<bitmask value>`` is applied to the extracted bytes (before the operator is applied),
@@ -347,7 +397,7 @@ Format::
 |		 | - dec - Converted string represented in decimal				|
 |		 | - oct - Converted string represented in octal				|
 +----------------+------------------------------------------------------------------------------+
-| [dce]		 | Allow the DCE module determine the byte order 				|
+| [dce]		 | Allow the DCE module to determine the byte order 				|
 +----------------+------------------------------------------------------------------------------+
 | [bitmask]	 | Applies the AND operator on the bytes converted				|
 +----------------+------------------------------------------------------------------------------+
@@ -390,48 +440,52 @@ When ``relative`` is included, there must be a previous ``content`` or ``pcre`` 
 The result can be stored in a result variable and referenced by
 other rule options later in the rule.
 
+
 ==============	==================================
- Keyword	Modifier
+ Keyword	    Modifier
 ============== 	==================================
- content	offset,depth,distance,within
- byte_test	offset,value
- byte_jump	offset
- isdataat	offset
+ content	    offset,depth,distance,within
+ byte_test	    offset,value
+ byte_jump	    offset
+ isdataat	    offset
 ==============	==================================
 
 Format::
 
   byte_math:bytes <num of bytes>, offset <offset>, oper <operator>, rvalue <rvalue>, \
-	result <result_var> [, relative] [, endian <endian>] [, string <number-type>] \
-	[, dce] [, bitmask <value>];
+        result <result_var> [, relative] [, endian <endian>] [, string <number-type>] \
+        [, dce] [, bitmask <value>];
+
 
 +-----------------------+-----------------------------------------------------------------------+
-| <num of bytes>	| The number of bytes selected from the packet 				|
+| <num of bytes>        | The number of bytes selected from the packet                          |
 +-----------------------+-----------------------------------------------------------------------+
-| <offset>		| Number of bytes into the payload					|
+| <offset>              | Number of bytes into the payload                                      |
 +-----------------------+-----------------------------------------------------------------------+
-| oper <operator>	| Mathematical operation to perform: +, -, \*, /, <<, >> 		|
+| oper <operator>       | Mathematical operation to perform: +, -, \*, /, <<, >>                |
 +-----------------------+-----------------------------------------------------------------------+
-| rvalue <rvalue>	| Value to perform the math operation with 				|
+| rvalue <rvalue>       | Value to perform the math operation with                              |
 +-----------------------+-----------------------------------------------------------------------+
-| result <result-var>	| Where to store the computed value 					|
+| result <result-var>   | Where to store the computed value                                     |
 +-----------------------+-----------------------------------------------------------------------+
-| [relative]		| Offset relative to last content match					|
+| [relative]            | Offset relative to last content match                                 |
 +-----------------------+-----------------------------------------------------------------------+
-| [endian <type>]	| - big (Most significant byte at lowest address)			|
-|		       	| - little (Most significant byte at the highest address)		|
+| [endian <type>]       | - big (Most significant byte at lowest address)                       |
+|                       | - little (Most significant byte at the highest address)               |
+|                       | - dce (Allow the DCE module to determine the byte order)              |
 +-----------------------+-----------------------------------------------------------------------+
-| [string <num_type>]  	| 									|
-|		       	| - hex Converted data is represented in hex				|
-|		       	| - dec Converted data is represented in decimal			|
-|		       	| - oct Converted data is represented as octal				|
+| [string <num_type>]   |                                                                       |
+|                       | - hex Converted data is represented in hex                            |
+|                       | - dec Converted data is represented in decimal                        |
+|                       | - oct Converted data is represented as octal                          |
 +-----------------------+-----------------------------------------------------------------------+
-| [dce]			| Allow the DCE module determine the byte order				|
+| [dce]                 | Allow the DCE module to determine the byte order                      |
 +-----------------------+-----------------------------------------------------------------------+
-| [bitmask] <value>	| The AND operator will be applied to the extracted value		|
-|			| The result will be right shifted by the number of bits equal to the	|
-|			| number of trailing zeros in the mask					|
+| [bitmask] <value>     | The AND operator will be applied to the extracted value               |
+|                       | The result will be right shifted by the number of bits equal to the   |
+|                       | number of trailing zeros in the mask                                  |
 +-----------------------+-----------------------------------------------------------------------+
+
 
 Example::
 
@@ -457,11 +511,13 @@ The ``byte_jump`` keyword allows for the ability to select a ``<num of bytes>`` 
 Format::
 
   byte_jump:<num of bytes>, <offset> [, relative][, multiplier <mult_value>] \
-	[, <endian>][, string, <num_type>][, align][, from_beginning][, from_end] \ 
+        [, <endian>][, string, <num_type>][, align][, from_beginning][, from_end] \
         [, post_offset <value>][, dce][, bitmask <value>];
 
+
+
 +-----------------------+-----------------------------------------------------------------------+
-| <num of bytes>	| The number of bytes selected from the packet to be converted		|
+| <num of bytes>        | The number of bytes selected from the packet to be converted          |
 +-----------------------+-----------------------------------------------------------------------+
 | <offset>		| Number of bytes into the payload					|
 +-----------------------+-----------------------------------------------------------------------+
@@ -488,11 +544,12 @@ Format::
 | [post_offset] <value>	| After the jump operation has been performed, it will			|
 |			| jump an additional number of bytes specified by <value>		|
 +-----------------------+-----------------------------------------------------------------------+
-| [dce]			| Allow the DCE module determine the byte order				|
+| [dce]                 | Allow the DCE module to determine the byte order                      |
 +-----------------------+-----------------------------------------------------------------------+
 | [bitmask] <value>	| The AND operator will be applied by <value> and the			|
 |			| converted bytes, then jump operation is performed			|
 +-----------------------+-----------------------------------------------------------------------+
+
 
 Example::
 
@@ -541,10 +598,10 @@ Format::
 |		     | - dec - Converted string represented in decimal				|
 |		     | - oct - Converted string represented in octal				|
 +--------------------+--------------------------------------------------------------------------+
-| [dce]		     | Allow the DCE module determine the byte order 				|
+| [dce]              | Allow the DCE module to determine the byte order                         |
 +--------------------+--------------------------------------------------------------------------+
-| align <align-value>| Round the extracted value up to the next 				|
-|                    | next <align-value> byte boundary post-multiplication (if any)            |
+| align <align-value>| Round the extracted value up to the next                                 |
+|                    | <align-value> byte boundary post-multiplication (if any)                 |
 |                    | ; <align-value> may be 2 or 4                                            |
 +--------------------+--------------------------------------------------------------------------+
 

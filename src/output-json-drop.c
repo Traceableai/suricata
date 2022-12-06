@@ -25,7 +25,7 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
+#include "packet.h"
 #include "detect.h"
 #include "flow.h"
 #include "conf.h"
@@ -55,6 +55,8 @@
 #include "util-logopenfile.h"
 #include "util-time.h"
 #include "util-buffer.h"
+
+#include "action-globals.h"
 
 #define MODULE_NAME "JsonDropLog"
 
@@ -92,6 +94,14 @@ static int DropLogJSON (JsonDropLogThread *aft, const Packet *p)
     JsonBuilder *js = CreateEveHeader(p, LOG_DIR_PACKET, "drop", &addr, drop_ctx->eve_ctx);
     if (unlikely(js == NULL))
         return TM_ECODE_OK;
+
+    if (p->flow != NULL) {
+        if (p->flowflags & FLOW_PKT_TOSERVER) {
+            jb_set_string(js, "direction", "to_server");
+        } else {
+            jb_set_string(js, "direction", "to_client");
+        }
+    }
 
     jb_open_object(js, "drop");
 
@@ -140,6 +150,10 @@ static int DropLogJSON (JsonDropLogThread *aft, const Packet *p)
             }
             break;
     }
+    if (p->drop_reason != 0) {
+        const char *str = PacketDropReasonToString(p->drop_reason);
+        jb_set_string(js, "reason", str);
+    }
 
     /* Close drop. */
     jb_close(js);
@@ -155,7 +169,7 @@ static int DropLogJSON (JsonDropLogThread *aft, const Packet *p)
             if ((pa->action & (ACTION_REJECT|ACTION_REJECT_DST|ACTION_REJECT_BOTH)) ||
                ((pa->action & ACTION_DROP) && EngineModeIsIPS()))
             {
-                AlertJsonHeader(NULL, p, pa, js, 0, &addr);
+                AlertJsonHeader(NULL, p, pa, js, 0, &addr, NULL);
                 logged = 1;
                 break;
             }
@@ -163,7 +177,7 @@ static int DropLogJSON (JsonDropLogThread *aft, const Packet *p)
         if (logged == 0) {
             if (p->alerts.drop.action != 0) {
                 const PacketAlert *pa = &p->alerts.drop;
-                AlertJsonHeader(NULL, p, pa, js, 0, &addr);
+                AlertJsonHeader(NULL, p, pa, js, 0, &addr, NULL);
             }
         }
     }
@@ -324,7 +338,7 @@ static int JsonDropLogger(ThreadVars *tv, void *thread_data, const Packet *p)
  *
  * \retval bool TRUE or FALSE
  */
-static int JsonDropLogCondition(ThreadVars *tv, const Packet *p)
+static int JsonDropLogCondition(ThreadVars *tv, void *data, const Packet *p)
 {
     if (!EngineModeIsIPS()) {
         SCLogDebug("engine is not running in inline mode, so returning");
@@ -351,7 +365,7 @@ static int JsonDropLogCondition(ThreadVars *tv, const Packet *p)
             ret = TRUE;
 
         return ret;
-    } else if (PacketTestAction(p, ACTION_DROP)) {
+    } else if (PacketCheckAction(p, ACTION_DROP)) {
         return TRUE;
     }
 

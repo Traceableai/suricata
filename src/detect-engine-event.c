@@ -181,8 +181,8 @@ error:
  * \retval 0 on Success
  * \retval -1 on Failure
  */
-static int DetectEngineEventSetupDo (DetectEngineCtx *de_ctx, Signature *s,
-        const char *rawstr, int smtype)
+static int DetectEngineEventSetupDo(
+        DetectEngineCtx *de_ctx, Signature *s, const char *rawstr, uint16_t smtype)
 {
     DetectEngineEventData *de = DetectEngineEventParse(rawstr);
     if (de == NULL)
@@ -336,13 +336,12 @@ static int EngineEventTestParse05 (void)
  */
 static int EngineEventTestParse06 (void)
 {
-    Packet *p = SCMalloc(SIZE_OF_PACKET);
+    Packet *p = PacketGetFromAlloc();
     FAIL_IF_NULL(p);
 
     ThreadVars tv;
 
     memset(&tv, 0, sizeof(ThreadVars));
-    memset(p, 0, SIZE_OF_PACKET);
 
     ENGINE_SET_EVENT(p,PPP_PKT_TOO_SMALL);
 

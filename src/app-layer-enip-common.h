@@ -24,10 +24,7 @@
 #ifndef __APP_LAYER_ENIP_COMMON_H__
 #define __APP_LAYER_ENIP_COMMON_H__
 
-#include "app-layer-protos.h"
-#include "app-layer-parser.h"
-#include "flow.h"
-#include "queue.h"
+#include "rust.h"
 
 // EtherNet/IP commands
 #define NOP                0x0000
@@ -213,6 +210,7 @@ typedef struct ENIPTransaction_
 /** \brief Per flow ENIP state container */
 typedef struct ENIPState_
 {
+    AppLayerStateData state_data;
     TAILQ_HEAD(, ENIPTransaction_) tx_list; /**< transaction list */
     ENIPTransaction *curr;                  /**< ptr to current tx */
     ENIPTransaction *iter;

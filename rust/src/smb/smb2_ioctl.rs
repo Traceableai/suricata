@@ -22,6 +22,7 @@ use crate::smb::dcerpc::*;
 use crate::smb::events::*;
 #[cfg(feature = "debug")]
 use crate::smb::funcs::*;
+use crate::smb::smb_status::*;
 
 #[derive(Debug)]
 pub struct SMBTransactionIoctl {
@@ -31,8 +32,8 @@ pub struct SMBTransactionIoctl {
 impl SMBTransactionIoctl {
     pub fn new(func: u32) -> Self {
         return Self {
-            func: func,
-        }
+            func,
+        };
     }
 }
 

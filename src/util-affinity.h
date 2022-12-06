@@ -25,6 +25,7 @@
 #define __UTIL_AFFINITY_H__
 #include "suricata-common.h"
 #include "conf.h"
+#include "threads.h"
 
 #if defined OS_FREEBSD
 #include <sched.h>
@@ -85,7 +86,7 @@ extern ThreadsAffinityType thread_affinity[MAX_CPU_SET];
 void AffinitySetupLoadFromConfig(void);
 ThreadsAffinityType * GetAffinityTypeFromName(const char *name);
 
-int AffinityGetNextCPU(ThreadsAffinityType *taf);
+uint16_t AffinityGetNextCPU(ThreadsAffinityType *taf);
 
 void BuildCpusetWithCallback(const char *name, ConfNode *node,
                              void (*Callback)(int i, void * data),

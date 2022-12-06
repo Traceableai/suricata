@@ -58,6 +58,7 @@
 #include "app-layer-htp.h"
 #include "detect-http-client-body.h"
 #include "stream-tcp.h"
+#include "util-profiling.h"
 
 static int DetectHttpClientBodySetup(DetectEngineCtx *, Signature *, const char *);
 static int DetectHttpClientBodySetupSticky(DetectEngineCtx *de_ctx, Signature *s, const char *str);
@@ -68,7 +69,7 @@ static void DetectHttpClientBodySetupCallback(const DetectEngineCtx *de_ctx,
                                               Signature *s);
 static int g_http_client_body_buffer_id = 0;
 
-static int DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
+static uint8_t DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
         DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
         const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
 
@@ -295,7 +296,7 @@ static InspectionBuffer *HttpRequestBodyGetDataCallback(DetectEngineThreadCtx *d
     SCReturnPtr(buffer, "InspectionBuffer");
 }
 
-static int DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
+static uint8_t DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
         DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
         const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
 {
@@ -350,7 +351,7 @@ static int DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
  *  \param flags STREAM_* flags including direction
  */
 static void PrefilterTxHttpRequestBody(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
-        Flow *f, void *txv, const uint64_t idx, const uint8_t flags)
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -366,6 +367,7 @@ static void PrefilterTxHttpRequestBody(DetectEngineThreadCtx *det_ctx, const voi
     if (buffer->inspect_len >= mpm_ctx->minlen) {
         (void)mpm_table[mpm_ctx->mpm_type].Search(
                 mpm_ctx, &det_ctx->mtcu, &det_ctx->pmq, buffer->inspect, buffer->inspect_len);
+        PREFILTER_PROFILING_ADD_BYTES(det_ctx, buffer->inspect_len);
     }
 }
 
@@ -387,6 +389,7 @@ static int PrefilterMpmHttpRequestBodyRegister(DetectEngineCtx *de_ctx, SigGroup
 }
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 #include "tests/detect-http-client-body.c"
 #endif /* UNITTESTS */
 

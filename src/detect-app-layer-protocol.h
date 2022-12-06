@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -23,11 +23,6 @@
 
 #ifndef __DETECT_APP_LAYER_PROTOCOL__H__
 #define __DETECT_APP_LAYER_PROTOCOL__H__
-
-typedef struct DetectAppLayerProtocolData_ {
-    AppProto alproto;
-    uint8_t negated;
-} DetectAppLayerProtocolData;
 
 void DetectAppLayerProtocolRegister(void);
 

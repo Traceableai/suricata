@@ -25,9 +25,8 @@
 #ifndef __STREAM_TCP_REASSEMBLE_H__
 #define __STREAM_TCP_REASSEMBLE_H__
 
-#include "stream-tcp-private.h"
-#include "stream.h"
-#include "app-layer-detect-proto.h"
+#include "suricata.h"
+#include "flow.h"
 #include "stream-tcp-private.h"
 
 /** Supported OS list and default OS policy is BSD */
@@ -64,6 +63,10 @@ typedef struct TcpReassemblyThreadCtx_ {
 
     /** TCP segments which are not being reassembled due to memcap was reached */
     uint16_t counter_tcp_segment_memcap;
+
+    uint16_t counter_tcp_segment_from_cache;
+    uint16_t counter_tcp_segment_from_pool;
+
     /** number of streams that stop reassembly because their depth is reached */
     uint16_t counter_tcp_stream_depth;
     /** count number of streams with a unrecoverable stream gap (missing pkts) */
@@ -76,7 +79,6 @@ typedef struct TcpReassemblyThreadCtx_ {
 
     uint16_t counter_tcp_reass_data_normal_fail;
     uint16_t counter_tcp_reass_data_overlap_fail;
-    uint16_t counter_tcp_reass_list_fail;
 } TcpReassemblyThreadCtx;
 
 #define OS_POLICY_DEFAULT   OS_POLICY_BSD
@@ -85,6 +87,7 @@ void StreamTcpReassembleInitMemuse(void);
 int StreamTcpReassembleHandleSegment(ThreadVars *, TcpReassemblyThreadCtx *, TcpSession *, TcpStream *, Packet *, PacketQueueNoLock *);
 int StreamTcpReassembleInit(bool);
 void StreamTcpReassembleFree(bool);
+void *StreamTcpReassembleRealloc(void *optr, size_t orig_size, size_t size);
 void StreamTcpReassembleRegisterTests(void);
 TcpReassemblyThreadCtx *StreamTcpReassembleInitThreadCtx(ThreadVars *tv);
 void StreamTcpReassembleFreeThreadCtx(TcpReassemblyThreadCtx *);
@@ -130,11 +133,20 @@ int StreamTcpCheckStreamContents(uint8_t *, uint16_t , TcpStream *);
 bool StreamReassembleRawHasDataReady(TcpSession *ssn, Packet *p);
 void StreamTcpReassemblySetMinInspectDepth(TcpSession *ssn, int direction, uint32_t depth);
 
+bool IsTcpSessionDumpingEnabled(void);
+void EnableTcpSessionDumping(void);
+
 static inline bool STREAM_LASTACK_GT_BASESEQ(const TcpStream *stream)
 {
     /* last ack not yet initialized */
-    if (STREAM_BASE_OFFSET(stream) == 0 && stream->last_ack == 0)
+    if (STREAM_BASE_OFFSET(stream) == 0 && (stream->tcp_flags & TH_ACK) == 0) {
+#ifdef UNITTESTS
+        if (RunmodeIsUnittests() && stream->last_ack == 0)
+            return false;
+#else
         return false;
+#endif
+    }
     if (SEQ_GT(stream->last_ack, stream->base_seq))
         return true;
     return false;

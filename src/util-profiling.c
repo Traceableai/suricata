@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2012 Open Information Security Foundation
+/* Copyright (C) 2007-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -27,20 +27,15 @@
  */
 
 #include "suricata-common.h"
-#include "decode.h"
-#include "detect.h"
-#include "detect-engine-prefilter.h"
-#include "conf.h"
-#include "flow-worker.h"
-
-#include "tm-threads.h"
-
-#include "util-unittest.h"
-#include "util-byte.h"
 #include "util-profiling.h"
-#include "util-profiling-locks.h"
 
 #ifdef PROFILING
+#include "tm-threads.h"
+#include "conf.h"
+#include "util-unittest.h"
+#include "util-byte.h"
+#include "util-profiling-locks.h"
+#include "util-conf.h"
 
 #ifndef MIN
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -348,7 +343,6 @@ static void DumpFlowWorker(FILE *fp)
 
 void SCProfilingDumpPacketStats(void)
 {
-    int i;
     FILE *fp;
     char totalstr[256];
     uint64_t total;
@@ -375,16 +369,15 @@ void SCProfilingDumpPacketStats(void)
     fprintf(fp, "%-6s   %-5s   %-12s   %-12s   %-12s   %-12s   %-12s  %-3s\n",
             "------", "-----", "----------", "------------", "------------", "-----------", "-----------", "---");
     total = 0;
-    for (i = 0; i < 257; i++) {
+    for (int i = 0; i < 257; i++) {
         SCProfilePacketData *pd = &packet_profile_data4[i];
         total += pd->tot;
         pd = &packet_profile_data6[i];
         total += pd->tot;
     }
 
-    for (i = 0; i < 257; i++) {
+    for (int i = 0; i < 257; i++) {
         SCProfilePacketData *pd = &packet_profile_data4[i];
-
         if (pd->cnt == 0) {
             continue;
         }
@@ -397,9 +390,8 @@ void SCProfilingDumpPacketStats(void)
             pd->min, pd->max, (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
     }
 
-    for (i = 0; i < 257; i++) {
+    for (int i = 0; i < 257; i++) {
         SCProfilePacketData *pd = &packet_profile_data6[i];
-
         if (pd->cnt == 0) {
             continue;
         }
@@ -431,14 +423,12 @@ void SCProfilingDumpPacketStats(void)
 #else
     fprintf(fp, "\n");
 #endif
-    int m;
     total = 0;
-    for (m = 0; m < TMM_SIZE; m++) {
+    for (int m = 0; m < TMM_SIZE; m++) {
         if (tmm_modules[m].flags & TM_FLAG_LOGAPI_TM)
             continue;
 
-        int p;
-        for (p = 0; p < 257; p++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_tmm_data4[m][p];
             total += pd->tot;
 
@@ -447,14 +437,12 @@ void SCProfilingDumpPacketStats(void)
         }
     }
 
-    for (m = 0; m < TMM_SIZE; m++) {
+    for (int m = 0; m < TMM_SIZE; m++) {
         if (tmm_modules[m].flags & TM_FLAG_LOGAPI_TM)
             continue;
 
-        int p;
-        for (p = 0; p < 257; p++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_tmm_data4[m][p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -474,14 +462,12 @@ void SCProfilingDumpPacketStats(void)
         }
     }
 
-    for (m = 0; m < TMM_SIZE; m++) {
+    for (int m = 0; m < TMM_SIZE; m++) {
         if (tmm_modules[m].flags & TM_FLAG_LOGAPI_TM)
             continue;
 
-        int p;
-        for (p = 0; p < 257; p++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_tmm_data6[m][p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -505,21 +491,18 @@ void SCProfilingDumpPacketStats(void)
             "--------------------", "------", "-----", "----------", "------------", "------------", "-----------");
 
     total = 0;
-    for (m = 0; m < ALPROTO_MAX; m++) {
-        int p;
-        for (p = 0; p < 257; p++) {
-            SCProfilePacketData *pd = &packet_profile_app_data4[m][p];
+    for (AppProto a = 0; a < ALPROTO_MAX; a++) {
+        for (int p = 0; p < 257; p++) {
+            SCProfilePacketData *pd = &packet_profile_app_data4[a][p];
             total += pd->tot;
 
-            pd = &packet_profile_app_data6[m][p];
+            pd = &packet_profile_app_data6[a][p];
             total += pd->tot;
         }
     }
-    for (m = 0; m < ALPROTO_MAX; m++) {
-        int p;
-        for (p = 0; p < 257; p++) {
-            SCProfilePacketData *pd = &packet_profile_app_data4[m][p];
-
+    for (AppProto a = 0; a < ALPROTO_MAX; a++) {
+        for (int p = 0; p < 257; p++) {
+            SCProfilePacketData *pd = &packet_profile_app_data4[a][p];
             if (pd->cnt == 0) {
                 continue;
             }
@@ -528,16 +511,17 @@ void SCProfilingDumpPacketStats(void)
             double percent = (long double)pd->tot /
                 (long double)total * 100;
 
-            fprintf(fp, "%-20s    IPv4     %3d  %12"PRIu64"     %12"PRIu64"   %12"PRIu64"  %12"PRIu64"  %12s  %-6.2f\n",
-                    AppProtoToString(m), p, pd->cnt, pd->min, pd->max, (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
+            fprintf(fp,
+                    "%-20s    IPv4     %3d  %12" PRIu64 "     %12" PRIu64 "   %12" PRIu64
+                    "  %12" PRIu64 "  %12s  %-6.2f\n",
+                    AppProtoToString(a), p, pd->cnt, pd->min, pd->max,
+                    (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
         }
     }
 
-    for (m = 0; m < ALPROTO_MAX; m++) {
-        int p;
-        for (p = 0; p < 257; p++) {
-            SCProfilePacketData *pd = &packet_profile_app_data6[m][p];
-
+    for (AppProto a = 0; a < ALPROTO_MAX; a++) {
+        for (int p = 0; p < 257; p++) {
+            SCProfilePacketData *pd = &packet_profile_app_data6[a][p];
             if (pd->cnt == 0) {
                 continue;
             }
@@ -546,17 +530,18 @@ void SCProfilingDumpPacketStats(void)
             double percent = (long double)pd->tot /
                 (long double)total * 100;
 
-            fprintf(fp, "%-20s    IPv6     %3d  %12"PRIu64"     %12"PRIu64"   %12"PRIu64"  %12"PRIu64"  %12s  %-6.2f\n",
-                    AppProtoToString(m), p, pd->cnt, pd->min, pd->max, (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
+            fprintf(fp,
+                    "%-20s    IPv6     %3d  %12" PRIu64 "     %12" PRIu64 "   %12" PRIu64
+                    "  %12" PRIu64 "  %12s  %-6.2f\n",
+                    AppProtoToString(a), p, pd->cnt, pd->min, pd->max,
+                    (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
         }
     }
 
     /* proto detect output */
     {
-        int p;
-        for (p = 0; p < 257; p++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_app_pd_data4[p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -566,9 +551,8 @@ void SCProfilingDumpPacketStats(void)
                     "Proto detect", p, pd->cnt, pd->min, pd->max, (uint64_t)(pd->tot / pd->cnt), totalstr);
         }
 
-        for (p = 0; p < 257; p++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_app_pd_data6[p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -580,9 +564,8 @@ void SCProfilingDumpPacketStats(void)
     }
 
     total = 0;
-    for (m = 0; m < PROF_DETECT_SIZE; m++) {
-        int p;
-        for (p = 0; p < 257; p++) {
+    for (int m = 0; m < PROF_DETECT_SIZE; m++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_detect_data4[m][p];
             total += pd->tot;
 
@@ -590,7 +573,6 @@ void SCProfilingDumpPacketStats(void)
             total += pd->tot;
         }
     }
-
 
     fprintf(fp, "\n%-24s   %-6s   %-5s   %-12s   %-12s   %-12s   %-12s   %-12s  %-3s",
             "Log Thread Module", "IP ver", "Proto", "cnt", "min", "max", "avg", "tot", "%%");
@@ -609,12 +591,11 @@ void SCProfilingDumpPacketStats(void)
     fprintf(fp, "\n");
 #endif
     total = 0;
-    for (m = 0; m < TMM_SIZE; m++) {
+    for (int m = 0; m < TMM_SIZE; m++) {
         if (!(tmm_modules[m].flags & TM_FLAG_LOGAPI_TM))
             continue;
 
-        int p;
-        for (p = 0; p < 257; p++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_tmm_data4[m][p];
             total += pd->tot;
 
@@ -623,14 +604,12 @@ void SCProfilingDumpPacketStats(void)
         }
     }
 
-    for (m = 0; m < TMM_SIZE; m++) {
+    for (int m = 0; m < TMM_SIZE; m++) {
         if (!(tmm_modules[m].flags & TM_FLAG_LOGAPI_TM))
             continue;
 
-        int p;
-        for (p = 0; p < 257; p++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_tmm_data4[m][p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -650,14 +629,12 @@ void SCProfilingDumpPacketStats(void)
         }
     }
 
-    for (m = 0; m < TMM_SIZE; m++) {
+    for (int m = 0; m < TMM_SIZE; m++) {
         if (!(tmm_modules[m].flags & TM_FLAG_LOGAPI_TM))
             continue;
 
-        int p;
-        for (p = 0; p < 257; p++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_tmm_data6[m][p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -674,9 +651,8 @@ void SCProfilingDumpPacketStats(void)
     fprintf(fp, "\nLogger/output stats:\n");
 
     total = 0;
-    for (m = 0; m < LOGGER_SIZE; m++) {
-        int p;
-        for (p = 0; p < 256; p++) {
+    for (int m = 0; m < LOGGER_SIZE; m++) {
+        for (int p = 0; p < 256; p++) {
             SCProfilePacketData *pd = &packet_profile_log_data4[m][p];
             total += pd->tot;
             pd = &packet_profile_log_data6[m][p];
@@ -688,11 +664,9 @@ void SCProfilingDumpPacketStats(void)
             "Logger", "IP ver", "Proto", "cnt", "min", "max", "avg", "tot");
     fprintf(fp, "%-24s   %-6s   %-5s   %-12s   %-12s   %-12s   %-12s   %-12s\n",
             "------------------------", "------", "-----", "----------", "------------", "------------", "-----------", "-----------");
-    for (m = 0; m < LOGGER_SIZE; m++) {
-        int p;
-        for (p = 0; p < 256; p++) {
+    for (int m = 0; m < LOGGER_SIZE; m++) {
+        for (int p = 0; p < 256; p++) {
             SCProfilePacketData *pd = &packet_profile_log_data4[m][p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -705,11 +679,9 @@ void SCProfilingDumpPacketStats(void)
                     PacketProfileLoggertIdToString(m), p, pd->cnt, pd->min, pd->max, (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
         }
     }
-    for (m = 0; m < LOGGER_SIZE; m++) {
-        int p;
-        for (p = 0; p < 256; p++) {
+    for (int m = 0; m < LOGGER_SIZE; m++) {
+        for (int p = 0; p < 256; p++) {
             SCProfilePacketData *pd = &packet_profile_log_data6[m][p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -726,9 +698,8 @@ void SCProfilingDumpPacketStats(void)
     fprintf(fp, "\nGeneral detection engine stats:\n");
 
     total = 0;
-    for (m = 0; m < PROF_DETECT_SIZE; m++) {
-        int p;
-        for (p = 0; p < 257; p++) {
+    for (int m = 0; m < PROF_DETECT_SIZE; m++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_detect_data4[m][p];
             total += pd->tot;
             pd = &packet_profile_detect_data6[m][p];
@@ -740,11 +711,9 @@ void SCProfilingDumpPacketStats(void)
             "Detection phase", "IP ver", "Proto", "cnt", "min", "max", "avg", "tot");
     fprintf(fp, "%-24s   %-6s   %-5s   %-12s   %-12s   %-12s   %-12s   %-12s\n",
             "------------------------", "------", "-----", "----------", "------------", "------------", "-----------", "-----------");
-    for (m = 0; m < PROF_DETECT_SIZE; m++) {
-        int p;
-        for (p = 0; p < 257; p++) {
+    for (int m = 0; m < PROF_DETECT_SIZE; m++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_detect_data4[m][p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -757,11 +726,9 @@ void SCProfilingDumpPacketStats(void)
                     PacketProfileDetectIdToString(m), p, pd->cnt, pd->min, pd->max, (uint64_t)(pd->tot / pd->cnt), totalstr, percent);
         }
     }
-    for (m = 0; m < PROF_DETECT_SIZE; m++) {
-        int p;
-        for (p = 0; p < 257; p++) {
+    for (int m = 0; m < PROF_DETECT_SIZE; m++) {
+        for (int p = 0; p < 257; p++) {
             SCProfilePacketData *pd = &packet_profile_detect_data6[m][p];
-
             if (pd->cnt == 0) {
                 continue;
             }
@@ -1291,42 +1258,18 @@ const char * PacketProfileLoggertIdToString(LoggerId id)
 {
     switch (id) {
         CASE_CODE (LOGGER_UNDEFINED);
+        CASE_CODE(LOGGER_HTTP);
+        CASE_CODE(LOGGER_TLS_STORE);
+        CASE_CODE(LOGGER_TLS);
+        CASE_CODE(LOGGER_JSON_TX);
+        CASE_CODE(LOGGER_FILE);
+        CASE_CODE(LOGGER_FILEDATA);
         CASE_CODE (LOGGER_ALERT_DEBUG);
         CASE_CODE (LOGGER_ALERT_FAST);
         CASE_CODE (LOGGER_ALERT_SYSLOG);
         CASE_CODE (LOGGER_JSON_ALERT);
         CASE_CODE (LOGGER_JSON_ANOMALY);
-        CASE_CODE (LOGGER_JSON_DROP);
-        CASE_CODE (LOGGER_JSON_SSH);
-        CASE_CODE (LOGGER_JSON_SMB);
-        CASE_CODE (LOGGER_JSON_NFS);
-        CASE_CODE(LOGGER_JSON_FRAME);
-        CASE_CODE (LOGGER_HTTP);
-        CASE_CODE(LOGGER_JSON_DNS);
-        CASE_CODE (LOGGER_JSON_DNP3_TS);
-        CASE_CODE (LOGGER_JSON_DNP3_TC);
-        CASE_CODE (LOGGER_JSON_HTTP);
-        CASE_CODE(LOGGER_JSON_QUIC);
-        CASE_CODE (LOGGER_JSON_DHCP);
-        CASE_CODE (LOGGER_JSON_KRB5);
-        CASE_CODE(LOGGER_JSON_IKE);
-        CASE_CODE(LOGGER_JSON_MODBUS);
-        CASE_CODE (LOGGER_JSON_FTP);
-        CASE_CODE (LOGGER_JSON_TFTP);
-        CASE_CODE (LOGGER_JSON_SMTP);
-        CASE_CODE (LOGGER_JSON_SNMP);
-        CASE_CODE (LOGGER_JSON_TLS);
-        CASE_CODE (LOGGER_JSON_SIP);
-        CASE_CODE (LOGGER_JSON_TEMPLATE_RUST);
-        CASE_CODE (LOGGER_JSON_RFB);
-        CASE_CODE (LOGGER_JSON_MQTT);
-        CASE_CODE(LOGGER_JSON_PGSQL);
-        CASE_CODE (LOGGER_JSON_TEMPLATE);
-        CASE_CODE (LOGGER_JSON_RDP);
-        CASE_CODE (LOGGER_JSON_DCERPC);
-        CASE_CODE (LOGGER_JSON_HTTP2);
-        CASE_CODE (LOGGER_TLS_STORE);
-        CASE_CODE (LOGGER_TLS);
+        CASE_CODE(LOGGER_JSON_DROP);
         CASE_CODE (LOGGER_FILE_STORE);
         CASE_CODE (LOGGER_JSON_FILE);
         CASE_CODE (LOGGER_TCP_DATA);
@@ -1336,6 +1279,8 @@ const char * PacketProfileLoggertIdToString(LoggerId id)
         CASE_CODE (LOGGER_JSON_STATS);
         CASE_CODE (LOGGER_PCAP);
         CASE_CODE (LOGGER_JSON_METADATA);
+        CASE_CODE(LOGGER_JSON_FRAME);
+
         case LOGGER_SIZE:
             return "UNKNOWN";
     }

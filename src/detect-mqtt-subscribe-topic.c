@@ -1,4 +1,4 @@
-/* Copyright (C) 2020 Open Information Security Foundation
+/* Copyright (C) 2020-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -27,7 +27,6 @@
 #include "app-layer-parser.h"
 
 #include "conf.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 #include "detect-content.h"
@@ -50,9 +49,9 @@
 #include "flow-var.h"
 
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-spm.h"
 #include "util-print.h"
+#include "util-profiling.h"
 
 static int DetectMQTTSubscribeTopicSetup(DetectEngineCtx *, Signature *, const char *);
 
@@ -89,11 +88,9 @@ static InspectionBuffer *MQTTSubscribeTopicGetData(DetectEngineThreadCtx *det_ct
     SCReturnPtr(buffer, "InspectionBuffer");
 }
 
-static int DetectEngineInspectMQTTSubscribeTopic(
-        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const DetectEngineAppInspectionEngine *engine,
-        const Signature *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
+static uint8_t DetectEngineInspectMQTTSubscribeTopic(DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
+        const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
 {
     uint32_t local_id = 0;
 
@@ -141,10 +138,9 @@ typedef struct PrefilterMpmMQTTSubscribeTopic {
  *  \param txv tx to inspect
  *  \param pectx inspection context
  */
-static void PrefilterTxMQTTSubscribeTopic(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterTxMQTTSubscribeTopic(DetectEngineThreadCtx *det_ctx, const void *pectx,
+        Packet *p, Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd,
+        const uint8_t flags)
 {
     SCEnter();
 
@@ -164,6 +160,7 @@ static void PrefilterTxMQTTSubscribeTopic(DetectEngineThreadCtx *det_ctx,
             (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                     &det_ctx->mtcu, &det_ctx->pmq,
                     buffer->inspect, buffer->inspect_len);
+            PREFILTER_PROFILING_ADD_BYTES(det_ctx, buffer->inspect_len);
         }
         local_id++;
     }

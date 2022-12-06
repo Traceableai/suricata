@@ -73,6 +73,7 @@ documentation_style = "doxy"
 # default: []
 include = [
     "StreamSlice",
+    "AppLayerStateData",
     "AppLayerGetTxIterTuple",
     "RdpState",
     "SIPState",
@@ -109,6 +110,7 @@ exclude = [
     "free",
     "IPPROTO_TCP",
     "IPPROTO_UDP",
+    "SRepCatGetByShortname",
 ]
 
 # Types of items that we'll generate. If empty, then all types of item are emitted.

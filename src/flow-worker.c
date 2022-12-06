@@ -41,13 +41,18 @@
 #include "detect-engine.h"
 #include "output.h"
 #include "app-layer-parser.h"
+#include "app-layer-frames.h"
 
+#include "util-profiling.h"
 #include "util-validate.h"
+#include "util-time.h"
+#include "tmqh-packetpool.h"
 
 #include "flow-util.h"
 #include "flow-manager.h"
 #include "flow-timeout.h"
 #include "flow-spare-pool.h"
+#include "flow-worker.h"
 
 typedef DetectEngineThreadCtx *DetectEngineThreadCtxPtr;
 
@@ -73,16 +78,19 @@ typedef struct FlowWorkerThreadData_ {
     uint16_t local_bypass_bytes;
     uint16_t both_bypass_pkts;
     uint16_t both_bypass_bytes;
-
+    /** Queue to put pseudo packets that have been created by the stream (RST response) and by the
+     * flush logic following a protocol change. */
     PacketQueueNoLock pq;
     FlowLookupStruct fls;
 
     struct {
         uint16_t flows_injected;
+        uint16_t flows_injected_max;
         uint16_t flows_removed;
         uint16_t flows_aside_needs_work;
         uint16_t flows_aside_pkt_inject;
     } cnt;
+    FlowEndCounters fec;
 
 } FlowWorkerThreadData;
 
@@ -161,11 +169,12 @@ static int FlowFinish(ThreadVars *tv, Flow *f, FlowWorkerThreadData *fw, void *d
     return 1;
 }
 
+/** \param[in] max_work Max flows to process. 0 if unlimited. */
 static void CheckWorkQueue(ThreadVars *tv, FlowWorkerThreadData *fw,
         void *detect_thread, // TODO proper type?
-        FlowTimeoutCounters *counters,
-        FlowQueuePrivate *fq)
+        FlowTimeoutCounters *counters, FlowQueuePrivate *fq, const uint32_t max_work)
 {
+    uint32_t i = 0;
     Flow *f;
     while ((f = FlowQueuePrivateGetFromTop(fq)) != NULL) {
         FLOWLOCK_WRLOCK(f);
@@ -189,13 +198,23 @@ static void CheckWorkQueue(ThreadVars *tv, FlowWorkerThreadData *fw,
         if (fw->output_thread_flow != NULL)
             (void)OutputFlowLog(tv, fw->output_thread_flow, f);
 
+        FlowEndCountersUpdate(tv, &fw->fec, f);
+        if (f->proto == IPPROTO_TCP && f->protoctx != NULL) {
+            StatsDecr(tv, fw->dtv->counter_tcp_active_sessions);
+        }
+        StatsDecr(tv, fw->dtv->counter_flow_active);
+
         FlowClearMemory (f, f->protomap);
         FLOWLOCK_UNLOCK(f);
+
         if (fw->fls.spare_queue.len >= 200) { // TODO match to API? 200 = 2 * block size
             FlowSparePoolReturnFlow(f);
         } else {
             FlowQueuePrivatePrependFlow(&fw->fls.spare_queue, f);
         }
+
+        if (max_work != 0 && ++i == max_work)
+            break;
     }
 }
 
@@ -252,6 +271,7 @@ static TmEcode FlowWorkerThreadInit(ThreadVars *tv, const void *initdata, void *
     fw->cnt.flows_aside_pkt_inject = StatsRegisterCounter("flow.wrk.flows_evicted_pkt_inject", tv);
     fw->cnt.flows_removed = StatsRegisterCounter("flow.wrk.flows_evicted", tv);
     fw->cnt.flows_injected = StatsRegisterCounter("flow.wrk.flows_injected", tv);
+    fw->cnt.flows_injected_max = StatsRegisterMaxCounter("flow.wrk.flows_injected_max", tv);
 
     fw->fls.dtv = fw->dtv = DecodeThreadVarsAlloc(tv);
     if (fw->dtv == NULL) {
@@ -288,6 +308,7 @@ static TmEcode FlowWorkerThreadInit(ThreadVars *tv, const void *initdata, void *
 
     DecodeRegisterPerfCounters(fw->dtv, tv);
     AppLayerRegisterThreadCounters(tv);
+    FlowEndCountersRegister(tv, &fw->fec);
 
     /* setup pq for stream end pkts */
     memset(&fw->pq, 0, sizeof(PacketQueueNoLock));
@@ -343,18 +364,6 @@ static inline void UpdateCounters(ThreadVars *tv,
     }
 }
 
-static void FlowPruneFiles(Packet *p)
-{
-    if (p->flow && p->flow->alstate) {
-        Flow *f = p->flow;
-        FileContainer *fc = AppLayerParserGetFiles(f,
-                PKT_IS_TOSERVER(p) ? STREAM_TOSERVER : STREAM_TOCLIENT);
-        if (fc != NULL) {
-            FilePrune(fc);
-        }
-    }
-}
-
 /** \brief update stream engine
  *
  *  We can be called from both the flow timeout path as well as from the
@@ -393,7 +402,7 @@ static inline void FlowWorkerStreamTCPUpdate(ThreadVars *tv, FlowWorkerThreadDat
         if (timeout) {
             PacketPoolReturnPacket(x);
         } else {
-            /* put these packets in the preq queue so that they are
+            /* put these packets in the decode queue so that they are processed
              * by the other thread modules before packet 'p'. */
             PacketEnqueueNoLock(&tv->decode_pq, x);
         }
@@ -425,10 +434,8 @@ static void FlowWorkerFlowTimeout(ThreadVars *tv, Packet *p, FlowWorkerThreadDat
     // Outputs.
     OutputLoggerLog(tv, p, fw->output_thread);
 
-    /* Prune any stored files. */
-    FlowPruneFiles(p);
-
     FramesPrune(p->flow, p);
+
     /*  Release tcp segments. Done here after alerting can use them. */
     FLOWWORKER_PROFILING_START(p, PROFILE_FLOWWORKER_TCPPRUNE);
     StreamTcpPruneSession(p->flow, p->flowflags & FLOW_PKT_TOSERVER ?
@@ -436,7 +443,7 @@ static void FlowWorkerFlowTimeout(ThreadVars *tv, Packet *p, FlowWorkerThreadDat
     FLOWWORKER_PROFILING_END(p, PROFILE_FLOWWORKER_TCPPRUNE);
 
     /* run tx cleanup last */
-    AppLayerParserTransactionsCleanup(p->flow);
+    AppLayerParserTransactionsCleanup(p->flow, STREAM_FLAGS_FOR_PACKET(p));
 
     FlowDeReference(&p->flow);
     /* flow is unlocked later in FlowFinish() */
@@ -455,10 +462,11 @@ static inline void FlowWorkerProcessInjectedFlows(ThreadVars *tv,
         injected = FlowQueueExtractPrivate(tv->flow_queue);
     if (injected.len > 0) {
         StatsAddUI64(tv, fw->cnt.flows_injected, (uint64_t)injected.len);
+        if (p->pkt_src == PKT_SRC_WIRE)
+            StatsSetUI64(tv, fw->cnt.flows_injected_max, (uint64_t)injected.len);
 
-        FlowTimeoutCounters counters = { 0, 0, };
-        CheckWorkQueue(tv, fw, detect_thread, &counters, &injected);
-        UpdateCounters(tv, fw, &counters);
+        /* move to local queue so we can process over the course of multiple packets */
+        FlowQueuePrivateAppendPrivate(&fw->fls.work_queue, &injected);
     }
     FLOWWORKER_PROFILING_END(p, PROFILE_FLOWWORKER_FLOW_INJECTED);
 }
@@ -469,12 +477,16 @@ static inline void FlowWorkerProcessInjectedFlows(ThreadVars *tv,
 static inline void FlowWorkerProcessLocalFlows(ThreadVars *tv,
         FlowWorkerThreadData *fw, Packet *p, void *detect_thread)
 {
+    uint32_t max_work = 2;
+    if (PKT_IS_PSEUDOPKT(p))
+        max_work = 0;
+
     FLOWWORKER_PROFILING_START(p, PROFILE_FLOWWORKER_FLOW_EVICTED);
     if (fw->fls.work_queue.len) {
         StatsAddUI64(tv, fw->cnt.flows_removed, (uint64_t)fw->fls.work_queue.len);
 
         FlowTimeoutCounters counters = { 0, 0, };
-        CheckWorkQueue(tv, fw, detect_thread, &counters, &fw->fls.work_queue);
+        CheckWorkQueue(tv, fw, detect_thread, &counters, &fw->fls.work_queue, max_work);
         UpdateCounters(tv, fw, &counters);
     }
     FLOWWORKER_PROFILING_END(p, PROFILE_FLOWWORKER_FLOW_EVICTED);
@@ -556,9 +568,6 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data)
     // Outputs.
     OutputLoggerLog(tv, p, fw->output_thread);
 
-    /* Prune any stored files. */
-    FlowPruneFiles(p);
-
     /*  Release tcp segments. Done here after alerting can use them. */
     if (p->flow != NULL) {
         DEBUG_ASSERT_FLOW_LOCKED(p->flow);
@@ -578,9 +587,13 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data)
             FramesPrune(p->flow, p);
         }
 
-        /* run tx cleanup last */
-        AppLayerParserTransactionsCleanup(p->flow);
-
+        if ((PKT_IS_PSEUDOPKT(p)) || ((p->flags & PKT_APPLAYER_UPDATE) != 0)) {
+            SCLogDebug("pseudo or app update: run cleanup");
+            /* run tx cleanup last */
+            AppLayerParserTransactionsCleanup(p->flow, STREAM_FLAGS_FOR_PACKET(p));
+        } else {
+            SCLogDebug("not pseudo, no app update: skip");
+        }
         Flow *f = p->flow;
         FlowDeReference(&p->flow);
         FLOWLOCK_UNLOCK(f);
@@ -588,7 +601,7 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data)
 
 housekeeping:
 
-    /* take injected flows and process them */
+    /* take injected flows and add them to our local queue */
     FlowWorkerProcessInjectedFlows(tv, fw, p, detect_thread);
 
     /* process local work queue */

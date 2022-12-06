@@ -31,6 +31,7 @@
 #include "decode-geneve.h"
 #include "decode-events.h"
 
+#include "detect.h"
 #include "detect-engine-port.h"
 
 #include "flow.h"
@@ -51,11 +52,11 @@
 #define GENEVE_RESERVED_FLAGS(hdr_ptr) (hdr_ptr->flags & 0x3F)
 
 #define GENEVE_MIN_HEADER_LEN            sizeof(GeneveHeader)
-#define GENEVE_TOTAL_OPT_LEN(hdr_ptr)    ((hdr_ptr->ver_plus_len & 0x3F) << 2)
+#define GENEVE_TOTAL_OPT_LEN(hdr_ptr)    ((uint8_t)((hdr_ptr->ver_plus_len & 0x3F) << 2))
 #define GENEVE_TOTAL_HEADER_LEN(hdr_ptr) (GENEVE_MIN_HEADER_LEN + GENEVE_TOTAL_OPT_LEN(hdr_ptr))
 
 #define GENEVE_MIN_SINGLE_OPT_LEN         sizeof(GeneveOption)
-#define GENEVE_SINGLE_OPT_LEN(option_ptr) ((option_ptr->flags_plus_len & 0x1F) << 2)
+#define GENEVE_SINGLE_OPT_LEN(option_ptr) ((uint8_t)((option_ptr->flags_plus_len & 0x1F) << 2))
 #define GENEVE_SINGLE_OPT_TOTAL_LEN(option_ptr)                                                    \
     (GENEVE_MIN_SINGLE_OPT_LEN + GENEVE_SINGLE_OPT_LEN(option_ptr))
 
@@ -300,7 +301,6 @@ static int DecodeGeneveTest01(void)
     DecodeGeneveConfigPorts(GENEVE_DEFAULT_PORT_S);
 
     memset(&tv, 0, sizeof(ThreadVars));
-    memset(p, 0, SIZE_OF_PACKET);
     memset(&dtv, 0, sizeof(DecodeThreadVars));
 
     FlowInitConfig(FLOW_QUIET);
@@ -343,7 +343,6 @@ static int DecodeGeneveTest02(void)
     DecodeGeneveConfigPorts(GENEVE_DEFAULT_PORT_S);
 
     memset(&tv, 0, sizeof(ThreadVars));
-    memset(p, 0, SIZE_OF_PACKET);
     memset(&dtv, 0, sizeof(DecodeThreadVars));
 
     FlowInitConfig(FLOW_QUIET);
@@ -391,7 +390,6 @@ static int DecodeGeneveTest03(void)
     DecodeGeneveConfigPorts(GENEVE_DEFAULT_PORT_S);
 
     memset(&tv, 0, sizeof(ThreadVars));
-    memset(p, 0, SIZE_OF_PACKET);
     memset(&dtv, 0, sizeof(DecodeThreadVars));
 
     FlowInitConfig(FLOW_QUIET);
@@ -436,7 +434,6 @@ static int DecodeGeneveTest04(void)
     DecodeGeneveConfigPorts("1"); /* Set Suricata to use a non-default port for Geneve*/
 
     memset(&tv, 0, sizeof(ThreadVars));
-    memset(p, 0, SIZE_OF_PACKET);
     memset(&dtv, 0, sizeof(DecodeThreadVars));
 
     FlowInitConfig(FLOW_QUIET);
@@ -477,7 +474,6 @@ static int DecodeGeneveTest05(void)
     DecodeGeneveConfigPorts(GENEVE_DEFAULT_PORT_S);
 
     memset(&tv, 0, sizeof(ThreadVars));
-    memset(p, 0, SIZE_OF_PACKET);
     memset(&dtv, 0, sizeof(DecodeThreadVars));
 
     FlowInitConfig(FLOW_QUIET);

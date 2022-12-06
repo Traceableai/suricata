@@ -25,7 +25,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -45,7 +44,6 @@
 #include "conf-yaml-loader.h"
 
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-spm.h"
 #include "util-print.h"
 #include "util-ja3.h"
@@ -59,9 +57,6 @@
 #include "util-unittest-helper.h"
 
 static int DetectTlsJa3SStringSetup(DetectEngineCtx *, Signature *, const char *);
-#ifdef UNITTESTS
-static void DetectTlsJa3SStringRegisterTests(void);
-#endif
 static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
        const DetectEngineTransforms *transforms,
        Flow *f, const uint8_t flow_flags,
@@ -74,12 +69,10 @@ static int g_tls_ja3s_str_buffer_id = 0;
 void DetectTlsJa3SStringRegister(void)
 {
     sigmatch_table[DETECT_AL_TLS_JA3S_STRING].name = "ja3s.string";
-    sigmatch_table[DETECT_AL_TLS_JA3S_STRING].desc = "content modifier to match the JA3S string sticky buffer";
+    sigmatch_table[DETECT_AL_TLS_JA3S_STRING].desc =
+            "sticky buffer to match the JA3S string buffer";
     sigmatch_table[DETECT_AL_TLS_JA3S_STRING].url = "/rules/ja3-keywords.html#ja3s-string";
     sigmatch_table[DETECT_AL_TLS_JA3S_STRING].Setup = DetectTlsJa3SStringSetup;
-#ifdef UNITTESTS
-    sigmatch_table[DETECT_AL_TLS_JA3S_STRING].RegisterTests = DetectTlsJa3SStringRegisterTests;
-#endif
     sigmatch_table[DETECT_AL_TLS_JA3S_STRING].flags |= SIGMATCH_NOOPT;
     sigmatch_table[DETECT_AL_TLS_JA3S_STRING].flags |= SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -88,6 +81,12 @@ void DetectTlsJa3SStringRegister(void)
 
     DetectAppLayerMpmRegister2("ja3s.string", SIG_FLAG_TOCLIENT, 2,
             PrefilterGenericMpmRegister, GetData, ALPROTO_TLS, 0);
+
+    DetectAppLayerMpmRegister2("ja3s.string", SIG_FLAG_TOCLIENT, 2, PrefilterGenericMpmRegister,
+            Ja3DetectGetString, ALPROTO_QUIC, 1);
+
+    DetectAppLayerInspectEngineRegister2("ja3s.string", ALPROTO_QUIC, SIG_FLAG_TOCLIENT, 1,
+            DetectEngineInspectBufferGeneric, Ja3DetectGetString);
 
     DetectBufferTypeSetDescriptionByName("ja3s.string", "TLS JA3S string");
 
@@ -109,8 +108,10 @@ static int DetectTlsJa3SStringSetup(DetectEngineCtx *de_ctx, Signature *s, const
     if (DetectBufferSetActiveList(s, g_tls_ja3s_str_buffer_id) < 0)
         return -1;
 
-    if (DetectSignatureSetAppProto(s, ALPROTO_TLS) < 0)
+    if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_TLS && s->alproto != ALPROTO_QUIC) {
+        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting protocols.");
         return -1;
+    }
 
     /* try to enable JA3 */
     SSLEnableJA3();
@@ -122,6 +123,7 @@ static int DetectTlsJa3SStringSetup(DetectEngineCtx *de_ctx, Signature *s, const
         }
         return -2;
     }
+    s->init_data->init_flags |= SIG_FLAG_INIT_JA3;
 
     return 0;
 }
@@ -148,7 +150,3 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
 
     return buffer;
 }
-
-#ifdef UNITTESTS
-#include "tests/detect-tls-ja3s-string.c"
-#endif

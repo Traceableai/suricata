@@ -24,8 +24,10 @@
 #ifndef __DEFRAG_H__
 #define __DEFRAG_H__
 
-#include "tree.h"
+#include "threads.h"
 #include "util-pool.h"
+#include "threadvars.h"
+#include "decode.h"
 
 /**
  * A context for an instance of a fragmentation re-assembler, in case
@@ -45,7 +47,7 @@ typedef struct Frag_ {
     uint16_t offset;            /**< The offset of this fragment, already
                                  *   multiplied by 8. */
 
-    uint16_t len;               /**< The length of this fragment. */
+    uint32_t len; /**< The length of this fragment. */
 
     uint8_t hlen;               /**< The length of this fragments IP header. */
 

@@ -17,11 +17,11 @@
 
 use super::huffman;
 use crate::common::nom7::bits;
+use crate::detect::uint::{detect_parse_uint, DetectUintData};
 use crate::http2::http2::{HTTP2DynTable, HTTP2_MAX_TABLESIZE};
 use nom7::bits::streaming::take as take_bits;
 use nom7::branch::alt;
-use nom7::bytes::streaming::{is_a, is_not, tag, take, take_while};
-use nom7::character::complete::digit1;
+use nom7::bytes::streaming::{is_a, is_not, take, take_while};
 use nom7::combinator::{complete, cond, map_opt, opt, rest, verify};
 use nom7::error::{make_error, ErrorKind};
 use nom7::multi::many0;
@@ -32,7 +32,7 @@ use std::fmt;
 use std::str::FromStr;
 
 #[repr(u8)]
-#[derive(Clone, Copy, PartialEq, FromPrimitive, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, FromPrimitive, Debug)]
 pub enum HTTP2FrameType {
     DATA = 0,
     HEADERS = 1,
@@ -57,7 +57,7 @@ impl std::str::FromStr for HTTP2FrameType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let su = s.to_uppercase();
-        let su_slice: &str = &*su;
+        let su_slice: &str = &su;
         match su_slice {
             "DATA" => Ok(HTTP2FrameType::DATA),
             "HEADERS" => Ok(HTTP2FrameType::HEADERS),
@@ -74,7 +74,7 @@ impl std::str::FromStr for HTTP2FrameType {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct HTTP2FrameHeader {
     //we could add detection on (GOAWAY) additional data
     pub length: u32,
@@ -103,7 +103,7 @@ pub fn http2_parse_frame_header(i: &[u8]) -> IResult<&[u8], HTTP2FrameHeader> {
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, PartialEq, FromPrimitive, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, FromPrimitive, Debug)]
 pub enum HTTP2ErrorCode {
     NOERROR = 0,
     PROTOCOLERROR = 1,
@@ -132,7 +132,7 @@ impl std::str::FromStr for HTTP2ErrorCode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let su = s.to_uppercase();
-        let su_slice: &str = &*su;
+        let su_slice: &str = &su;
         match su_slice {
             "NO_ERROR" => Ok(HTTP2ErrorCode::NOERROR),
             "PROTOCOL_ERROR" => Ok(HTTP2ErrorCode::PROTOCOLERROR),
@@ -293,7 +293,7 @@ fn http2_frame_header_static(n: u64, dyn_headers: &HTTP2DynTable) -> Option<HTTP
         61 => ("www-authenticate", ""),
         _ => ("", ""),
     };
-    if name.len() > 0 {
+    if !name.is_empty() {
         return Some(HTTP2FrameHeaderBlock {
             name: name.as_bytes().to_vec(),
             value: value.as_bytes().to_vec(),
@@ -330,7 +330,7 @@ fn http2_frame_header_static(n: u64, dyn_headers: &HTTP2DynTable) -> Option<HTTP
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, PartialOrd, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialOrd, PartialEq, Eq, Debug)]
 pub enum HTTP2HeaderDecodeStatus {
     HTTP2HeaderDecodeSuccess = 0,
     HTTP2HeaderDecodeSizeUpdate = 1,
@@ -456,7 +456,7 @@ fn http2_parse_headers_block_literal_incindex<'a>(
                 } else {
                     dyn_headers.table.push(headcopy);
                 }
-                while dyn_headers.current_size > dyn_headers.max_size && dyn_headers.table.len() > 0
+                while dyn_headers.current_size > dyn_headers.max_size && !dyn_headers.table.is_empty()
                 {
                     dyn_headers.current_size -=
                         32 + dyn_headers.table[0].name.len() + dyn_headers.table[0].value.len();
@@ -539,7 +539,7 @@ fn http2_parse_headers_block_dynamic_size<'a>(
     if (maxsize2 as usize) < dyn_headers.max_size {
         //dyn_headers.max_size is updated later with all headers
         //may evict entries
-        while dyn_headers.current_size > (maxsize2 as usize) && dyn_headers.table.len() > 0 {
+        while dyn_headers.current_size > (maxsize2 as usize) && !dyn_headers.table.is_empty() {
             // we check dyn_headers.table as we may be in best effort
             // because the previous maxsize was too big for us to retain all the headers
             dyn_headers.current_size -=
@@ -585,7 +585,7 @@ pub struct HTTP2FrameHeaders {
 //end stream
 pub const HTTP2_FLAG_HEADER_EOS: u8 = 0x1;
 pub const HTTP2_FLAG_HEADER_END_HEADERS: u8 = 0x4;
-const HTTP2_FLAG_HEADER_PADDED: u8 = 0x8;
+pub const HTTP2_FLAG_HEADER_PADDED: u8 = 0x8;
 const HTTP2_FLAG_HEADER_PRIORITY: u8 = 0x20;
 
 fn http2_parse_headers_blocks<'a>(
@@ -593,7 +593,7 @@ fn http2_parse_headers_blocks<'a>(
 ) -> IResult<&'a [u8], Vec<HTTP2FrameHeaderBlock>> {
     let mut blocks = Vec::new();
     let mut i3 = input;
-    while i3.len() > 0 {
+    while !i3.is_empty() {
         match http2_parse_headers_block(i3, dyn_headers) {
             Ok((rem, b)) => {
                 blocks.push(b);
@@ -681,7 +681,7 @@ pub fn http2_parse_frame_continuation<'a>(
 }
 
 #[repr(u16)]
-#[derive(Clone, Copy, PartialEq, FromPrimitive, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, FromPrimitive, Debug)]
 pub enum HTTP2SettingsId {
     SETTINGSHEADERTABLESIZE = 1,
     SETTINGSENABLEPUSH = 2,
@@ -702,7 +702,7 @@ impl std::str::FromStr for HTTP2SettingsId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let su = s.to_uppercase();
-        let su_slice: &str = &*su;
+        let su_slice: &str = &su;
         match su_slice {
             "SETTINGS_HEADER_TABLE_SIZE" => Ok(HTTP2SettingsId::SETTINGSHEADERTABLESIZE),
             "SETTINGS_ENABLE_PUSH" => Ok(HTTP2SettingsId::SETTINGSENABLEPUSH),
@@ -715,96 +715,9 @@ impl std::str::FromStr for HTTP2SettingsId {
     }
 }
 
-//TODOask move elsewhere generic with DetectU64Data and such
-#[derive(PartialEq, Debug)]
-pub enum DetectUintMode {
-    DetectUintModeEqual,
-    DetectUintModeLt,
-    DetectUintModeGt,
-    DetectUintModeRange,
-}
-
-pub struct DetectU32Data {
-    pub value: u32,
-    pub valrange: u32,
-    pub mode: DetectUintMode,
-}
-
 pub struct DetectHTTP2settingsSigCtx {
-    pub id: HTTP2SettingsId,          //identifier
-    pub value: Option<DetectU32Data>, //optional value
-}
-
-fn detect_parse_u32_start_equal(i: &str) -> IResult<&str, DetectU32Data> {
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, _) = opt(tag("="))(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, value) = map_opt(digit1, |s: &str| s.parse::<u32>().ok())(i)?;
-    Ok((
-        i,
-        DetectU32Data {
-            value,
-            valrange: 0,
-            mode: DetectUintMode::DetectUintModeEqual,
-        },
-    ))
-}
-
-fn detect_parse_u32_start_interval(i: &str) -> IResult<&str, DetectU32Data> {
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, value) = map_opt(digit1, |s: &str| s.parse::<u32>().ok())(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, _) = tag("-")(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, valrange) = map_opt(digit1, |s: &str| s.parse::<u32>().ok())(i)?;
-    Ok((
-        i,
-        DetectU32Data {
-            value,
-            valrange,
-            mode: DetectUintMode::DetectUintModeRange,
-        },
-    ))
-}
-
-fn detect_parse_u32_start_lesser(i: &str) -> IResult<&str, DetectU32Data> {
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, _) = tag("<")(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, value) = map_opt(digit1, |s: &str| s.parse::<u32>().ok())(i)?;
-    Ok((
-        i,
-        DetectU32Data {
-            value,
-            valrange: 0,
-            mode: DetectUintMode::DetectUintModeLt,
-        },
-    ))
-}
-
-fn detect_parse_u32_start_greater(i: &str) -> IResult<&str, DetectU32Data> {
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, _) = tag(">")(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, value) = map_opt(digit1, |s: &str| s.parse::<u32>().ok())(i)?;
-    Ok((
-        i,
-        DetectU32Data {
-            value,
-            valrange: 0,
-            mode: DetectUintMode::DetectUintModeGt,
-        },
-    ))
-}
-
-fn detect_parse_u32(i: &str) -> IResult<&str, DetectU32Data> {
-    let (i, u32) = alt((
-        detect_parse_u32_start_lesser,
-        detect_parse_u32_start_greater,
-        complete(detect_parse_u32_start_interval),
-        detect_parse_u32_start_equal,
-    ))(i)?;
-    Ok((i, u32))
+    pub id: HTTP2SettingsId,                //identifier
+    pub value: Option<DetectUintData<u32>>, //optional value
 }
 
 pub fn http2_parse_settingsctx(i: &str) -> IResult<&str, DetectHTTP2settingsSigCtx> {
@@ -812,86 +725,8 @@ pub fn http2_parse_settingsctx(i: &str) -> IResult<&str, DetectHTTP2settingsSigC
     let (i, id) = map_opt(alt((complete(is_not(" <>=")), rest)), |s: &str| {
         HTTP2SettingsId::from_str(s).ok()
     })(i)?;
-    let (i, value) = opt(complete(detect_parse_u32))(i)?;
+    let (i, value) = opt(complete(detect_parse_uint))(i)?;
     Ok((i, DetectHTTP2settingsSigCtx { id, value }))
-}
-
-pub struct DetectU64Data {
-    pub value: u64,
-    pub valrange: u64,
-    pub mode: DetectUintMode,
-}
-
-fn detect_parse_u64_start_equal(i: &str) -> IResult<&str, DetectU64Data> {
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, _) = opt(tag("="))(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, value) = map_opt(digit1, |s: &str| s.parse::<u64>().ok())(i)?;
-    Ok((
-        i,
-        DetectU64Data {
-            value,
-            valrange: 0,
-            mode: DetectUintMode::DetectUintModeEqual,
-        },
-    ))
-}
-
-fn detect_parse_u64_start_interval(i: &str) -> IResult<&str, DetectU64Data> {
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, value) = map_opt(digit1, |s: &str| s.parse::<u64>().ok())(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, _) = tag("-")(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, valrange) = map_opt(digit1, |s: &str| s.parse::<u64>().ok())(i)?;
-    Ok((
-        i,
-        DetectU64Data {
-            value,
-            valrange,
-            mode: DetectUintMode::DetectUintModeRange,
-        },
-    ))
-}
-
-fn detect_parse_u64_start_lesser(i: &str) -> IResult<&str, DetectU64Data> {
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, _) = tag("<")(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, value) = map_opt(digit1, |s: &str| s.parse::<u64>().ok())(i)?;
-    Ok((
-        i,
-        DetectU64Data {
-            value,
-            valrange: 0,
-            mode: DetectUintMode::DetectUintModeLt,
-        },
-    ))
-}
-
-fn detect_parse_u64_start_greater(i: &str) -> IResult<&str, DetectU64Data> {
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, _) = tag(">")(i)?;
-    let (i, _) = opt(is_a(" "))(i)?;
-    let (i, value) = map_opt(digit1, |s: &str| s.parse::<u64>().ok())(i)?;
-    Ok((
-        i,
-        DetectU64Data {
-            value,
-            valrange: 0,
-            mode: DetectUintMode::DetectUintModeGt,
-        },
-    ))
-}
-
-pub fn detect_parse_u64(i: &str) -> IResult<&str, DetectU64Data> {
-    let (i, u64) = alt((
-        detect_parse_u64_start_lesser,
-        detect_parse_u64_start_greater,
-        complete(detect_parse_u64_start_interval),
-        detect_parse_u64_start_equal,
-    ))(i)?;
-    Ok((i, u64))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -914,6 +749,7 @@ pub fn http2_parse_frame_settings(i: &[u8]) -> IResult<&[u8], Vec<HTTP2FrameSett
 mod tests {
 
     use super::*;
+    use crate::detect::uint::DetectUintMode;
 
     #[test]
     fn test_http2_parse_header() {
@@ -1076,7 +912,7 @@ mod tests {
                 assert_eq!(ctx.id, HTTP2SettingsId::SETTINGSMAXCONCURRENTSTREAMS);
                 match ctx.value {
                     Some(ctxval) => {
-                        assert_eq!(ctxval.value, 42);
+                        assert_eq!(ctxval.arg1, 42);
                     }
                     None => {
                         panic!("No value");
@@ -1096,9 +932,9 @@ mod tests {
                 assert_eq!(ctx.id, HTTP2SettingsId::SETTINGSMAXCONCURRENTSTREAMS);
                 match ctx.value {
                     Some(ctxval) => {
-                        assert_eq!(ctxval.value, 42);
+                        assert_eq!(ctxval.arg1, 42);
                         assert_eq!(ctxval.mode, DetectUintMode::DetectUintModeRange);
-                        assert_eq!(ctxval.valrange, 68);
+                        assert_eq!(ctxval.arg2, 68);
                     }
                     None => {
                         panic!("No value");
@@ -1118,7 +954,7 @@ mod tests {
                 assert_eq!(ctx.id, HTTP2SettingsId::SETTINGSMAXCONCURRENTSTREAMS);
                 match ctx.value {
                     Some(ctxval) => {
-                        assert_eq!(ctxval.value, 54);
+                        assert_eq!(ctxval.arg1, 54);
                         assert_eq!(ctxval.mode, DetectUintMode::DetectUintModeLt);
                     }
                     None => {
@@ -1139,7 +975,7 @@ mod tests {
                 assert_eq!(ctx.id, HTTP2SettingsId::SETTINGSMAXCONCURRENTSTREAMS);
                 match ctx.value {
                     Some(ctxval) => {
-                        assert_eq!(ctxval.value, 76);
+                        assert_eq!(ctxval.arg1, 76);
                         assert_eq!(ctxval.mode, DetectUintMode::DetectUintModeGt);
                     }
                     None => {

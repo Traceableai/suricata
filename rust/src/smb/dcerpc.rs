@@ -23,6 +23,7 @@ use crate::smb::smb2::*;
 use crate::smb::dcerpc_records::*;
 use crate::smb::events::*;
 use crate::dcerpc::dcerpc::*;
+use crate::smb::smb_status::*;
 
 impl SMBCommonHdr {
     /// helper for DCERPC tx tracking. Check if we need
@@ -35,7 +36,7 @@ impl SMBCommonHdr {
         match vercmd.get_version() {
             2 => {
                 let (_, cmd2) = vercmd.get_smb2_cmd();
-                let x = match cmd2 as u16 {
+                let x = match cmd2 {
                     SMB2_COMMAND_READ => { 0 },
                     SMB2_COMMAND_WRITE => { 0 },
                     SMB2_COMMAND_IOCTL => { self.msg_id },
@@ -69,14 +70,15 @@ pub struct DCERPCIface {
     pub ack_result: u16,
     pub ack_reason: u16,
     pub acked: bool,
+    pub context_id: u16,
 }
 
 impl DCERPCIface {
     pub fn new(uuid: Vec<u8>, ver: u16, ver_min: u16) -> Self {
         Self {
-            uuid: uuid,
-            ver:ver,
-            ver_min:ver_min,
+            uuid,
+            ver,
+            ver_min,
             ..Default::default()
         }
     }
@@ -85,6 +87,7 @@ impl DCERPCIface {
 #[derive(Default, Debug)]
 pub struct SMBTransactionDCERPC {
     pub opnum: u16,
+    pub context_id: u16,
     pub req_cmd: u8,
     pub req_set: bool,
     pub res_cmd: u8,
@@ -100,17 +103,18 @@ impl SMBTransactionDCERPC {
     fn new_request(req: u8, call_id: u32) -> Self {
         return Self {
             opnum: 0,
+            context_id: 0,
             req_cmd: req,
             req_set: true,
-            call_id: call_id,
+            call_id,
             ..Default::default()
         }
     }
     fn new_response(call_id: u32) -> Self {
-        return Self {
-            call_id: call_id,
+       return  Self {
+            call_id,
             ..Default::default()
-        }
+        };
     }
     pub fn set_result(&mut self, res: u8) {
         self.res_set = true;
@@ -190,7 +194,7 @@ pub fn smb_write_dcerpc_record<'b>(state: &mut SMBState,
 
             /* if this isn't the first frag, simply update the existing
              * tx with the additional stub data */
-            if dcer.packet_type == DCERPC_TYPE_REQUEST && dcer.first_frag == false {
+            if dcer.packet_type == DCERPC_TYPE_REQUEST && !dcer.first_frag {
                 SCLogDebug!("NOT the first frag. Need to find an existing TX");
                 match parse_dcerpc_request_record(dcer.data, dcer.frag_len, dcer.little_endian) {
                     Ok((_, recr)) => {
@@ -236,6 +240,7 @@ pub fn smb_write_dcerpc_record<'b>(state: &mut SMBState,
                                 SCLogDebug!("first frag size {}", recr.data.len());
                                 tdn.stub_data_ts.extend_from_slice(recr.data);
                                 tdn.opnum = recr.opnum;
+                                tdn.context_id = recr.context_id;
                                 tdn.frag_cnt_ts += 1;
                                 SCLogDebug!("DCERPC: REQUEST opnum {} stub data len {}",
                                         tdn.opnum, tdn.stub_data_ts.len());
@@ -253,7 +258,7 @@ pub fn smb_write_dcerpc_record<'b>(state: &mut SMBState,
                     }
                 },
                 DCERPC_TYPE_BIND => {
-                    let brec = if dcer.little_endian == true {
+                    let brec = if dcer.little_endian {
                         parse_dcerpc_bind_record(dcer.data)
                     } else {
                         parse_dcerpc_bind_record_big(dcer.data)
@@ -263,10 +268,10 @@ pub fn smb_write_dcerpc_record<'b>(state: &mut SMBState,
                             is_bind = true;
                             SCLogDebug!("SMB DCERPC {:?} BIND {:?}", dcer, bindr);
 
-                            if bindr.ifaces.len() > 0 {
+                            if !bindr.ifaces.is_empty() {
                                 let mut ifaces: Vec<DCERPCIface> = Vec::new();
                                 for i in bindr.ifaces {
-                                    let x = if dcer.little_endian == true {
+                                    let x = if dcer.little_endian {
                                         vec![i.iface[3],  i.iface[2],  i.iface[1],  i.iface[0],
                                              i.iface[5],  i.iface[4],  i.iface[7],  i.iface[6],
                                              i.iface[8],  i.iface[9],  i.iface[10], i.iface[11],
@@ -351,7 +356,7 @@ fn smb_dcerpc_response_bindack(
                             }
                             ifaces[i].ack_result = r.ack_result;
                             ifaces[i].acked = true;
-                            i = i + 1;
+                            i += 1;
                         }
                     },
                     _ => {},
@@ -454,7 +459,7 @@ pub fn smb_read_dcerpc_record<'b>(state: &mut SMBState,
     SCLogDebug!("lets first see if we have prior data");
     // msg_id 0 as this data crosses cmd/reply pairs
     let ehdr = SMBHashKeyHdrGuid::new(SMBCommonHdr::new(SMBHDR_TYPE_TRANS_FRAG,
-            hdr.ssn_id as u64, hdr.tree_id as u32, 0 as u64), guid.to_vec());
+            hdr.ssn_id, hdr.tree_id, 0_u64), guid.to_vec());
     let mut prevdata = match state.ssnguid2vec_map.remove(&ehdr) {
         Some(s) => s,
         None => Vec::new(),
@@ -465,7 +470,7 @@ pub fn smb_read_dcerpc_record<'b>(state: &mut SMBState,
 
     let mut malformed = false;
 
-    if data.len() == 0 {
+    if data.is_empty() {
         SCLogDebug!("weird: no DCERPC data"); // TODO
         // TODO set event?
         return false;

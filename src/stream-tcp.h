@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -29,6 +29,7 @@
 
 #include "stream.h"
 #include "stream-tcp-reassemble.h"
+#include "suricata.h"
 
 #define STREAM_VERBOSE false
 /* Flag to indicate that the checksum validation for the stream engine
@@ -64,6 +65,10 @@ typedef struct TcpStreamCnf_ {
 
     bool streaming_log_api;
 
+    enum ExceptionPolicy ssn_memcap_policy;
+    enum ExceptionPolicy reassembly_memcap_policy;
+    enum ExceptionPolicy midstream_policy;
+
     StreamingBufferConfig sbcnf;
 } TcpStreamCnf;
 
@@ -75,9 +80,12 @@ typedef struct StreamTcpThread_ {
      *  receiving (valid) RST packets */
     PacketQueueNoLock pseudo_queue;
 
+    uint16_t counter_tcp_active_sessions;
     uint16_t counter_tcp_sessions;
     /** sessions not picked up because memcap was reached */
     uint16_t counter_tcp_ssn_memcap;
+    uint16_t counter_tcp_ssn_from_cache;
+    uint16_t counter_tcp_ssn_from_pool;
     /** pseudo packets processed */
     uint16_t counter_tcp_pseudo;
     /** pseudo packets failed to setup */
@@ -124,11 +132,16 @@ Packet *StreamTcpPseudoSetup(Packet *, uint8_t *, uint32_t);
 int StreamTcpSegmentForEach(const Packet *p, uint8_t flag,
                         StreamSegmentCallback CallbackFunc,
                         void *data);
+int StreamTcpSegmentForSession(
+        const Packet *p, uint8_t flag, StreamSegmentCallback CallbackFunc, void *data);
 void StreamTcpReassembleConfigEnableOverlapCheck(void);
 void TcpSessionSetReassemblyDepth(TcpSession *ssn, uint32_t size);
 
-typedef int (*StreamReassembleRawFunc)(void *data, const uint8_t *input, const uint32_t input_len);
+typedef int (*StreamReassembleRawFunc)(
+        void *data, const uint8_t *input, const uint32_t input_len, const uint64_t offset);
 
+int StreamReassembleForFrame(TcpSession *ssn, TcpStream *stream, StreamReassembleRawFunc Callback,
+        void *cb_data, const uint64_t offset, const bool eof);
 int StreamReassembleLog(TcpSession *ssn, TcpStream *stream,
         StreamReassembleRawFunc Callback, void *cb_data,
         uint64_t progress_in,
@@ -175,10 +188,9 @@ enum {
 };
 
 TmEcode StreamTcp (ThreadVars *, Packet *, void *, PacketQueueNoLock *);
-int StreamNeedsReassembly(const TcpSession *ssn, uint8_t direction);
+uint8_t StreamNeedsReassembly(const TcpSession *ssn, uint8_t direction);
 TmEcode StreamTcpThreadInit(ThreadVars *, void *, void **);
 TmEcode StreamTcpThreadDeinit(ThreadVars *tv, void *data);
-void StreamTcpRegisterTests (void);
 
 int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
                      PacketQueueNoLock *pq);
@@ -200,6 +212,9 @@ void StreamTcpUpdateAppLayerProgress(TcpSession *ssn, char direction,
 
 uint64_t StreamTcpGetAcked(const TcpStream *stream);
 uint64_t StreamTcpGetUsable(const TcpStream *stream, const bool eof);
+
+void StreamTcpThreadCacheEnable(void);
+void StreamTcpThreadCacheCleanup(void);
 
 #endif /* __STREAM_TCP_H__ */
 

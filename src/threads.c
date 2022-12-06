@@ -26,10 +26,10 @@
 
 #include "suricata-common.h"
 #include "util-unittest.h"
-#include "debug.h"
 #include "util-debug.h"
 #include "threads.h"
 
+thread_local char t_thread_name[THREAD_NAME_LEN + 1];
 #ifdef UNITTESTS /* UNIT TESTS */
 
 /**

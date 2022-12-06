@@ -23,19 +23,12 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
-#include "pkt-var.h"
-#include "conf.h"
+#include "output-lua.h"
 
-#include "threads.h"
-#include "threadvars.h"
-#include "tm-threads.h"
-
+#ifdef HAVE_LUA
 #include "util-print.h"
 #include "util-unittest.h"
-
 #include "util-debug.h"
-
 #include "output.h"
 #include "app-layer-htp.h"
 #include "app-layer.h"
@@ -47,15 +40,6 @@
 #include "util-proto-name.h"
 #include "util-logopenfile.h"
 #include "util-time.h"
-
-#include "output-lua.h"
-
-#ifdef HAVE_LUA
-
-#include <lua.h>
-#include <lualib.h>
-#include <lauxlib.h>
-
 #include "util-lua.h"
 #include "util-lua-common.h"
 #include "util-lua-http.h"
@@ -108,7 +92,7 @@ static int LuaTxLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flow 
 
     LuaStateSetThreadVars(td->lua_ctx->luastate, tv);
     LuaStateSetPacket(td->lua_ctx->luastate, (Packet *)p);
-    LuaStateSetTX(td->lua_ctx->luastate, txptr);
+    LuaStateSetTX(td->lua_ctx->luastate, txptr, tx_id);
     LuaStateSetFlow(td->lua_ctx->luastate, f);
 
     /* prepare data to pass to script */
@@ -152,7 +136,7 @@ static int LuaStreamingLogger(ThreadVars *tv, void *thread_data, const Flow *f,
 
     LuaStateSetThreadVars(td->lua_ctx->luastate, tv);
     if (flags & OUTPUT_STREAMING_FLAG_TRANSACTION)
-        LuaStateSetTX(td->lua_ctx->luastate, txptr);
+        LuaStateSetTX(td->lua_ctx->luastate, txptr, tx_id);
     LuaStateSetFlow(td->lua_ctx->luastate, (Flow *)f);
     LuaStateSetStreamingBuffer(td->lua_ctx->luastate, &b);
 
@@ -209,11 +193,12 @@ static int LuaPacketLoggerAlerts(ThreadVars *tv, void *thread_data, const Packet
 
         void *txptr = NULL;
         if (p->flow && p->flow->alstate && (pa->flags & PACKET_ALERT_FLAG_TX))
-            txptr = AppLayerParserGetTx(p->proto, p->flow->alproto, p->flow->alstate, pa->tx_id);
+            txptr = AppLayerParserGetTx(
+                    p->flow->proto, p->flow->alproto, p->flow->alstate, pa->tx_id);
 
         LuaStateSetThreadVars(td->lua_ctx->luastate, tv);
         LuaStateSetPacket(td->lua_ctx->luastate, (Packet *)p);
-        LuaStateSetTX(td->lua_ctx->luastate, txptr);
+        LuaStateSetTX(td->lua_ctx->luastate, txptr, pa->tx_id);
         LuaStateSetFlow(td->lua_ctx->luastate, p->flow);
         LuaStateSetPacketAlert(td->lua_ctx->luastate, (PacketAlert *)pa);
 
@@ -230,7 +215,7 @@ not_supported:
     SCReturnInt(0);
 }
 
-static int LuaPacketConditionAlerts(ThreadVars *tv, const Packet *p)
+static int LuaPacketConditionAlerts(ThreadVars *tv, void *data, const Packet *p)
 {
     if (p->alerts.cnt > 0)
         return TRUE;
@@ -280,7 +265,7 @@ not_supported:
     SCReturnInt(0);
 }
 
-static int LuaPacketCondition(ThreadVars *tv, const Packet *p)
+static int LuaPacketCondition(ThreadVars *tv, void *data, const Packet *p)
 {
     return TRUE;
 }
@@ -292,7 +277,8 @@ static int LuaPacketCondition(ThreadVars *tv, const Packet *p)
  *
  * NOTE p->flow is locked at this point
  */
-static int LuaFileLogger(ThreadVars *tv, void *thread_data, const Packet *p, const File *ff, uint8_t dir)
+static int LuaFileLogger(ThreadVars *tv, void *thread_data, const Packet *p, const File *ff,
+        void *tx, const uint64_t tx_id, uint8_t dir)
 {
     SCEnter();
     LogLuaThreadCtx *td = (LogLuaThreadCtx *)thread_data;
@@ -308,12 +294,7 @@ static int LuaFileLogger(ThreadVars *tv, void *thread_data, const Packet *p, con
 
     LuaStateSetThreadVars(td->lua_ctx->luastate, tv);
     LuaStateSetPacket(td->lua_ctx->luastate, (Packet *)p);
-    if (p->flow && p->flow->alstate) {
-        void *txptr = AppLayerParserGetTx(p->proto, p->flow->alproto, p->flow->alstate, ff->txid);
-        if (txptr) {
-            LuaStateSetTX(td->lua_ctx->luastate, txptr);
-        }
-    }
+    LuaStateSetTX(td->lua_ctx->luastate, tx, tx_id);
     LuaStateSetFlow(td->lua_ctx->luastate, p->flow);
     LuaStateSetFile(td->lua_ctx->luastate, (File *)ff);
 

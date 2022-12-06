@@ -28,7 +28,7 @@
 #include "suricata-common.h"
 #include "suricata.h"
 #include "tm-threads.h"
-
+#include "packet.h"
 #include "util-byte.h"
 #include "util-debug.h"
 #include "util-device.h"
@@ -410,6 +410,10 @@ TmEcode ReceiveWinDivertLoop(ThreadVars *tv, void *data, void *slot)
     WinDivertThreadVars *wd_tv = (WinDivertThreadVars *)data;
     wd_tv->slot = ((TmSlot *)slot)->slot_next;
 
+    // Indicate that the thread is actually running its application level code (i.e., it can poll
+    // packets)
+    TmThreadsSetFlag(tv, THV_RUNNING);
+
     while (true) {
         if (suricata_ctl_flags & SURICATA_STOP) {
             SCReturnInt(TM_ECODE_OK);
@@ -789,7 +793,7 @@ static TmEcode WinDivertVerdictHelper(ThreadVars *tv, Packet *p)
 
     /* DROP simply means we do nothing; the WinDivert driver does the rest.
      */
-    if (PacketTestAction(p, ACTION_DROP)) {
+    if (PacketCheckAction(p, ACTION_DROP)) {
 #ifdef COUNTERS
         SCMutexLock(&wd_qv->counters_mutex);
         wd_qv->dropped++;

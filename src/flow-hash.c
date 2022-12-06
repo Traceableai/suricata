@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2020 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -49,6 +49,7 @@
 #include "output.h"
 #include "output-flow.h"
 #include "stream-tcp.h"
+#include "util-exception-policy.h"
 
 extern TcpStreamCnf stream_config;
 
@@ -373,28 +374,20 @@ static inline int FlowCompareICMPv4(Flow *f, const Packet *p)
         /* first check the direction of the flow, in other words, the client ->
          * server direction as it's most likely the ICMP error will be a
          * response to the clients traffic */
-        if ((f->src.addr_data32[0] == IPV4_GET_RAW_IPSRC_U32( ICMPV4_GET_EMB_IPV4(p) )) &&
-                (f->dst.addr_data32[0] == IPV4_GET_RAW_IPDST_U32( ICMPV4_GET_EMB_IPV4(p) )) &&
-                f->sp == p->icmpv4vars.emb_sport &&
-                f->dp == p->icmpv4vars.emb_dport &&
-                f->proto == ICMPV4_GET_EMB_PROTO(p) &&
-                f->recursion_level == p->recursion_level &&
-                f->vlan_id[0] == p->vlan_id[0] &&
-                f->vlan_id[1] == p->vlan_id[1])
-        {
+        if ((f->src.addr_data32[0] == IPV4_GET_RAW_IPSRC_U32(ICMPV4_GET_EMB_IPV4(p))) &&
+                (f->dst.addr_data32[0] == IPV4_GET_RAW_IPDST_U32(ICMPV4_GET_EMB_IPV4(p))) &&
+                f->sp == p->icmpv4vars.emb_sport && f->dp == p->icmpv4vars.emb_dport &&
+                f->proto == ICMPV4_GET_EMB_PROTO(p) && f->recursion_level == p->recursion_level &&
+                CmpVlanIds(f->vlan_id, p->vlan_id)) {
             return 1;
 
         /* check the less likely case where the ICMP error was a response to
          * a packet from the server. */
-        } else if ((f->dst.addr_data32[0] == IPV4_GET_RAW_IPSRC_U32( ICMPV4_GET_EMB_IPV4(p) )) &&
-                (f->src.addr_data32[0] == IPV4_GET_RAW_IPDST_U32( ICMPV4_GET_EMB_IPV4(p) )) &&
-                f->dp == p->icmpv4vars.emb_sport &&
-                f->sp == p->icmpv4vars.emb_dport &&
-                f->proto == ICMPV4_GET_EMB_PROTO(p) &&
-                f->recursion_level == p->recursion_level &&
-                f->vlan_id[0] == p->vlan_id[0] &&
-                f->vlan_id[1] == p->vlan_id[1])
-        {
+        } else if ((f->dst.addr_data32[0] == IPV4_GET_RAW_IPSRC_U32(ICMPV4_GET_EMB_IPV4(p))) &&
+                   (f->src.addr_data32[0] == IPV4_GET_RAW_IPDST_U32(ICMPV4_GET_EMB_IPV4(p))) &&
+                   f->dp == p->icmpv4vars.emb_sport && f->sp == p->icmpv4vars.emb_dport &&
+                   f->proto == ICMPV4_GET_EMB_PROTO(p) &&
+                   f->recursion_level == p->recursion_level && CmpVlanIds(f->vlan_id, p->vlan_id)) {
             return 1;
         }
 
@@ -485,6 +478,8 @@ static inline void FlowUpdateCounter(ThreadVars *tv, DecodeThreadVars *dtv,
 #ifdef UNITTESTS
     if (tv && dtv) {
 #endif
+        StatsIncr(tv, dtv->counter_flow_total);
+        StatsIncr(tv, dtv->counter_flow_active);
         switch (proto){
             case IPPROTO_UDP:
                 StatsIncr(tv, dtv->counter_flow_udp);
@@ -549,6 +544,11 @@ static inline Flow *FlowSpareSync(ThreadVars *tv, FlowLookupStruct *fls,
     return f;
 }
 
+static inline void NoFlowHandleIPS(Packet *p)
+{
+    ExceptionPolicyApply(p, flow_config.memcap_policy, PKT_DROP_REASON_FLOW_MEMCAP);
+}
+
 /**
  *  \brief Get a new flow
  *
@@ -560,10 +560,14 @@ static inline Flow *FlowSpareSync(ThreadVars *tv, FlowLookupStruct *fls,
  *
  *  \retval f *LOCKED* flow on succes, NULL on error.
  */
-static Flow *FlowGetNew(ThreadVars *tv, FlowLookupStruct *fls, const Packet *p)
+static Flow *FlowGetNew(ThreadVars *tv, FlowLookupStruct *fls, Packet *p)
 {
     const bool emerg = ((SC_ATOMIC_GET(flow_flags) & FLOW_EMERGENCY) != 0);
-
+#ifdef DEBUG
+    if (g_eps_flow_memcap != UINT64_MAX && g_eps_flow_memcap == p->pcap_cnt) {
+        return NULL;
+    }
+#endif
     if (FlowCreateCheck(p, emerg) == 0) {
         return NULL;
     }
@@ -580,10 +584,12 @@ static Flow *FlowGetNew(ThreadVars *tv, FlowLookupStruct *fls, const Packet *p)
             if (!(SC_ATOMIC_GET(flow_flags) & FLOW_EMERGENCY)) {
                 SC_ATOMIC_OR(flow_flags, FLOW_EMERGENCY);
                 FlowTimeoutsEmergency();
+                FlowWakeupFlowManagerThread();
             }
 
             f = FlowGetUsedFlow(tv, fls->dtv, &p->ts);
             if (f == NULL) {
+                NoFlowHandleIPS(p);
                 return NULL;
             }
 #ifdef UNITTESTS
@@ -608,6 +614,7 @@ static Flow *FlowGetNew(ThreadVars *tv, FlowLookupStruct *fls, const Packet *p)
 #ifdef UNITTESTS
             }
 #endif
+            NoFlowHandleIPS(p);
             return NULL;
         }
 
@@ -623,9 +630,8 @@ static Flow *FlowGetNew(ThreadVars *tv, FlowLookupStruct *fls, const Packet *p)
     return f;
 }
 
-static Flow *TcpReuseReplace(ThreadVars *tv, FlowLookupStruct *fls,
-                             FlowBucket *fb, Flow *old_f,
-                             const uint32_t hash, const Packet *p)
+static Flow *TcpReuseReplace(ThreadVars *tv, FlowLookupStruct *fls, FlowBucket *fb, Flow *old_f,
+        const uint32_t hash, Packet *p)
 {
 #ifdef UNITTESTS
     if (tv != NULL && fls->dtv != NULL) {
@@ -641,16 +647,13 @@ static Flow *TcpReuseReplace(ThreadVars *tv, FlowLookupStruct *fls,
     /* get some settings that we move over to the new flow */
     FlowThreadId thread_id[2] = { old_f->thread_id[0], old_f->thread_id[1] };
 
-    /* since fb lock is still held this flow won't be found until we are done */
-    FLOWLOCK_UNLOCK(old_f);
+    /* flow is unlocked by caller */
 
     /* Get a new flow. It will be either a locked flow or NULL */
     Flow *f = FlowGetNew(tv, fls, p);
     if (f == NULL) {
         return NULL;
     }
-
-    /* flow is locked */
 
     /* put at the start of the list */
     f->next = fb->head;
@@ -694,7 +697,6 @@ static inline void MoveToWorkQueue(ThreadVars *tv, FlowLookupStruct *fls,
         f->fb = NULL;
         f->next = NULL;
         FlowQueuePrivateAppendFlow(&fls->work_queue, f);
-        FLOWLOCK_UNLOCK(f);
     } else {
         /* implied: TCP but our thread does not own it. So set it
          * aside for the Flow Manager to pick it up. */
@@ -703,7 +705,6 @@ static inline void MoveToWorkQueue(ThreadVars *tv, FlowLookupStruct *fls,
         if (SC_ATOMIC_GET(f->fb->next_ts) != 0) {
             SC_ATOMIC_SET(f->fb->next_ts, 0);
         }
-        FLOWLOCK_UNLOCK(f);
     }
 }
 
@@ -720,19 +721,6 @@ static inline bool FlowIsTimedOut(const Flow *f, const uint32_t sec, const bool 
             return true;
     }
     return false;
-}
-
-static inline void FromHashLockBucket(FlowBucket *fb)
-{
-    FBLOCK_LOCK(fb);
-}
-static inline void FromHashLockTO(Flow *f)
-{
-    FLOWLOCK_WRLOCK(f);
-}
-static inline void FromHashLockCMP(Flow *f)
-{
-    FLOWLOCK_WRLOCK(f);
 }
 
 /** \brief Get Flow for packet
@@ -752,15 +740,14 @@ static inline void FromHashLockCMP(Flow *f)
  *
  *  \retval f *LOCKED* flow or NULL
  */
-Flow *FlowGetFlowFromHash(ThreadVars *tv, FlowLookupStruct *fls,
-        const Packet *p, Flow **dest)
+Flow *FlowGetFlowFromHash(ThreadVars *tv, FlowLookupStruct *fls, Packet *p, Flow **dest)
 {
     Flow *f = NULL;
 
     /* get our hash bucket and lock it */
     const uint32_t hash = p->flow_hash;
     FlowBucket *fb = &flow_hash[hash % flow_config.hash_size];
-    FromHashLockBucket(fb);
+    FBLOCK_LOCK(fb);
 
     SCLogDebug("fb %p fb->head %p", fb, fb->head);
 
@@ -797,24 +784,26 @@ Flow *FlowGetFlowFromHash(ThreadVars *tv, FlowLookupStruct *fls,
         const bool timedout =
             (fb_nextts < (uint32_t)p->ts.tv_sec && FlowIsTimedOut(f, (uint32_t)p->ts.tv_sec, emerg));
         if (timedout) {
-            FromHashLockTO(f);//FLOWLOCK_WRLOCK(f);
-            if (f->use_cnt == 0) {
+            FLOWLOCK_WRLOCK(f);
+            if (likely(f->use_cnt == 0)) {
                 next_f = f->next;
                 MoveToWorkQueue(tv, fls, fb, f, prev_f);
-                /* flow stays locked, ownership xfer'd to MoveToWorkQueue */
+                FLOWLOCK_UNLOCK(f);
                 goto flow_removed;
             }
             FLOWLOCK_UNLOCK(f);
         } else if (FlowCompare(f, p) != 0) {
-            FromHashLockCMP(f);//FLOWLOCK_WRLOCK(f);
+            FLOWLOCK_WRLOCK(f);
             /* found a matching flow that is not timed out */
             if (unlikely(TcpSessionPacketSsnReuse(p, f, f->protoctx) == 1)) {
                 Flow *new_f = TcpReuseReplace(tv, fls, fb, f, hash, p);
-                if (f->use_cnt == 0) {
+                if (likely(f->use_cnt == 0)) {
                     if (prev_f == NULL) /* if we have no prev it means new_f is now our prev */
                         prev_f = new_f;
                     MoveToWorkQueue(tv, fls, fb, f, prev_f); /* evict old flow */
                 }
+                FLOWLOCK_UNLOCK(f); /* unlock old replaced flow */
+
                 if (new_f == NULL) {
                     FBLOCK_UNLOCK(fb);
                     return NULL;
@@ -865,6 +854,61 @@ static inline int FlowCompareKey(Flow *f, FlowKey *key)
     if ((f->proto != IPPROTO_TCP) && (f->proto != IPPROTO_UDP))
         return 0;
     return CmpFlowKey(f, key);
+}
+
+/** \brief Look for existing Flow using a flow id value
+ *
+ * Hash retrieval function for flows. Looks up the hash bucket containing the
+ * flow pointer. Then compares the packet with the found flow to see if it is
+ * the flow we need. If it isn't, walk the list until the right flow is found.
+ *
+ *
+ *  \param flow_id Flow ID of the flow to look for
+ *  \retval f *LOCKED* flow or NULL
+ */
+
+Flow *FlowGetExistingFlowFromFlowId(int64_t flow_id)
+{
+    uint32_t hash = flow_id & 0x0000FFFF;
+    /* get our hash bucket and lock it */
+    FlowBucket *fb = &flow_hash[hash % flow_config.hash_size];
+    FBLOCK_LOCK(fb);
+
+    SCLogDebug("fb %p fb->head %p", fb, fb->head);
+
+    /* return if the bucket don't have a flow */
+    if (fb->head == NULL) {
+        FBLOCK_UNLOCK(fb);
+        return NULL;
+    }
+
+    /* ok, we have a flow in the bucket. Let's find out if it is our flow */
+    Flow *f = fb->head;
+
+    /* see if this is the flow we are looking for */
+    if (FlowGetId(f) != flow_id) {
+        while (f) {
+            f = f->next;
+
+            if (f == NULL) {
+                FBLOCK_UNLOCK(fb);
+                return NULL;
+            }
+            if (FlowGetId(f) != flow_id) {
+                /* found our flow, lock & return */
+                FLOWLOCK_WRLOCK(f);
+
+                FBLOCK_UNLOCK(fb);
+                return f;
+            }
+        }
+    }
+
+    /* lock & return */
+    FLOWLOCK_WRLOCK(f);
+
+    FBLOCK_UNLOCK(fb);
+    return f;
 }
 
 /** \brief Get or create a Flow using a FlowKey

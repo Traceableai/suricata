@@ -21,7 +21,7 @@ use super::{
 };
 use md5::{Digest, Md5};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Cyu {
     pub string: String,
     pub hash: String,
@@ -62,7 +62,7 @@ impl Cyu {
                         let cyu_string = format!("{},{}", version, tags);
 
                         let mut hasher = Md5::new();
-                        hasher.update(&cyu_string.as_bytes());
+                        hasher.update(cyu_string.as_bytes());
                         let hash = hasher.finalize();
 
                         let cyu_hash = format!("{:x}", hash);

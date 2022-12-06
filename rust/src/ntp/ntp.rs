@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2020 Open Information Security Foundation
+/* Copyright (C) 2017-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -36,6 +36,8 @@ pub enum NTPEvent {
 }
 
 pub struct NTPState {
+    state_data: AppLayerStateData,
+
     /// List of transactions for this session
     transactions: Vec<NTPTransaction>,
 
@@ -65,7 +67,8 @@ impl Transaction for NTPTransaction {
 
 impl NTPState {
     pub fn new() -> NTPState {
-        NTPState{
+        NTPState {
+            state_data: AppLayerStateData::new(),
             transactions: Vec::new(),
             events: 0,
             tx_id: 0,
@@ -74,8 +77,12 @@ impl NTPState {
 }
 
 impl State<NTPTransaction> for NTPState {
-    fn get_transactions(&self) -> &[NTPTransaction] {
-        &self.transactions
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&NTPTransaction> {
+        self.transactions.get(index)
     }
 }
 
@@ -129,7 +136,7 @@ impl NTPState {
 
     fn free_tx(&mut self, tx_id: u64) {
         let tx = self.transactions.iter().position(|tx| tx.id == tx_id + 1);
-        debug_assert!(tx != None);
+        debug_assert!(tx.is_some());
         if let Some(idx) = tx {
             let _ = self.transactions.remove(idx);
         }
@@ -148,7 +155,7 @@ impl NTPTransaction {
     pub fn new(id: u64) -> NTPTransaction {
         NTPTransaction {
             xid: 0,
-            id: id,
+            id,
             tx_data: applayer::AppLayerTxData::new(),
         }
     }
@@ -259,8 +266,9 @@ pub extern "C" fn ntp_probing_parser(_flow: *const Flow,
 }
 
 export_tx_data_get!(rs_ntp_get_tx_data, NTPTransaction);
+export_state_data_get!(rs_ntp_get_state_data, NTPState);
 
-const PARSER_NAME : &'static [u8] = b"ntp\0";
+const PARSER_NAME : &[u8] = b"ntp\0";
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_register_ntp_parser() {
@@ -287,9 +295,10 @@ pub unsafe extern "C" fn rs_register_ntp_parser() {
         get_eventinfo_byid : Some(NTPEvent::get_event_info_by_id),
         localstorage_new   : None,
         localstorage_free  : None,
-        get_files          : None,
+        get_tx_files       : None,
         get_tx_iterator    : Some(applayer::state_get_tx_iterator::<NTPState, NTPTransaction>),
         get_tx_data        : rs_ntp_get_tx_data,
+        get_state_data     : rs_ntp_get_state_data,
         apply_tx_config    : None,
         flags              : APP_LAYER_PARSER_OPT_UNIDIR_TXS,
         truncate           : None,

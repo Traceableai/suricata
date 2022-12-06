@@ -1,4 +1,4 @@
-/* Copyright (C) 2020 Open Information Security Foundation
+/* Copyright (C) 2020-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -26,6 +26,8 @@
 
 #include "detect.h"
 #include "detect-parse.h"
+#include "detect-content.h"
+
 #include "detect-engine.h"
 #include "detect-engine-uint.h"
 #include "detect-engine-mpm.h"
@@ -35,6 +37,7 @@
 #include "detect-http2.h"
 #include "util-byte.h"
 #include "rust.h"
+#include "util-profiling.h"
 
 #ifdef UNITTESTS
 void DetectHTTP2frameTypeRegisterTests (void);
@@ -86,21 +89,17 @@ static int DetectHTTP2headerNameSetup(DetectEngineCtx *de_ctx, Signature *s, con
 static int PrefilterMpmHttp2HeaderNameRegister(DetectEngineCtx *de_ctx,
                                                SigGroupHead *sgh, MpmCtx *mpm_ctx,
                                                const DetectBufferMpmRegistery *mpm_reg, int list_id);
-static int DetectEngineInspectHttp2HeaderName(
-                                              DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-                                              const DetectEngineAppInspectionEngine *engine,
-                                              const Signature *s,
-                                              Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
+static uint8_t DetectEngineInspectHttp2HeaderName(DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
+        const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
 
 static int DetectHTTP2headerSetup(DetectEngineCtx *de_ctx, Signature *s, const char *arg);
 static int PrefilterMpmHttp2HeaderRegister(DetectEngineCtx *de_ctx,
                                                SigGroupHead *sgh, MpmCtx *mpm_ctx,
                                                const DetectBufferMpmRegistery *mpm_reg, int list_id);
-static int DetectEngineInspectHttp2Header(
-                                          DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-                                          const DetectEngineAppInspectionEngine *engine,
-                                          const Signature *s,
-                                          Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
+static uint8_t DetectEngineInspectHttp2Header(DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
+        const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
 static bool DetectHttp2HeaderValidateCallback(const Signature *s, const char **sigerror);
 
 #ifdef UNITTESTS
@@ -111,13 +110,6 @@ static int g_http2_match_buffer_id = 0;
 static int g_http2_header_name_buffer_id = 0;
 static int g_http2_header_buffer_id = 0;
 
-static int DetectEngineInspectHTTP2(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
-        uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
-{
-    return DetectEngineInspectGenericList(
-            de_ctx, det_ctx, s, engine->smd, f, flags, alstate, txv, tx_id);
-}
 
 /**
  * \brief Registration function for HTTP2 keywords
@@ -239,13 +231,11 @@ void DetectHttp2Register(void)
     g_http2_header_buffer_id = DetectBufferTypeGetByName("http2_header");
 
     DetectAppLayerInspectEngineRegister2(
-            "http2", ALPROTO_HTTP2, SIG_FLAG_TOSERVER, 0, DetectEngineInspectHTTP2, NULL);
+            "http2", ALPROTO_HTTP2, SIG_FLAG_TOSERVER, 0, DetectEngineInspectGenericList, NULL);
     DetectAppLayerInspectEngineRegister2(
-            "http2", ALPROTO_HTTP2, SIG_FLAG_TOCLIENT, 0, DetectEngineInspectHTTP2, NULL);
+            "http2", ALPROTO_HTTP2, SIG_FLAG_TOCLIENT, 0, DetectEngineInspectGenericList, NULL);
 
     g_http2_match_buffer_id = DetectBufferTypeRegister("http2");
-    DetectUintRegister();
-
     return;
 }
 
@@ -268,14 +258,14 @@ static int DetectHTTP2frametypeMatch(DetectEngineThreadCtx *det_ctx,
 static int DetectHTTP2FuncParseFrameType(const char *str, uint8_t *ft)
 {
     // first parse numeric value
-    if (ByteExtractStringUint8(ft, 10, strlen(str), str) >= 0) {
+    if (ByteExtractStringUint8(ft, 10, (uint16_t)strlen(str), str) >= 0) {
         return 1;
     }
 
     // it it failed so far, parse string value from enumeration
     int r = rs_http2_parse_frametype(str);
-    if (r >= 0) {
-        *ft = r;
+    if (r >= 0 && r <= UINT8_MAX) {
+        *ft = (uint8_t)r;
         return 1;
     }
 
@@ -354,7 +344,7 @@ static int DetectHTTP2errorcodeMatch(DetectEngineThreadCtx *det_ctx,
 static int DetectHTTP2FuncParseErrorCode(const char *str, uint32_t *ec)
 {
     // first parse numeric value
-    if (ByteExtractStringUint32(ec, 10, strlen(str), str) >= 0) {
+    if (ByteExtractStringUint32(ec, 10, (uint16_t)strlen(str), str) >= 0) {
         return 1;
     }
 
@@ -435,7 +425,7 @@ static int DetectHTTP2priorityMatch(DetectEngineThreadCtx *det_ctx,
     int value = rs_http2_tx_get_next_priority(txv, flags, nb);
     const DetectU8Data *du8 = (const DetectU8Data *)ctx;
     while (value >= 0) {
-        if (DetectU8Match(value, du8)) {
+        if (DetectU8Match((uint8_t)value, du8)) {
             return 1;
         }
         nb++;
@@ -465,7 +455,7 @@ static int DetectHTTP2prioritySetup (DetectEngineCtx *de_ctx, Signature *s, cons
 
     SigMatch *sm = SigMatchAlloc();
     if (sm == NULL) {
-        SCFree(prio);
+        rs_detect_u8_free(prio);
         return -1;
     }
 
@@ -484,7 +474,7 @@ static int DetectHTTP2prioritySetup (DetectEngineCtx *de_ctx, Signature *s, cons
  */
 void DetectHTTP2priorityFree(DetectEngineCtx *de_ctx, void *ptr)
 {
-    SCFree(ptr);
+    rs_detect_u8_free(ptr);
 }
 
 /**
@@ -532,7 +522,7 @@ static int DetectHTTP2windowSetup (DetectEngineCtx *de_ctx, Signature *s, const 
 
     SigMatch *sm = SigMatchAlloc();
     if (sm == NULL) {
-        SCFree(wu);
+        rs_detect_u32_free(wu);
         return -1;
     }
 
@@ -551,7 +541,7 @@ static int DetectHTTP2windowSetup (DetectEngineCtx *de_ctx, Signature *s, const 
  */
 void DetectHTTP2windowFree(DetectEngineCtx *de_ctx, void *ptr)
 {
-    SCFree(ptr);
+    rs_detect_u32_free(ptr);
 }
 
 /**
@@ -712,10 +702,8 @@ static InspectionBuffer *GetHttp2HNameData(DetectEngineThreadCtx *det_ctx,
     SCReturnPtr(buffer, "InspectionBuffer");
 }
 
-static void PrefilterTxHttp2HName(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterTxHttp2HName(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -738,6 +726,7 @@ static void PrefilterTxHttp2HName(DetectEngineThreadCtx *det_ctx,
             (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                     &det_ctx->mtcu, &det_ctx->pmq,
                     buffer->inspect, buffer->inspect_len);
+            PREFILTER_PROFILING_ADD_BYTES(det_ctx, buffer->inspect_len);
         }
 
         local_id++;
@@ -761,11 +750,9 @@ static int PrefilterMpmHttp2HeaderNameRegister(DetectEngineCtx *de_ctx,
             pectx, PrefilterMpmHttp2HNameFree, mpm_reg->name);
 }
 
-static int DetectEngineInspectHttp2HeaderName(
-        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const DetectEngineAppInspectionEngine *engine,
-        const Signature *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
+static uint8_t DetectEngineInspectHttp2HeaderName(DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
+        const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
 {
     uint32_t local_id = 0;
 
@@ -845,10 +832,8 @@ static InspectionBuffer *GetHttp2HeaderData(DetectEngineThreadCtx *det_ctx,
     SCReturnPtr(buffer, "InspectionBuffer");
 }
 
-static void PrefilterTxHttp2Header(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterTxHttp2Header(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -871,6 +856,7 @@ static void PrefilterTxHttp2Header(DetectEngineThreadCtx *det_ctx,
             (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                     &det_ctx->mtcu, &det_ctx->pmq,
                     buffer->inspect, buffer->inspect_len);
+            PREFILTER_PROFILING_ADD_BYTES(det_ctx, buffer->inspect_len);
         }
 
         local_id++;
@@ -893,11 +879,9 @@ static int PrefilterMpmHttp2HeaderRegister(DetectEngineCtx *de_ctx,
             pectx, PrefilterMpmHttp2HeaderFree, mpm_reg->name);
 }
 
-static int DetectEngineInspectHttp2Header(
-        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const DetectEngineAppInspectionEngine *engine,
-        const Signature *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
+static uint8_t DetectEngineInspectHttp2Header(DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
+        const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
 {
     uint32_t local_id = 0;
 

@@ -41,6 +41,7 @@
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-sigorder.h"
+#include "detect-engine-build.h"
 
 #include "pkt-var.h"
 #include "host.h"
@@ -427,6 +428,7 @@ void DetectFlowintFree(DetectEngineCtx *de_ctx, void *tmp)
 }
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 /**
  * \brief This is a helper funtion used for debugging purposes
  */

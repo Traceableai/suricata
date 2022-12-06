@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -34,6 +33,7 @@
 #include "tm-threads.h"
 
 #include "util-print.h"
+#include "util-time.h"
 #include "util-unittest.h"
 
 #include "util-debug.h"
@@ -73,28 +73,24 @@ SC_ATOMIC_EXTERN(unsigned int, cert_id);
 #define LOG_TLS_FIELD_SESSION_RESUMED   (1 << 10)
 #define LOG_TLS_FIELD_JA3               (1 << 11)
 #define LOG_TLS_FIELD_JA3S              (1 << 12)
+#define LOG_TLS_FIELD_CLIENT            (1 << 13) /**< client fields (issuer, subject, etc) */
+#define LOG_TLS_FIELD_CLIENT_CERT       (1 << 14)
+#define LOG_TLS_FIELD_CLIENT_CHAIN      (1 << 15)
 
 typedef struct {
     const char *name;
     uint64_t flag;
 } TlsFields;
 
-TlsFields tls_fields[] = {
-    { "version",         LOG_TLS_FIELD_VERSION },
-    { "subject",         LOG_TLS_FIELD_SUBJECT },
-    { "issuer",          LOG_TLS_FIELD_ISSUER },
-    { "serial",          LOG_TLS_FIELD_SERIAL },
-    { "fingerprint",     LOG_TLS_FIELD_FINGERPRINT },
-    { "not_before",      LOG_TLS_FIELD_NOTBEFORE },
-    { "not_after",       LOG_TLS_FIELD_NOTAFTER },
-    { "sni",             LOG_TLS_FIELD_SNI },
-    { "certificate",     LOG_TLS_FIELD_CERTIFICATE },
-    { "chain",           LOG_TLS_FIELD_CHAIN },
-    { "session_resumed", LOG_TLS_FIELD_SESSION_RESUMED },
-    { "ja3",             LOG_TLS_FIELD_JA3 },
-    { "ja3s",            LOG_TLS_FIELD_JA3S },
-    { NULL,              -1 }
-};
+TlsFields tls_fields[] = { { "version", LOG_TLS_FIELD_VERSION },
+    { "subject", LOG_TLS_FIELD_SUBJECT }, { "issuer", LOG_TLS_FIELD_ISSUER },
+    { "serial", LOG_TLS_FIELD_SERIAL }, { "fingerprint", LOG_TLS_FIELD_FINGERPRINT },
+    { "not_before", LOG_TLS_FIELD_NOTBEFORE }, { "not_after", LOG_TLS_FIELD_NOTAFTER },
+    { "sni", LOG_TLS_FIELD_SNI }, { "certificate", LOG_TLS_FIELD_CERTIFICATE },
+    { "chain", LOG_TLS_FIELD_CHAIN }, { "session_resumed", LOG_TLS_FIELD_SESSION_RESUMED },
+    { "ja3", LOG_TLS_FIELD_JA3 }, { "ja3s", LOG_TLS_FIELD_JA3S },
+    { "client", LOG_TLS_FIELD_CLIENT }, { "client_certificate", LOG_TLS_FIELD_CLIENT_CERT },
+    { "client_chain", LOG_TLS_FIELD_CLIENT_CHAIN }, { NULL, -1 } };
 
 typedef struct OutputTlsCtx_ {
     uint32_t flags;  /** Store mode */
@@ -255,13 +251,13 @@ static void JsonTlsLogJa3S(JsonBuilder *js, SSLState *ssl_state)
     }
 }
 
-static void JsonTlsLogCertificate(JsonBuilder *js, SSLState *ssl_state)
+static void JsonTlsLogCertificate(JsonBuilder *js, SSLStateConnp *connp)
 {
-    if (TAILQ_EMPTY(&ssl_state->server_connp.certs)) {
+    if (TAILQ_EMPTY(&connp->certs)) {
         return;
     }
 
-    SSLCertsChain *cert = TAILQ_FIRST(&ssl_state->server_connp.certs);
+    SSLCertsChain *cert = TAILQ_FIRST(&connp->certs);
     if (cert == NULL) {
         return;
     }
@@ -269,20 +265,67 @@ static void JsonTlsLogCertificate(JsonBuilder *js, SSLState *ssl_state)
     jb_set_base64(js, "certificate", cert->cert_data, cert->cert_len);
 }
 
-static void JsonTlsLogChain(JsonBuilder *js, SSLState *ssl_state)
+static void JsonTlsLogChain(JsonBuilder *js, SSLStateConnp *connp)
 {
-    if (TAILQ_EMPTY(&ssl_state->server_connp.certs)) {
+    if (TAILQ_EMPTY(&connp->certs)) {
         return;
     }
 
     jb_open_array(js, "chain");
 
     SSLCertsChain *cert;
-    TAILQ_FOREACH(cert, &ssl_state->server_connp.certs, next) {
+    TAILQ_FOREACH (cert, &connp->certs, next) {
         jb_append_base64(js, cert->cert_data, cert->cert_len);
     }
 
     jb_close(js);
+}
+
+static bool HasClientCert(SSLStateConnp *connp)
+{
+    if (connp->cert0_subject || connp->cert0_issuerdn)
+        return true;
+    return false;
+}
+
+static void JsonTlsLogClientCert(
+        JsonBuilder *js, SSLStateConnp *connp, const bool log_cert, const bool log_chain)
+{
+    if (connp->cert0_subject != NULL) {
+        jb_set_string(js, "subject", connp->cert0_subject);
+    }
+    if (connp->cert0_issuerdn != NULL) {
+        jb_set_string(js, "issuerdn", connp->cert0_issuerdn);
+    }
+    if (connp->cert0_fingerprint) {
+        jb_set_string(js, "fingerprint", connp->cert0_fingerprint);
+    }
+    if (connp->cert0_serial) {
+        jb_set_string(js, "serial", connp->cert0_serial);
+    }
+    if (connp->cert0_not_before != 0) {
+        char timebuf[64];
+        struct timeval tv;
+        tv.tv_sec = connp->cert0_not_before;
+        tv.tv_usec = 0;
+        CreateUtcIsoTimeString(&tv, timebuf, sizeof(timebuf));
+        jb_set_string(js, "notbefore", timebuf);
+    }
+    if (connp->cert0_not_after != 0) {
+        char timebuf[64];
+        struct timeval tv;
+        tv.tv_sec = connp->cert0_not_after;
+        tv.tv_usec = 0;
+        CreateUtcIsoTimeString(&tv, timebuf, sizeof(timebuf));
+        jb_set_string(js, "notafter", timebuf);
+    }
+
+    if (log_cert) {
+        JsonTlsLogCertificate(js, connp);
+    }
+    if (log_chain) {
+        JsonTlsLogChain(js, connp);
+    }
 }
 
 void JsonTlsLogJSONBasic(JsonBuilder *js, SSLState *ssl_state)
@@ -338,11 +381,11 @@ static void JsonTlsLogJSONCustom(OutputTlsCtx *tls_ctx, JsonBuilder *js,
 
     /* tls certificate */
     if (tls_ctx->fields & LOG_TLS_FIELD_CERTIFICATE)
-        JsonTlsLogCertificate(js, ssl_state);
+        JsonTlsLogCertificate(js, &ssl_state->server_connp);
 
     /* tls chain */
     if (tls_ctx->fields & LOG_TLS_FIELD_CHAIN)
-        JsonTlsLogChain(js, ssl_state);
+        JsonTlsLogChain(js, &ssl_state->server_connp);
 
     /* tls ja3_hash */
     if (tls_ctx->fields & LOG_TLS_FIELD_JA3)
@@ -351,6 +394,16 @@ static void JsonTlsLogJSONCustom(OutputTlsCtx *tls_ctx, JsonBuilder *js,
     /* tls ja3s */
     if (tls_ctx->fields & LOG_TLS_FIELD_JA3S)
         JsonTlsLogJa3S(js, ssl_state);
+
+    if (tls_ctx->fields & LOG_TLS_FIELD_CLIENT) {
+        const bool log_cert = (tls_ctx->fields & LOG_TLS_FIELD_CLIENT_CERT) != 0;
+        const bool log_chain = (tls_ctx->fields & LOG_TLS_FIELD_CLIENT_CHAIN) != 0;
+        if (HasClientCert(&ssl_state->client_connp)) {
+            jb_open_object(js, "client");
+            JsonTlsLogClientCert(js, &ssl_state->client_connp, log_cert, log_chain);
+            jb_close(js);
+        }
+    }
 }
 
 void JsonTlsLogJSONExtended(JsonBuilder *tjs, SSLState * state)
@@ -380,6 +433,12 @@ void JsonTlsLogJSONExtended(JsonBuilder *tjs, SSLState * state)
 
     /* tls ja3s */
     JsonTlsLogJa3S(tjs, state);
+
+    if (HasClientCert(&state->client_connp)) {
+        jb_open_object(tjs, "client");
+        JsonTlsLogClientCert(tjs, &state->client_connp, false, false);
+        jb_close(tjs);
+    }
 }
 
 static int JsonTlsLogger(ThreadVars *tv, void *thread_data, const Packet *p,
@@ -505,12 +564,18 @@ static OutputTlsCtx *OutputTlsInitCtx(ConfNode *conf)
         ConfNode *field;
         TAILQ_FOREACH(field, &custom->head, next)
         {
+            bool valid = false;
             TlsFields *valid_fields = tls_fields;
             for ( ; valid_fields->name != NULL; valid_fields++) {
                 if (strcasecmp(field->val, valid_fields->name) == 0) {
                     tls_ctx->fields |= valid_fields->flag;
+                    SCLogDebug("enabled %s", field->val);
+                    valid = true;
                     break;
                 }
+            }
+            if (!valid) {
+                SCLogWarning(SC_ERR_LOG_OUTPUT, "eve.tls: unknown 'custom' field '%s'", field->val);
             }
         }
     }
@@ -533,6 +598,24 @@ static OutputTlsCtx *OutputTlsInitCtx(ConfNode *conf)
                      "Both 'certificate' and 'chain' contains the top "
                      "certificate, so only one of them should be enabled "
                      "at a time");
+    }
+    if ((tls_ctx->fields & LOG_TLS_FIELD_CLIENT_CERT) &&
+            (tls_ctx->fields & LOG_TLS_FIELD_CLIENT_CHAIN)) {
+        SCLogWarning(SC_WARN_DUPLICATE_OUTPUT,
+                "Both 'client_certificate' and 'client_chain' contains the top "
+                "certificate, so only one of them should be enabled "
+                "at a time");
+    }
+
+    if ((tls_ctx->fields & LOG_TLS_FIELD_CLIENT) == 0) {
+        if (tls_ctx->fields & LOG_TLS_FIELD_CLIENT_CERT) {
+            SCLogConfig("enabling \"client\" as a dependency of \"client_certificate\"");
+            tls_ctx->fields |= LOG_TLS_FIELD_CLIENT;
+        }
+        if (tls_ctx->fields & LOG_TLS_FIELD_CLIENT_CHAIN) {
+            SCLogConfig("enabling \"client\" as a dependency of \"client_chain\"");
+            tls_ctx->fields |= LOG_TLS_FIELD_CLIENT;
+        }
     }
 
     return tls_ctx;
@@ -583,8 +666,7 @@ static OutputInitResult OutputTlsLogInitSub(ConfNode *conf, OutputCtx *parent_ct
 void JsonTlsLogRegister (void)
 {
     /* register as child of eve-log */
-    OutputRegisterTxSubModuleWithProgress(LOGGER_JSON_TLS, "eve-log",
-        "JsonTlsLog", "eve-log.tls", OutputTlsLogInitSub, ALPROTO_TLS,
-        JsonTlsLogger, TLS_HANDSHAKE_DONE, TLS_HANDSHAKE_DONE,
-        JsonTlsLogThreadInit, JsonTlsLogThreadDeinit, NULL);
+    OutputRegisterTxSubModuleWithProgress(LOGGER_JSON_TX, "eve-log", "JsonTlsLog", "eve-log.tls",
+            OutputTlsLogInitSub, ALPROTO_TLS, JsonTlsLogger, TLS_HANDSHAKE_DONE, TLS_HANDSHAKE_DONE,
+            JsonTlsLogThreadInit, JsonTlsLogThreadDeinit, NULL);
 }

@@ -44,7 +44,7 @@ const DIR_TOSERVER:        u8 = 0b0000_0100;
 const DIR_TOCLIENT:        u8 = 0b0000_1000;
 
 #[repr(C)]
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Direction {
     ToServer = 0x04,
     ToClient = 0x08,
@@ -52,6 +52,15 @@ pub enum Direction {
 
 impl Default for Direction {
     fn default() -> Self { Direction::ToServer }
+}
+
+impl std::fmt::Display for Direction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ToServer => write!(f, "toserver"),
+            Self::ToClient => write!(f, "toclient"),
+        }
+    }
 }
 
 impl From<u8> for Direction {
@@ -82,13 +91,14 @@ pub type AppProto = u16;
 pub const ALPROTO_UNKNOWN : AppProto = 0;
 pub static mut ALPROTO_FAILED : AppProto = 0; // updated during init
 
-pub const IPPROTO_TCP : i32 = 6;
-pub const IPPROTO_UDP : i32 = 17;
+pub const IPPROTO_TCP : u8 = 6;
+pub const IPPROTO_UDP : u8 = 17;
 
+/*
 macro_rules!BIT_U8 {
     ($x:expr) => (1 << $x);
 }
-
+*/
 macro_rules!BIT_U16 {
     ($x:expr) => (1 << $x);
 }
@@ -146,7 +156,7 @@ pub type SCHTPFileCloseHandleRange = extern "C" fn (
         flags: u16,
         c: *mut HttpRangeContainerBlock,
         data: *const u8,
-        data_len: u32);
+        data_len: u32) -> bool;
 pub type SCFileOpenFileWithId = extern "C" fn (
         file_container: &FileContainer,
         sbcfg: &StreamingBufferConfig,
@@ -171,10 +181,6 @@ pub type SCFilePrune = extern "C" fn (
         file_container: &FileContainer);
 pub type SCFileContainerRecycle = extern "C" fn (
         file_container: &FileContainer);
-
-pub type SCFileSetTx = extern "C" fn (
-        file: &FileContainer,
-        tx_id: u64);
 
 // A Suricata context that is passed in from C. This is alternative to
 // using functions from Suricata directly, so they can be wrapped so
@@ -201,7 +207,6 @@ pub struct SuricataContext {
     pub FileAppendGAP: SCFileAppendGAPById,
     pub FileContainerRecycle: SCFileContainerRecycle,
     pub FilePrune: SCFilePrune,
-    pub FileSetTx: SCFileSetTx,
 
     pub AppLayerRegisterParser: extern fn(parser: *const crate::applayer::RustParser, alproto: AppProto) -> std::os::raw::c_int,
 }
@@ -219,7 +224,7 @@ extern {
 
 pub static mut SC: Option<&'static SuricataContext> = None;
 
-pub fn init_ffi(context: &'static mut SuricataContext)
+pub fn init_ffi(context: &'static SuricataContext)
 {
     unsafe {
         SC = Some(context);
@@ -228,7 +233,7 @@ pub fn init_ffi(context: &'static mut SuricataContext)
 }
 
 #[no_mangle]
-pub extern "C" fn rs_init(context: &'static mut SuricataContext)
+pub extern "C" fn rs_init(context: &'static SuricataContext)
 {
     init_ffi(context);
 }
@@ -277,7 +282,7 @@ pub fn sc_app_layer_decoder_events_free_events(
 /// Opaque flow type (defined in C)
 pub enum Flow {}
 
-/// Extern functions operating on Flow.
+// Extern functions operating on Flow.
 extern {
     pub fn FlowGetLastTimeAsParts(flow: &Flow, secs: *mut u64, usecs: *mut u64);
     pub fn FlowGetFlags(flow: &Flow) -> u32;

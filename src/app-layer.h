@@ -29,9 +29,7 @@
 
 #include "stream-tcp-private.h"
 #include "stream-tcp-reassemble.h"
-#include "stream.h"
 
-#include "util-profiling.h"
 
 #include "rust.h"
 
@@ -175,5 +173,4 @@ static inline uint32_t StreamSliceGetGapSize(const StreamSlice *stream_slice)
 {
     return StreamSliceGetDataLen(stream_slice);
 }
-
 #endif

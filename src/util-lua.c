@@ -1,4 +1,4 @@
-/* Copyright (C) 2014 Open Information Security Foundation
+/* Copyright (C) 2014-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -35,6 +34,7 @@
 
 #include "util-print.h"
 #include "util-unittest.h"
+#include "util-luajit.h"
 
 #include "util-debug.h"
 
@@ -86,6 +86,8 @@ void LuaReturnState(lua_State *s)
 const char lua_ext_key_tv[] = "suricata:lua:tv:ptr";
 /* key for tx pointer */
 const char lua_ext_key_tx[] = "suricata:lua:tx:ptr";
+/* key for tx id */
+const char lua_ext_key_tx_id[] = "suricata:lua:tx_id";
 /* key for p (packet) pointer */
 const char lua_ext_key_p[] = "suricata:lua:pkt:ptr";
 /* key for f (flow) pointer */
@@ -101,6 +103,8 @@ const char lua_ext_key_pa[] = "suricata:lua:pkt:alert:ptr";
 const char lua_ext_key_s[] = "suricata:lua:signature:ptr";
 /* key for file pointer */
 const char lua_ext_key_file[] = "suricata:lua:file:ptr";
+/* key for DetectEngineThreadCtx pointer */
+const char lua_ext_key_det_ctx[] = "suricata:lua:det_ctx:ptr";
 /* key for streaming buffer pointer */
 const char lua_ext_key_streaming_buffer[] = "suricata:lua:streaming_buffer:ptr";
 
@@ -145,10 +149,22 @@ void *LuaStateGetTX(lua_State *luastate)
     return tx;
 }
 
-void LuaStateSetTX(lua_State *luastate, void *txptr)
+/** \brief get tx id from the lua state */
+uint64_t LuaStateGetTxId(lua_State *luastate)
+{
+    lua_pushlightuserdata(luastate, (void *)&lua_ext_key_tx_id);
+    lua_gettable(luastate, LUA_REGISTRYINDEX);
+    uint64_t tx_id = lua_tointeger(luastate, -1);
+    return tx_id;
+}
+void LuaStateSetTX(lua_State *luastate, void *txptr, const uint64_t tx_id)
 {
     lua_pushlightuserdata(luastate, (void *)&lua_ext_key_tx);
     lua_pushlightuserdata(luastate, (void *)txptr);
+    lua_settable(luastate, LUA_REGISTRYINDEX);
+
+    lua_pushlightuserdata(luastate, (void *)&lua_ext_key_tx_id);
+    lua_pushinteger(luastate, tx_id);
     lua_settable(luastate, LUA_REGISTRYINDEX);
 }
 
@@ -226,6 +242,22 @@ void LuaStateSetFile(lua_State *luastate, File *file)
 {
     lua_pushlightuserdata(luastate, (void *)&lua_ext_key_file);
     lua_pushlightuserdata(luastate, (void *)file);
+    lua_settable(luastate, LUA_REGISTRYINDEX);
+}
+
+/** \brief get DetectEngineThreadCtx pointer from the lua state */
+DetectEngineThreadCtx *LuaStateGetDetCtx(lua_State *luastate)
+{
+    lua_pushlightuserdata(luastate, (void *)&lua_ext_key_det_ctx);
+    lua_gettable(luastate, LUA_REGISTRYINDEX);
+    void *det_ctx = lua_touserdata(luastate, -1);
+    return (DetectEngineThreadCtx *)det_ctx;
+}
+
+void LuaStateSetDetCtx(lua_State *luastate, DetectEngineThreadCtx *det_ctx)
+{
+    lua_pushlightuserdata(luastate, (void *)&lua_ext_key_det_ctx);
+    lua_pushlightuserdata(luastate, (void *)det_ctx);
     lua_settable(luastate, LUA_REGISTRYINDEX);
 }
 

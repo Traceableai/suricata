@@ -31,16 +31,13 @@
  */
 
 #include "suricata-common.h"
-#include "decode.h"
 #include "decode-tcp.h"
+#include "decode.h"
 #include "decode-events.h"
 #include "util-unittest.h"
 #include "util-debug.h"
 #include "util-optimize.h"
 #include "flow.h"
-#include "util-profiling.h"
-#include "pkt-var.h"
-#include "host.h"
 
 #define SET_OPTS(dst, src) \
     (dst).type = (src).type; \
@@ -273,6 +270,9 @@ int DecodeTCP(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
 }
 
 #ifdef UNITTESTS
+#include "util-unittest-helper.h"
+#include "packet.h"
+
 static int TCPCalculateValidChecksumtest01(void)
 {
     uint16_t csum = 0;
@@ -404,7 +404,7 @@ static int TCPGetWscaleTest01(void)
 
     retval = 1;
 end:
-    PACKET_RECYCLE(p);
+    PacketRecycle(p);
     FlowShutdown();
     SCFree(p);
     return retval;
@@ -450,7 +450,7 @@ static int TCPGetWscaleTest02(void)
 
     retval = 1;
 end:
-    PACKET_RECYCLE(p);
+    PacketRecycle(p);
     FlowShutdown();
     SCFree(p);
     return retval;
@@ -495,7 +495,7 @@ static int TCPGetWscaleTest03(void)
 
     retval = 1;
 end:
-    PACKET_RECYCLE(p);
+    PacketRecycle(p);
     FlowShutdown();
     SCFree(p);
     return retval;
@@ -560,7 +560,7 @@ static int TCPGetSackTest01(void)
 
     retval = 1;
 end:
-    PACKET_RECYCLE(p);
+    PacketRecycle(p);
     FlowShutdown();
     SCFree(p);
     return retval;

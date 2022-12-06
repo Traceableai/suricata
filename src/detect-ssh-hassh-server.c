@@ -23,11 +23,11 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 
 #include "detect.h"
 #include "detect-parse.h"
+#include "detect-content.h"
 
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
@@ -173,7 +173,7 @@ static void DetectSshHasshServerHashSetupCallback(const DetectEngineCtx *de_ctx,
         for (u = 0; u < cd->content_len; u++)
         {
             if (isupper(cd->content[u])) {
-                cd->content[u] = tolower(cd->content[u]);
+                cd->content[u] = u8_tolower(cd->content[u]);
             }
         }
 

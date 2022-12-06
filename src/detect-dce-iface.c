@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2020 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -31,6 +31,7 @@
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-state.h"
+#include "detect-engine-build.h"
 #include "detect-dce-iface.h"
 
 #include "flow.h"
@@ -62,10 +63,6 @@ static void DetectDceIfaceRegisterTests(void);
 #endif
 static int g_dce_generic_list_id = 0;
 
-static int InspectDceGeneric(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
-        uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
-
 /**
  * \brief Registers the keyword handlers for the "dce_iface" keyword.
  */
@@ -83,23 +80,15 @@ void DetectDceIfaceRegister(void)
 
     g_dce_generic_list_id = DetectBufferTypeRegister("dce_generic");
 
+    DetectAppLayerInspectEngineRegister2("dce_generic", ALPROTO_DCERPC, SIG_FLAG_TOSERVER, 0,
+            DetectEngineInspectGenericList, NULL);
     DetectAppLayerInspectEngineRegister2(
-            "dce_generic", ALPROTO_DCERPC, SIG_FLAG_TOSERVER, 0, InspectDceGeneric, NULL);
-    DetectAppLayerInspectEngineRegister2(
-            "dce_generic", ALPROTO_SMB, SIG_FLAG_TOSERVER, 0, InspectDceGeneric, NULL);
+            "dce_generic", ALPROTO_SMB, SIG_FLAG_TOSERVER, 0, DetectEngineInspectGenericList, NULL);
 
+    DetectAppLayerInspectEngineRegister2("dce_generic", ALPROTO_DCERPC, SIG_FLAG_TOCLIENT, 0,
+            DetectEngineInspectGenericList, NULL);
     DetectAppLayerInspectEngineRegister2(
-            "dce_generic", ALPROTO_DCERPC, SIG_FLAG_TOCLIENT, 0, InspectDceGeneric, NULL);
-    DetectAppLayerInspectEngineRegister2(
-            "dce_generic", ALPROTO_SMB, SIG_FLAG_TOCLIENT, 0, InspectDceGeneric, NULL);
-}
-
-static int InspectDceGeneric(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
-        uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
-{
-    return DetectEngineInspectGenericList(
-            de_ctx, det_ctx, s, engine->smd, f, flags, alstate, txv, tx_id);
+            "dce_generic", ALPROTO_SMB, SIG_FLAG_TOCLIENT, 0, DetectEngineInspectGenericList, NULL);
 }
 
 /**
@@ -155,11 +144,9 @@ static int DetectDceIfaceSetup(DetectEngineCtx *de_ctx, Signature *s, const char
 {
     SCEnter();
 
-    if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_DCERPC &&
-        s->alproto != ALPROTO_SMB) {
-        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
+    if (DetectSignatureSetAppProto(s, ALPROTO_DCERPC) < 0)
         return -1;
-    }
+
     void *did = rs_dcerpc_iface_parse(arg);
     if (did == NULL) {
         SCLogError(SC_ERR_INVALID_SIGNATURE, "Error parsing dce_iface option in "
@@ -176,7 +163,6 @@ static int DetectDceIfaceSetup(DetectEngineCtx *de_ctx, Signature *s, const char
     sm->ctx = did;
 
     SigMatchAppendSMToList(s, sm, g_dce_generic_list_id);
-    s->init_data->init_flags |= SIG_FLAG_INIT_DCERPC;
     return 0;
 }
 
@@ -192,132 +178,6 @@ static void DetectDceIfaceFree(DetectEngineCtx *de_ctx, void *ptr)
 /************************************Unittests*********************************/
 
 #ifdef UNITTESTS
-
-/**
- * \test Test a valid dce_iface entry for a bind and bind_ack
- */
-static int DetectDceIfaceTestParse1(void)
-{
-    Signature *s = NULL;
-    ThreadVars th_v;
-    Packet *p = NULL;
-    Flow f;
-    TcpSession ssn;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    DetectEngineCtx *de_ctx = NULL;
-    DCERPCState *dcerpc_state = NULL;
-    int r = 0;
-
-    uint8_t dcerpc_bind[] = {
-        0x05, 0x00, 0x0b, 0x03, 0x10, 0x00, 0x00, 0x00,
-        0x48, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0xb8, 0x10, 0xb8, 0x10, 0x00, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
-        0x6a, 0x28, 0x19, 0x39, 0x0c, 0xb1, 0xd0, 0x11,
-        0x9b, 0xa8, 0x00, 0xc0, 0x4f, 0xd9, 0x2e, 0xf5,
-        0x00, 0x00, 0x00, 0x00, 0x04, 0x5d, 0x88, 0x8a,
-        0xeb, 0x1c, 0xc9, 0x11, 0x9f, 0xe8, 0x08, 0x00,
-        0x2b, 0x10, 0x48, 0x60, 0x02, 0x00, 0x00, 0x00,
-    };
-
-    uint8_t dcerpc_bindack[] = {
-        0x05, 0x00, 0x0c, 0x03, 0x10, 0x00, 0x00, 0x00,
-        0x44, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0xb8, 0x10, 0xb8, 0x10, 0x26, 0x3d, 0x00, 0x00,
-        0x0c, 0x00, 0x5c, 0x50, 0x49, 0x50, 0x45, 0x5c,
-        0x6c, 0x73, 0x61, 0x73, 0x73, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x04, 0x5d, 0x88, 0x8a, 0xeb, 0x1c, 0xc9, 0x11,
-        0x9f, 0xe8, 0x08, 0x00, 0x2b, 0x10, 0x48, 0x60,
-        0x02, 0x00, 0x00, 0x00
-    };
-
-    uint8_t dcerpc_request[] = {
-        0x05, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x00,
-        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00,
-        0xad, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    };
-
-    uint32_t dcerpc_bind_len = sizeof(dcerpc_bind);
-    uint32_t dcerpc_bindack_len = sizeof(dcerpc_bindack);
-    uint32_t dcerpc_request_len = sizeof(dcerpc_request);
-
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_DCERPC;
-
-    StreamTcpInitConfig(true);
-
-    de_ctx = DetectEngineCtxInit();
-    FAIL_IF(de_ctx == NULL);
-    de_ctx->flags |= DE_QUIET;
-
-    s = DetectEngineAppendSig(de_ctx,"alert tcp any any -> any any "
-                                   "(msg:\"DCERPC\"; "
-                                   "dce_iface:3919286a-b10c-11d0-9ba8-00c04fd92ef5,=0,any_frag; "
-                                   "sid:1;)");
-    FAIL_IF(s == NULL);
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    SCLogDebug("handling to_server chunk");
-
-    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
-                            STREAM_TOSERVER | STREAM_START, dcerpc_bind,
-                            dcerpc_bind_len);
-    FAIL_IF(r != 0);
-
-    dcerpc_state = f.alstate;
-    FAIL_IF(dcerpc_state == NULL);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-    FAIL_IF(PacketAlertCheck(p, 1));
-
-    SCLogDebug("handling to_client chunk");
-
-    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
-                            STREAM_TOCLIENT, dcerpc_bindack,
-                            dcerpc_bindack_len);
-    FAIL_IF(r != 0);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-    FAIL_IF(PacketAlertCheck(p, 1));
-
-    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
-                            STREAM_TOSERVER, dcerpc_request,
-                            dcerpc_request_len);
-    FAIL_IF(r != 0);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    FAIL_IF(!PacketAlertCheck(p, 1));
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    DetectEngineCtxFree(de_ctx);
-    StreamTcpFreeConfig(true);
-    FLOW_DESTROY(&f);
-    UTHFreePackets(&p, 1);
-    PASS;
-}
 
 /* Disabled because of bug_753.  Would be enabled, once we rewrite
  * dce parser */
@@ -659,179 +519,12 @@ static int DetectDceIfaceTestParse13(void)
 
 #endif
 
-/**
- * \test Test a valid dce_iface entry for a bind and bind_ack
- */
-static int DetectDceIfaceTestParse2(void)
-{
-    int result = 0;
-    Signature *s = NULL;
-    ThreadVars th_v;
-    Packet *p = NULL;
-    Flow f;
-    TcpSession ssn;
-    DetectEngineThreadCtx *det_ctx = NULL;
-    DetectEngineCtx *de_ctx = NULL;
-    DCERPCState *dcerpc_state = NULL;
-    int r = 0;
-
-    uint8_t dcerpc_bind[] = {
-        0x05, 0x00, 0x0b, 0x03, 0x10, 0x00, 0x00, 0x00,
-        0x48, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0xb8, 0x10, 0xb8, 0x10, 0x00, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
-        0x6a, 0x28, 0x19, 0x39, 0x0c, 0xb1, 0xd0, 0x11,
-        0x9b, 0xa8, 0x00, 0xc0, 0x4f, 0xd9, 0x2e, 0xf5,
-        0x00, 0x00, 0x00, 0x00, 0x04, 0x5d, 0x88, 0x8a,
-        0xeb, 0x1c, 0xc9, 0x11, 0x9f, 0xe8, 0x08, 0x00,
-        0x2b, 0x10, 0x48, 0x60, 0x02, 0x00, 0x00, 0x00,
-    };
-
-    uint8_t dcerpc_bindack[] = {
-        0x05, 0x00, 0x0c, 0x03, 0x10, 0x00, 0x00, 0x00,
-        0x44, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0xb8, 0x10, 0xb8, 0x10, 0x26, 0x3d, 0x00, 0x00,
-        0x0c, 0x00, 0x5c, 0x50, 0x49, 0x50, 0x45, 0x5c,
-        0x6c, 0x73, 0x61, 0x73, 0x73, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x04, 0x5d, 0x88, 0x8a, 0xeb, 0x1c, 0xc9, 0x11,
-        0x9f, 0xe8, 0x08, 0x00, 0x2b, 0x10, 0x48, 0x60,
-        0x02, 0x00, 0x00, 0x00
-    };
-
-    uint8_t dcerpc_request[] = {
-        0x05, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x00,
-        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00,
-        0xad, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    };
-
-    uint32_t dcerpc_bind_len = sizeof(dcerpc_bind);
-    uint32_t dcerpc_bindack_len = sizeof(dcerpc_bindack);
-    uint32_t dcerpc_request_len = sizeof(dcerpc_request);
-
-    AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
-
-    memset(&th_v, 0, sizeof(th_v));
-    memset(&p, 0, sizeof(p));
-    memset(&f, 0, sizeof(f));
-    memset(&ssn, 0, sizeof(ssn));
-
-    p = UTHBuildPacket(NULL, 0, IPPROTO_TCP);
-
-    FLOW_INITIALIZE(&f);
-    f.protoctx = (void *)&ssn;
-    f.proto = IPPROTO_TCP;
-    p->flow = &f;
-    p->flowflags |= FLOW_PKT_TOSERVER;
-    p->flowflags |= FLOW_PKT_ESTABLISHED;
-    p->flags |= PKT_HAS_FLOW|PKT_STREAM_EST;
-    f.alproto = ALPROTO_DCERPC;
-
-    StreamTcpInitConfig(true);
-
-    de_ctx = DetectEngineCtxInit();
-    if (de_ctx == NULL)
-        goto end;
-
-    de_ctx->flags |= DE_QUIET;
-
-    s = DetectEngineAppendSig(de_ctx, "alert tcp any any -> any any "
-                                   "(msg:\"DCERPC\"; "
-                                   "dce_iface:3919286a-b10c-11d0-9ba8-00c04fd92ef5,=0; "
-                                   "sid:1;)");
-    if (s == NULL)
-        goto end;
-
-    SigGroupBuild(de_ctx);
-    DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
-
-    FLOWLOCK_WRLOCK(&f);
-    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
-                            STREAM_TOSERVER | STREAM_START, dcerpc_bind,
-                            dcerpc_bind_len);
-    if (r != 0) {
-        SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
-        goto end;
-    }
-    FLOWLOCK_UNLOCK(&f);
-
-    dcerpc_state = f.alstate;
-    if (dcerpc_state == NULL) {
-        SCLogDebug("no dcerpc state: ");
-        goto end;
-    }
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    if (PacketAlertCheck(p, 1))
-        goto end;
-
-    FLOWLOCK_WRLOCK(&f);
-    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
-                            STREAM_TOCLIENT, dcerpc_bindack,
-                            dcerpc_bindack_len);
-    if (r != 0) {
-        SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
-        goto end;
-    }
-    FLOWLOCK_UNLOCK(&f);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    if (PacketAlertCheck(p, 1)) {
-        SCLogDebug("sig 1 matched but shouldn't have: ");
-        goto end;
-    }
-
-    FLOWLOCK_WRLOCK(&f);
-    r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_DCERPC,
-                            STREAM_TOSERVER, dcerpc_request,
-                            dcerpc_request_len);
-    if (r != 0) {
-        SCLogDebug("AppLayerParse for dcerpc failed.  Returned %" PRId32, r);
-        FLOWLOCK_UNLOCK(&f);
-        goto end;
-    }
-    FLOWLOCK_UNLOCK(&f);
-
-    /* do detect */
-    SigMatchSignatures(&th_v, de_ctx, det_ctx, p);
-
-    if (!PacketAlertCheck(p, 1)) {
-        SCLogDebug("sig 1 matched but shouldn't have: ");
-        goto end;
-    }
-
-    result = 1;
-
- end:
-    if (alp_tctx != NULL)
-        AppLayerParserThreadCtxFree(alp_tctx);
-    SigGroupCleanup(de_ctx);
-    SigCleanSignatures(de_ctx);
-
-    DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
-    DetectEngineCtxFree(de_ctx);
-
-    StreamTcpFreeConfig(true);
-    FLOW_DESTROY(&f);
-    UTHFreePackets(&p, 1);
-    return result;
-}
-
 static void DetectDceIfaceRegisterTests(void)
 {
-    UtRegisterTest("DetectDceIfaceTestParse1", DetectDceIfaceTestParse1);
     /* Disabled because of bug_753.  Would be enabled, once we rewrite
      * dce parser */
 #if 0
     UtRegisterTest("DetectDceIfaceTestParse13", DetectDceIfaceTestParse13, 1);
 #endif
-    UtRegisterTest("DetectDceIfaceTestParse2", DetectDceIfaceTestParse2);
 }
 #endif /* UNITTESTS */

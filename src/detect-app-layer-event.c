@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2020 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -33,6 +33,7 @@
 #include "detect-parse.h"
 #include "detect-engine.h"
 #include "detect-engine-state.h"
+#include "detect-engine-build.h"
 #include "detect-app-layer-event.h"
 
 #include "flow.h"
@@ -42,11 +43,23 @@
 #include "decode-events.h"
 #include "util-byte.h"
 #include "util-debug.h"
+#include "util-enum.h"
+#include "util-profiling.h"
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "stream-tcp-util.h"
 
 #define MAX_ALPROTO_NAME 50
+
+typedef struct DetectAppLayerEventData_ {
+    AppProto alproto;
+    uint8_t event_id;
+
+    /* it's used to check if there are event set into the detect engine */
+    bool needs_detctx;
+
+    char *arg;
+} DetectAppLayerEventData;
 
 static int DetectAppLayerEventPktMatch(DetectEngineThreadCtx *det_ctx,
                                        Packet *p, const Signature *s, const SigMatchCtx *ctx);
@@ -55,7 +68,7 @@ static int DetectAppLayerEventSetupP1(DetectEngineCtx *, Signature *, const char
 static void DetectAppLayerEventRegisterTests(void);
 #endif
 static void DetectAppLayerEventFree(DetectEngineCtx *, void *);
-static int DetectEngineAptEventInspect(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+static uint8_t DetectEngineAptEventInspect(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
         uint8_t flags, void *alstate, void *tx, uint64_t tx_id);
 static int g_applayer_events_list_id = 0;
@@ -85,7 +98,7 @@ void DetectAppLayerEventRegister(void)
     g_applayer_events_list_id = DetectBufferTypeGetByName("app-layer-events");
 }
 
-static int DetectEngineAptEventInspect(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+static uint8_t DetectEngineAptEventInspect(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
         uint8_t flags, void *alstate, void *tx, uint64_t tx_id)
 {
@@ -145,7 +158,7 @@ static DetectAppLayerEventData *DetectAppLayerEventParsePkt(const char *arg,
 {
     int event_id = 0;
     int r = AppLayerGetPktEventInfo(arg, &event_id);
-    if (r < 0) {
+    if (r < 0 || r > UINT8_MAX) {
         SCLogError(SC_ERR_INVALID_SIGNATURE, "app-layer-event keyword "
                    "supplied with packet based event - \"%s\" that isn't "
                    "supported yet.", arg);
@@ -155,7 +168,7 @@ static DetectAppLayerEventData *DetectAppLayerEventParsePkt(const char *arg,
     DetectAppLayerEventData *aled = SCCalloc(1, sizeof(DetectAppLayerEventData));
     if (unlikely(aled == NULL))
         return NULL;
-    aled->event_id = event_id;
+    aled->event_id = (uint8_t)event_id;
     *event_type = APP_LAYER_EVENT_TYPE_PACKET;
 
     return aled;
@@ -231,7 +244,11 @@ static int DetectAppLayerEventParseAppP2(DetectAppLayerEventData *data,
             return -3;
         }
     }
-    data->event_id = event_id;
+    if (event_id > UINT8_MAX) {
+        SCLogWarning(SC_ERR_INVALID_SIGNATURE, "app-layer-event keyword's id has invalid value");
+        return -4;
+    }
+    data->event_id = (uint8_t)event_id;
 
     return 0;
 }
@@ -414,6 +431,7 @@ int DetectAppLayerEventPrepare(DetectEngineCtx *de_ctx, Signature *s)
 #include "stream-tcp-private.h"
 #include "stream-tcp-reassemble.h"
 #include "stream-tcp.h"
+#include "detect-engine-alert.h"
 
 #define APP_LAYER_EVENT_TEST_MAP_EVENT1 0
 #define APP_LAYER_EVENT_TEST_MAP_EVENT2 1

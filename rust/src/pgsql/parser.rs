@@ -21,7 +21,7 @@
 
 use crate::common::nom7::take_until_and_consume;
 use nom7::branch::alt;
-use nom7::bytes::streaming::{tag, tag_no_case, take, take_until, take_until1};
+use nom7::bytes::streaming::{tag, take, take_until, take_until1};
 use nom7::character::streaming::{alphanumeric1, char};
 use nom7::combinator::{all_consuming, cond, eof, map_parser, opt, peek, rest, verify};
 use nom7::error::{make_error, ErrorKind};
@@ -37,7 +37,7 @@ pub const PGSQL_DUMMY_PROTO_MAJOR: u16 = 1234; // 0x04d2
 pub const PGSQL_DUMMY_PROTO_MINOR_SSL: u16 = 5679; //0x162f
 pub const _PGSQL_DUMMY_PROTO_MINOR_GSSAPI: u16 = 5680; // 0x1630
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PgsqlParameters {
     // startup parameters
     User,
@@ -113,27 +113,26 @@ impl From<&[u8]> for PgsqlParameters {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PgsqlParameter {
     pub name: PgsqlParameters,
     pub value: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PgsqlStartupParameters {
     pub user: PgsqlParameter,
-    pub database: Option<PgsqlParameter>,
     pub optional_params: Option<Vec<PgsqlParameter>>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DummyStartupPacket {
     length: u32,
     proto_major: u16,
     proto_minor: u16,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct StartupPacket {
     pub length: u32,
     pub proto_major: u16,
@@ -141,20 +140,20 @@ pub struct StartupPacket {
     pub params: PgsqlStartupParameters,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RegularPacket {
     pub identifier: u8,
     pub length: u32,
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PgsqlErrorNoticeMessageField {
     pub field_type: PgsqlErrorNoticeFieldType,
     pub field_value: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ErrorNoticeMessage {
     pub identifier: u8,
     pub length: u32,
@@ -171,7 +170,7 @@ impl ErrorNoticeMessage {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SSLResponseMessage {
     SSLAccepted,
     SSLRejected,
@@ -208,14 +207,14 @@ impl From<char> for SSLResponseMessage {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ParameterStatusMessage {
     pub identifier: u8,
     pub length: u32,
     pub param: PgsqlParameter,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct BackendKeyDataMessage {
     pub identifier: u8,
     pub length: u32,
@@ -223,7 +222,7 @@ pub struct BackendKeyDataMessage {
     pub secret_key: u32,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ConsolidatedDataRowPacket {
     pub identifier: u8,
     pub length: u32,
@@ -231,14 +230,14 @@ pub struct ConsolidatedDataRowPacket {
     pub data_size: u64,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ReadyForQueryMessage {
     pub identifier: u8,
     pub length: u32,
     pub transaction_status: u8,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct NotificationResponse {
     pub identifier: u8,
     pub length: u32,
@@ -248,7 +247,7 @@ pub struct NotificationResponse {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PgsqlBEMessage {
     SSLResponse(SSLResponseMessage),
     ErrorResponse(ErrorNoticeMessage),
@@ -270,6 +269,7 @@ pub enum PgsqlBEMessage {
     RowDescription(RowDescriptionMessage),
     ConsolidatedDataRow(ConsolidatedDataRowPacket),
     NotificationResponse(NotificationResponse),
+    UnknownMessageType(RegularPacket),
 }
 
 impl PgsqlBEMessage {
@@ -301,6 +301,7 @@ impl PgsqlBEMessage {
             }
             PgsqlBEMessage::ConsolidatedDataRow(_) => "data_row",
             PgsqlBEMessage::NotificationResponse(_) => "notification_response",
+            PgsqlBEMessage::UnknownMessageType(_) => "unknown_message_type"
         }
     }
 
@@ -314,7 +315,7 @@ impl PgsqlBEMessage {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SASLAuthenticationMechanism {
     ScramSha256,
     ScramSha256Plus,
@@ -330,13 +331,13 @@ impl SASLAuthenticationMechanism {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TerminationMessage {
     pub identifier: u8,
     pub length: u32,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PgsqlFEMessage {
     SSLRequest(DummyStartupPacket),
     StartupMessage(StartupPacket),
@@ -361,7 +362,7 @@ impl PgsqlFEMessage {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AuthenticationMessage {
     pub identifier: u8,
     pub length: u32,
@@ -369,7 +370,7 @@ pub struct AuthenticationMessage {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SASLInitialResponsePacket {
     pub identifier: u8,
     pub length: u32,
@@ -378,7 +379,7 @@ pub struct SASLInitialResponsePacket {
     pub sasl_param: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AuthenticationSASLMechanismMessage {
     identifier: u8,
     length: u32,
@@ -386,7 +387,7 @@ pub struct AuthenticationSASLMechanismMessage {
     auth_mechanisms: Vec<SASLAuthenticationMechanism>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RowField {
     pub field_name: Vec<u8>,
     pub table_oid: u32,
@@ -400,7 +401,7 @@ pub struct RowField {
     pub format_code: u16,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RowDescriptionMessage {
     pub identifier: u8,
     pub length: u32,
@@ -408,14 +409,14 @@ pub struct RowDescriptionMessage {
     pub fields: Vec<RowField>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ColumnFieldValue {
     // Can be 0, or -1 as a special NULL column value
     pub value_length: i32,
     pub value: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PgsqlErrorNoticeFieldType {
     SeverityLocalizable,
     SeverityNonLocalizable,
@@ -524,28 +525,6 @@ impl From<u8> for PgsqlErrorNoticeFieldType {
     }
 }
 
-fn parse_user_param(i: &[u8]) -> IResult<&[u8], PgsqlParameter> {
-    let (i, param_name) = tag_no_case("user")(i)?;
-    let (i, _) = tag("\x00")(i)?;
-    let (i, param_value) = take_until1("\x00")(i)?;
-    let (i, _) = tag("\x00")(i)?;
-    Ok((i, PgsqlParameter {
-        name: PgsqlParameters::from(param_name),
-        value: param_value.to_vec(),
-    }))
-}
-
-fn parse_database_param(i: &[u8]) -> IResult<&[u8], PgsqlParameter> {
-    let (i, param_name) = tag_no_case("database")(i)?;
-    let (i, _) = tag("\x00")(i)?;
-    let (i, param_value) = take_until1("\x00")(i)?;
-    let (i, _) = tag("\x00")(i)?;
-    Ok((i, PgsqlParameter {
-        name: PgsqlParameters::from(param_name),
-        value: param_value.to_vec(),
-    }))
-}
-
 // Currently the set of parameters that could trigger a ParameterStatus message is fixed:
 // server_version
 // server_encoding
@@ -565,7 +544,7 @@ fn parse_database_param(i: &[u8]) -> IResult<&[u8], PgsqlParameter> {
 fn pgsql_parse_generic_parameter(i: &[u8]) -> IResult<&[u8], PgsqlParameter> {
     let (i, param_name) = take_until1("\x00")(i)?;
     let (i, _) = tag("\x00")(i)?;
-    let (i, param_value) = take_until1("\x00")(i)?;
+    let (i, param_value) = take_until("\x00")(i)?;
     let (i, _) = tag("\x00")(i)?;
     Ok((i, PgsqlParameter {
         name: PgsqlParameters::from(param_name),
@@ -574,14 +553,28 @@ fn pgsql_parse_generic_parameter(i: &[u8]) -> IResult<&[u8], PgsqlParameter> {
 }
 
 pub fn pgsql_parse_startup_parameters(i: &[u8]) -> IResult<&[u8], PgsqlStartupParameters> {
-    let (i, user) = parse_user_param(i)?;
-    let (i, database) = opt(parse_database_param)(i)?;
-    let (i, optional) = opt(terminated(many1(pgsql_parse_generic_parameter), tag("\x00")))(i)?;
-    Ok((i, PgsqlStartupParameters{
-        user,
-        database,
-        optional_params: optional,
-    }))
+    let (i, mut optional) = opt(terminated(many1(pgsql_parse_generic_parameter), tag("\x00")))(i)?;
+    if let Some(ref mut params) = optional {
+        let mut user = PgsqlParameter{name: PgsqlParameters::User, value: Vec::new() };
+        let mut index: usize = 0;
+        for j in 0..params.len() {
+            if params[j].name == PgsqlParameters::User {
+                user.value.extend_from_slice(&params[j].value);
+                index = j;
+            }
+        }
+        params.remove(index);
+        if user.value.is_empty() {
+            return Err(Err::Error(make_error(i, ErrorKind::Tag)));
+        }
+        return Ok((i, PgsqlStartupParameters{
+            user,
+            optional_params: if !params.is_empty() {
+                optional
+            } else { None },
+        }));
+    }
+    return Err(Err::Error(make_error(i, ErrorKind::Tag)));
 }
 
 fn parse_sasl_initial_response_payload(i: &[u8]) -> IResult<&[u8], (SASLAuthenticationMechanism, u32, Vec<u8>)> {
@@ -773,7 +766,7 @@ fn pgsql_parse_authentication_message<'a>(i: &'a [u8]) -> IResult<&'a [u8], Pgsq
                                 })))
                 },
                 12 => {
-                    let (i, signature) = rest(i)?;
+                    let (i, signature) = take(length - 8)(i)?;
                     Ok((i, PgsqlBEMessage::AuthenticationSASLFinal(
                                 AuthenticationMessage {
                                     identifier,
@@ -901,7 +894,7 @@ fn add_up_data_size(columns: Vec<ColumnFieldValue>) -> u64 {
     for field in columns {
         // -1 value means data value is NULL, let's not add that up
         if field.value_length > 0 {
-            data_size = data_size + field.value_length as u64;
+            data_size += field.value_length as u64;
         }
     }
     data_size
@@ -1065,24 +1058,30 @@ fn parse_notification_response(i: &[u8]) -> IResult<&[u8], PgsqlBEMessage> {
 
 pub fn pgsql_parse_response(i: &[u8]) -> IResult<&[u8], PgsqlBEMessage> {
     let (i, pseudo_header) = peek(tuple((be_u8, be_u32)))(i)?;
-    let (i, message) = map_parser(
-        take(pseudo_header.1 + 1),
-        |b| {
+    let (i, message) =
             match pseudo_header.0 {
-                b'E' => pgsql_parse_error_response(b),
-                b'K' => parse_backend_key_data_message(b),
-                b'N' => pgsql_parse_notice_response(b),
-                b'R' => pgsql_parse_authentication_message(b),
-                b'S' => parse_parameter_status_message(b),
-                b'C' => parse_command_complete(b),
-                b'Z' => parse_ready_for_query(b),
-                b'T' => parse_row_description(b),
-                b'A' => parse_notification_response(b),
-                b'D' => parse_consolidated_data_row(b),
-                // _ => {} // TODO add an unknown message type here?
-                _ => return Err(Err::Error(make_error(i, ErrorKind::Switch))),
-            }
-        })(i)?;
+                b'E' => pgsql_parse_error_response(i)?,
+                b'K' => parse_backend_key_data_message(i)?,
+                b'N' => pgsql_parse_notice_response(i)?,
+                b'R' => pgsql_parse_authentication_message(i)?,
+                b'S' => parse_parameter_status_message(i)?,
+                b'C' => parse_command_complete(i)?,
+                b'Z' => parse_ready_for_query(i)?,
+                b'T' => parse_row_description(i)?,
+                b'A' => parse_notification_response(i)?,
+                b'D' => parse_consolidated_data_row(i)?,
+                // _ => return Err(Err::Error(make_error(i, ErrorKind::Switch))),
+                _ => {
+                    let (i, payload) = rest(i)?;
+                    let unknown = PgsqlBEMessage::UnknownMessageType (RegularPacket{
+                        identifier: pseudo_header.0,
+                        length: pseudo_header.1,
+                        payload: payload.to_vec(),
+                    });
+                    (i, unknown)
+                }
+
+            };
     Ok((i, message))
 }
 
@@ -1158,10 +1157,11 @@ mod tests {
             name: PgsqlParameters::Database,
             value: br#"mailstore"#.to_vec(),
         };
+        let mut database_param: Vec<PgsqlParameter> = Vec::new();
+        database_param.push(database);
         let params = PgsqlStartupParameters {
             user,
-            database: Some(database),
-            optional_params: None,
+            optional_params: Some(database_param),
         };
         let expected_result = PgsqlFEMessage::StartupMessage(StartupPacket {
             length: 38,
@@ -1198,7 +1198,6 @@ mod tests {
         };
         let params = PgsqlStartupParameters {
             user,
-            database: None,
             optional_params: None,
         };
         let expected_result = PgsqlFEMessage::StartupMessage(StartupPacket {
@@ -1872,16 +1871,14 @@ mod tests {
             0x2b, 0x4a, 0x36, 0x79, 0x78, 0x72, 0x66, 0x77, 0x2f, 0x7a, 0x7a, 0x70, 0x38, 0x59,
             0x54, 0x39, 0x65, 0x78, 0x56, 0x37, 0x73, 0x38, 0x3d,
         ];
-        let result_err = pgsql_parse_response(bad_buf);
-        match result_err {
-            Err(Err::Error(err)) => {
-                assert_eq!(err.code, ErrorKind::Switch);
-            }
-            Err(Err::Incomplete(_)) => {
-                panic!("Unexpected Incomplete, should be ErrorKind::Switch");
-            }
-            _ => panic!("Unexpected behavior, expected Error"),
-        }
+        let (remainder, result) = pgsql_parse_response(bad_buf).expect("parsing sasl final response failed");
+        let res = PgsqlBEMessage::UnknownMessageType(RegularPacket {
+            identifier: b'`',
+            length: 54,
+            payload: bad_buf.to_vec(),
+        });
+        assert_eq!(result, res);
+        assert!(remainder.is_empty());
     }
 
     #[test]
@@ -2076,7 +2073,69 @@ mod tests {
             }
         }
 
-        // TODO keep adding more messages
+        //A series of response messages from the backend:
+        // R   ·    S   ·application_name
+        // S   ·client_encoding UTF8 S   ·DateStyle ISO, MDY
+        // S   &default_transaction_read_only off S   ·in_hot_standby off
+        // S   ·integer_datetimes on S   ·IntervalStyle postgres
+        // S   ·is_superuser off S   ·server_encoding UTF8
+        // S   ·server_version 14.5 S   "session_authorization ctfpost
+        // S   #standard_conforming_strings on S   ·TimeZone Europe/Paris
+        // K      ···O··Z   ·I
+        let buf = &[
+            0x52, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x00, 0x53, 0x00, 0x00, 0x00, 0x16, 0x61, 0x70,
+            0x70, 0x6c, 0x69, 0x63, 0x61, 0x74, 0x69, 0x6f,
+            0x6e, 0x5f, 0x6e, 0x61, 0x6d, 0x65, 0x00, 0x00,
+            0x53, 0x00, 0x00, 0x00, 0x19, 0x63, 0x6c, 0x69,
+            0x65, 0x6e, 0x74, 0x5f, 0x65, 0x6e, 0x63, 0x6f,
+            0x64, 0x69, 0x6e, 0x67, 0x00, 0x55, 0x54, 0x46,
+            0x38, 0x00, 0x53, 0x00, 0x00, 0x00, 0x17, 0x44,
+            0x61, 0x74, 0x65, 0x53, 0x74, 0x79, 0x6c, 0x65,
+            0x00, 0x49, 0x53, 0x4f, 0x2c, 0x20, 0x4d, 0x44,
+            0x59, 0x00, 0x53, 0x00, 0x00, 0x00, 0x26, 0x64,
+            0x65, 0x66, 0x61, 0x75, 0x6c, 0x74, 0x5f, 0x74,
+            0x72, 0x61, 0x6e, 0x73, 0x61, 0x63, 0x74, 0x69,
+            0x6f, 0x6e, 0x5f, 0x72, 0x65, 0x61, 0x64, 0x5f,
+            0x6f, 0x6e, 0x6c, 0x79, 0x00, 0x6f, 0x66, 0x66,
+            0x00, 0x53, 0x00, 0x00, 0x00, 0x17, 0x69, 0x6e,
+            0x5f, 0x68, 0x6f, 0x74, 0x5f, 0x73, 0x74, 0x61,
+            0x6e, 0x64, 0x62, 0x79, 0x00, 0x6f, 0x66, 0x66,
+            0x00, 0x53, 0x00, 0x00, 0x00, 0x19, 0x69, 0x6e,
+            0x74, 0x65, 0x67, 0x65, 0x72, 0x5f, 0x64, 0x61,
+            0x74, 0x65, 0x74, 0x69, 0x6d, 0x65, 0x73, 0x00,
+            0x6f, 0x6e, 0x00, 0x53, 0x00, 0x00, 0x00, 0x1b,
+            0x49, 0x6e, 0x74, 0x65, 0x72, 0x76, 0x61, 0x6c,
+            0x53, 0x74, 0x79, 0x6c, 0x65, 0x00, 0x70, 0x6f,
+            0x73, 0x74, 0x67, 0x72, 0x65, 0x73, 0x00, 0x53,
+            0x00, 0x00, 0x00, 0x15, 0x69, 0x73, 0x5f, 0x73,
+            0x75, 0x70, 0x65, 0x72, 0x75, 0x73, 0x65, 0x72,
+            0x00, 0x6f, 0x66, 0x66, 0x00, 0x53, 0x00, 0x00,
+            0x00, 0x19, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72,
+            0x5f, 0x65, 0x6e, 0x63, 0x6f, 0x64, 0x69, 0x6e,
+            0x67, 0x00, 0x55, 0x54, 0x46, 0x38, 0x00, 0x53,
+            0x00, 0x00, 0x00, 0x18, 0x73, 0x65, 0x72, 0x76,
+            0x65, 0x72, 0x5f, 0x76, 0x65, 0x72, 0x73, 0x69,
+            0x6f, 0x6e, 0x00, 0x31, 0x34, 0x2e, 0x35, 0x00,
+            0x53, 0x00, 0x00, 0x00, 0x22, 0x73, 0x65, 0x73,
+            0x73, 0x69, 0x6f, 0x6e, 0x5f, 0x61, 0x75, 0x74,
+            0x68, 0x6f, 0x72, 0x69, 0x7a, 0x61, 0x74, 0x69,
+            0x6f, 0x6e, 0x00, 0x63, 0x74, 0x66, 0x70, 0x6f,
+            0x73, 0x74, 0x00, 0x53, 0x00, 0x00, 0x00, 0x23,
+            0x73, 0x74, 0x61, 0x6e, 0x64, 0x61, 0x72, 0x64,
+            0x5f, 0x63, 0x6f, 0x6e, 0x66, 0x6f, 0x72, 0x6d,
+            0x69, 0x6e, 0x67, 0x5f, 0x73, 0x74, 0x72, 0x69,
+            0x6e, 0x67, 0x73, 0x00, 0x6f, 0x6e, 0x00, 0x53,
+            0x00, 0x00, 0x00, 0x1a, 0x54, 0x69, 0x6d, 0x65,
+            0x5a, 0x6f, 0x6e, 0x65, 0x00, 0x45, 0x75, 0x72,
+            0x6f, 0x70, 0x65, 0x2f, 0x50, 0x61, 0x72, 0x69,
+            0x73, 0x00, 0x4b, 0x00, 0x00, 0x00, 0x0c, 0x00,
+            0x00, 0x0b, 0x8d, 0xcf, 0x4f, 0xb6, 0xcf, 0x5a,
+            0x00, 0x00, 0x00, 0x05, 0x49
+        ];
+
+        let result = pgsql_parse_response(buf);
+        assert!(result.is_ok());
     }
 
     #[test]

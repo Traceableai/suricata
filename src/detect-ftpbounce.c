@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 #include "detect-parse.h"
@@ -32,6 +31,7 @@
 #include "detect-engine-mpm.h"
 #include "detect-engine-state.h"
 #include "detect-content.h"
+#include "detect-engine-build.h"
 
 #include "app-layer.h"
 #include "app-layer-parser.h"
@@ -57,10 +57,6 @@ static void DetectFtpbounceRegisterTests(void);
 #endif
 static int g_ftp_request_list_id = 0;
 
-static int InspectFtpRequest(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
-        uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
-
 /**
  * \brief Registration function for ftpbounce: keyword
  * \todo add support for no_stream and stream_only
@@ -80,15 +76,7 @@ void DetectFtpbounceRegister(void)
     g_ftp_request_list_id = DetectBufferTypeRegister("ftp_request");
 
     DetectAppLayerInspectEngineRegister2(
-            "ftp_request", ALPROTO_FTP, SIG_FLAG_TOSERVER, 0, InspectFtpRequest, NULL);
-}
-
-static int InspectFtpRequest(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
-        uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
-{
-    return DetectEngineInspectGenericList(
-            de_ctx, det_ctx, s, engine->smd, f, flags, alstate, txv, tx_id);
+            "ftp_request", ALPROTO_FTP, SIG_FLAG_TOSERVER, 0, DetectEngineInspectGenericList, NULL);
 }
 
 /**
@@ -101,13 +89,13 @@ static int InspectFtpRequest(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det
  *
  * \retval 1 if ftpbounce detected, 0 if not
  */
-static int DetectFtpbounceMatchArgs(uint8_t *payload, uint16_t payload_len,
-                             uint32_t ip_orig, uint16_t offset)
+static int DetectFtpbounceMatchArgs(
+        uint8_t *payload, uint32_t payload_len, uint32_t ip_orig, uint32_t offset)
 {
     SCEnter();
     SCLogDebug("Checking ftpbounce condition");
     char *c = NULL;
-    uint16_t i = 0;
+    uint32_t i = 0;
     int octet = 0;
     int octet_ascii_len = 0;
     int noctet = 0;
@@ -253,6 +241,7 @@ int DetectFtpbounceSetup(DetectEngineCtx *de_ctx, Signature *s, const char *ftpb
 }
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 
 /**
  * \test DetectFtpbounceTestSetup01 is a test for the Setup ftpbounce
@@ -336,13 +325,11 @@ static int DetectFtpbounceTestALMatch02(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v,(void *)de_ctx,(void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(&f);
     int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_FTP,
                                 STREAM_TOSERVER, ftpbuf1, ftplen1);
     if (r != 0) {
         SCLogDebug("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
 
@@ -351,7 +338,6 @@ static int DetectFtpbounceTestALMatch02(void)
     if (r != 0) {
         SCLogDebug("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
 
@@ -360,7 +346,6 @@ static int DetectFtpbounceTestALMatch02(void)
     if (r != 0) {
         SCLogDebug("toserver chunk 3 returned %" PRId32 ", expected 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
 
@@ -369,11 +354,9 @@ static int DetectFtpbounceTestALMatch02(void)
     if (r != 0) {
         SCLogDebug("toserver chunk 4 returned %" PRId32 ", expected 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
 
-    FLOWLOCK_UNLOCK(&f);
 
     FtpState *ftp_state = f.alstate;
     if (ftp_state == NULL) {
@@ -432,7 +415,7 @@ static int DetectFtpbounceTestALMatch03(void)
 
     TcpSession ssn;
     Flow f;
-    Packet *p = SCMalloc(SIZE_OF_PACKET);
+    Packet *p = PacketGetFromAlloc();
     if (unlikely(p == NULL))
         return 0;
     Signature *s = NULL;
@@ -441,7 +424,6 @@ static int DetectFtpbounceTestALMatch03(void)
     AppLayerParserThreadCtx *alp_tctx = AppLayerParserThreadCtxAlloc();
 
     memset(&th_v, 0, sizeof(th_v));
-    memset(p, 0, SIZE_OF_PACKET);
     memset(&f, 0, sizeof(f));
     memset(&ssn, 0, sizeof(ssn));
 
@@ -481,13 +463,11 @@ static int DetectFtpbounceTestALMatch03(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v,(void *)de_ctx,(void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(&f);
     int r = AppLayerParserParse(NULL, alp_tctx, &f, ALPROTO_FTP,
                                 STREAM_TOSERVER, ftpbuf1, ftplen1);
     if (r != 0) {
         SCLogDebug("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
 
@@ -496,7 +476,6 @@ static int DetectFtpbounceTestALMatch03(void)
     if (r != 0) {
         SCLogDebug("toserver chunk 2 returned %" PRId32 ", expected 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
 
@@ -505,7 +484,6 @@ static int DetectFtpbounceTestALMatch03(void)
     if (r != 0) {
         SCLogDebug("toserver chunk 3 returned %" PRId32 ", expected 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
 
@@ -514,10 +492,8 @@ static int DetectFtpbounceTestALMatch03(void)
     if (r != 0) {
         SCLogDebug("toserver chunk 4 returned %" PRId32 ", expected 0: ", r);
         result = 0;
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     FtpState *ftp_state = f.alstate;
     if (ftp_state == NULL) {

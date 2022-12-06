@@ -25,23 +25,21 @@
  */
 
 #include "suricata-common.h"
-#include "suricata.h"
 #include "counters.h"
+
+#include "suricata.h"
 #include "threadvars.h"
-#include "tm-threads.h"
-#include "conf.h"
-#include "util-time.h"
-#include "util-unittest.h"
-#include "util-debug.h"
-#include "util-byte.h"
-#include "util-privs.h"
-#include "util-signal.h"
-#include "unix-manager.h"
-#include "runmodes.h"
 
 #include "output.h"
-#include "output-stats.h"
 #include "output-json-stats.h"
+
+#include "util-byte.h"
+#include "util-conf.h"
+#include "util-hash.h"
+#include "util-time.h"
+
+#include "tm-threads.h"
+#include "util-privs.h"
 
 /* Time interval for syncing the local counters with the global ones */
 #define STATS_WUT_TTS 3
@@ -182,6 +180,27 @@ void StatsIncr(ThreadVars *tv, uint16_t id)
 }
 
 /**
+ * \brief Decrements the local counter
+ *
+ * \param id  Index of the counter in the counter array
+ * \param pca Counter array that holds the local counters for this TM
+ */
+void StatsDecr(ThreadVars *tv, uint16_t id)
+{
+    StatsPrivateThreadContext *pca = &tv->perf_private_ctx;
+#if defined(UNITTESTS) || defined(FUZZ)
+    if (pca->initialized == 0)
+        return;
+#endif
+#ifdef DEBUG
+    BUG_ON((id < 1) || (id > pca->size));
+#endif
+    pca->head[id].value--;
+    pca->head[id].updates++;
+    return;
+}
+
+/**
  * \brief Sets a value of type double to the local counter
  *
  * \param id  Index of the local counter in the counter array
@@ -199,8 +218,7 @@ void StatsSetUI64(ThreadVars *tv, uint16_t id, uint64_t x)
     BUG_ON ((id < 1) || (id > pca->size));
 #endif
 
-    if ((pca->head[id].pc->type == STATS_TYPE_MAXIMUM) &&
-            (x > pca->head[id].value)) {
+    if ((pca->head[id].pc->type == STATS_TYPE_MAXIMUM) && ((int64_t)x > pca->head[id].value)) {
         pca->head[id].value = x;
     } else if (pca->head[id].pc->type == STATS_TYPE_NORMAL) {
         pca->head[id].value = x;
@@ -366,10 +384,7 @@ static void *StatsMgmtThread(void *arg)
 {
     ThreadVars *tv_local = (ThreadVars *)arg;
 
-    /* Set the thread name */
-    if (SCSetThreadName(tv_local->name) < 0) {
-        SCLogWarning(SC_ERR_THREAD_INIT, "Unable to set thread name");
-    }
+    SCSetThreadName(tv_local->name);
 
     if (tv_local->thread_setup_flags != 0)
         TmThreadSetupOptions(tv_local);
@@ -396,7 +411,7 @@ static void *StatsMgmtThread(void *arg)
     }
     SCLogDebug("stats_thread_data %p", &stats_thread_data);
 
-    TmThreadsSetFlag(tv_local, THV_INIT_DONE);
+    TmThreadsSetFlag(tv_local, THV_INIT_DONE | THV_RUNNING);
     while (1) {
         if (TmThreadsCheckFlag(tv_local, THV_PAUSE)) {
             TmThreadsSetFlag(tv_local, THV_PAUSED);
@@ -449,10 +464,7 @@ static void *StatsWakeupThread(void *arg)
 {
     ThreadVars *tv_local = (ThreadVars *)arg;
 
-    /* Set the thread name */
-    if (SCSetThreadName(tv_local->name) < 0) {
-        SCLogWarning(SC_ERR_THREAD_INIT, "Unable to set thread name");
-    }
+    SCSetThreadName(tv_local->name);
 
     if (tv_local->thread_setup_flags != 0)
         TmThreadSetupOptions(tv_local);
@@ -468,7 +480,8 @@ static void *StatsWakeupThread(void *arg)
         return NULL;
     }
 
-    TmThreadsSetFlag(tv_local, THV_INIT_DONE);
+    TmThreadsSetFlag(tv_local, THV_INIT_DONE | THV_RUNNING);
+
     while (1) {
         if (TmThreadsCheckFlag(tv_local, THV_PAUSE)) {
             TmThreadsSetFlag(tv_local, THV_PAUSED);
@@ -672,7 +685,7 @@ static int StatsOutput(ThreadVars *tv)
      *  especially needed for the average counters */
     struct CountersMergeTable {
         int type;
-        uint64_t value;
+        int64_t value;
         uint64_t updates;
     } merge_table[max_id];
     memset(&merge_table, 0x00,
@@ -1024,7 +1037,7 @@ static uint32_t CountersIdHashFunc(HashTable *ht, void *data, uint16_t datalen)
     int len = strlen(t->string);
 
     for (int i = 0; i < len; i++)
-        hash += tolower((unsigned char)t->string[i]);
+        hash += u8_tolower((unsigned char)t->string[i]);
 
     hash = hash % ht->array_size;
     return hash;

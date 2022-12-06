@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2021 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -25,33 +25,22 @@
 #define __DETECT_H__
 
 #include "suricata-common.h"
-
 #include "flow.h"
+#include "app-layer-events.h"
 
 #include "detect-engine-proto.h"
 #include "detect-reference.h"
 #include "detect-metadata.h"
 #include "detect-engine-register.h"
-#include "packet-queue.h"
 
 #include "util-prefilter.h"
 #include "util-mpm.h"
 #include "util-spm.h"
 #include "util-hash.h"
 #include "util-hashlist.h"
-#include "util-debug.h"
-#include "util-error.h"
 #include "util-radix-tree.h"
 #include "util-file.h"
 #include "reputation.h"
-
-#include "detect-mark.h"
-
-#include "stream.h"
-
-#include "util-var-name.h"
-
-#include "app-layer-events.h"
 
 #define DETECT_MAX_RULE_SIZE 8192
 
@@ -217,6 +206,9 @@ typedef struct DetectPort_ {
 #define SIG_FLAG_DSIZE                  BIT_U32(5)  /**< signature has a dsize setting */
 #define SIG_FLAG_APPLAYER               BIT_U32(6)  /**< signature applies to app layer instead of packets */
 #define SIG_FLAG_IPONLY                 BIT_U32(7)  /**< ip only signature */
+#define SIG_FLAG_LIKE_IPONLY                                                                       \
+    BIT_U32(8) /**< signature that is almost ip only, but contains negation prevening some iponly  \
+                  optimizations */
 
 // vacancy
 
@@ -263,7 +255,7 @@ typedef struct DetectPort_ {
 #define SIG_FLAG_INIT_NEED_FLUSH            BIT_U32(7)
 #define SIG_FLAG_INIT_PRIO_EXPLICT          BIT_U32(8)  /**< priority is explicitly set by the priority keyword */
 #define SIG_FLAG_INIT_FILEDATA              BIT_U32(9)  /**< signature has filedata keyword */
-#define SIG_FLAG_INIT_DCERPC                BIT_U32(10) /**< signature has DCERPC keyword */
+#define SIG_FLAG_INIT_JA3                   BIT_U32(10) /**< signature has ja3 keyword */
 
 /* signature mask flags */
 /** \note: additions should be added to the rule analyzer as well */
@@ -389,11 +381,10 @@ typedef InspectionBuffer *(*InspectionBufferGetDataPtr)(
         void *txv, const int list_id);
 struct DetectEngineAppInspectionEngine_;
 
-typedef int (*InspectEngineFuncPtr2)(
-        struct DetectEngineCtx_ *de_ctx, struct DetectEngineThreadCtx_ *det_ctx,
-        const struct DetectEngineAppInspectionEngine_ *engine,
-        const struct Signature_ *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
+typedef uint8_t (*InspectEngineFuncPtr2)(struct DetectEngineCtx_ *de_ctx,
+        struct DetectEngineThreadCtx_ *det_ctx,
+        const struct DetectEngineAppInspectionEngine_ *engine, const struct Signature_ *s, Flow *f,
+        uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
 
 typedef struct DetectEngineAppInspectionEngine_ {
     AppProto alproto;
@@ -514,6 +505,8 @@ typedef struct SignatureInitData_ {
     /* used at init to determine max dsize */
     SigMatch *dsize_sm;
 
+    /* list id for `mpm_sm`. Should always match `SigMatchListSMBelongsTo(s, mpm_sm)`. */
+    int mpm_sm_list;
     /* the fast pattern added from this signature */
     SigMatch *mpm_sm;
     /* used to speed up init of prefilter */
@@ -590,7 +583,7 @@ typedef struct Signature_ {
 #endif
 
     /** netblocks and hosts specified at the sid, in CIDR format */
-    IPOnlyCIDRItem *CidrSrc, *CidrDst;
+    IPOnlyCIDRItem *cidr_src, *cidr_dst;
 
     DetectEngineAppInspectionEngine *app_inspect;
     DetectEnginePktInspectionEngine *pkt_inspect;
@@ -671,6 +664,14 @@ typedef struct DetectBufferMpmRegistery_ {
     struct DetectBufferMpmRegistery_ *next;
 } DetectBufferMpmRegistery;
 
+/* helper structure to track pattern stats and assign pattern id's. */
+typedef struct DetectPatternTracker {
+    const struct DetectContentData_ *cd;
+    int sm_list;
+    uint32_t cnt;
+    uint32_t mpm;
+} DetectPatternTracker;
+
 typedef struct DetectReplaceList_ {
     struct DetectContentData_ *cd;
     uint8_t *found;
@@ -707,31 +708,13 @@ typedef struct DetectEngineIPOnlyThreadCtx_ {
 
 /** \brief IP only rules matching ctx. */
 typedef struct DetectEngineIPOnlyCtx_ {
-    /* lookup hashes */
-    HashListTable *ht16_src, *ht16_dst;
-    HashListTable *ht24_src, *ht24_dst;
-
     /* Lookup trees */
     SCRadixTree *tree_ipv4src, *tree_ipv4dst;
     SCRadixTree *tree_ipv6src, *tree_ipv6dst;
 
     /* Used to build the radix trees */
     IPOnlyCIDRItem *ip_src, *ip_dst;
-
-    /* counters */
-    uint32_t a_src_uniq16, a_src_total16;
-    uint32_t a_dst_uniq16, a_dst_total16;
-    uint32_t a_src_uniq24, a_src_total24;
-    uint32_t a_dst_uniq24, a_dst_total24;
-
     uint32_t max_idx;
-
-    uint8_t *sig_init_array; /* bit array of sig nums */
-    uint32_t sig_init_size;  /* size in bytes of the array */
-
-    /* number of sigs in this head */
-    uint32_t sig_cnt;
-    uint32_t *match_array;
 } DetectEngineIPOnlyCtx;
 
 typedef struct DetectEngineLookupFlow_ {
@@ -848,7 +831,7 @@ typedef struct DetectEngineCtx_ {
     DetectEngineIPOnlyCtx io_ctx;
     ThresholdCtx ths_ctx;
 
-    uint16_t mpm_matcher; /**< mpm matcher this ctx uses */
+    uint8_t mpm_matcher;  /**< mpm matcher this ctx uses */
     uint16_t spm_matcher; /**< spm matcher this ctx uses */
 
     /* spm thread context prototype, built as spm matchers are constructed and
@@ -909,8 +892,8 @@ typedef struct DetectEngineCtx_ {
     bool sigerror_ok;
     const char *sigerror;
 
-    /** list of keywords that need thread local ctxs */
-    DetectEngineThreadKeywordCtxItem *keyword_list;
+    /** hash list of keywords that need thread local ctxs */
+    HashListTable *keyword_hash;
     int keyword_id;
 
     struct {
@@ -1012,21 +995,12 @@ enum {
 #define ENGINE_SGH_MPM_FACTORY_CONTEXT_START_ID_RANGE (ENGINE_SGH_MPM_FACTORY_CONTEXT_AUTO + 1)
 };
 
-typedef struct HttpReassembledBody_ {
-    const uint8_t *buffer;
-    uint8_t *decompressed_buffer;
-    uint32_t buffer_size;   /**< size of the buffer itself */
-    uint32_t buffer_len;    /**< data len in the buffer */
-    uint32_t decompressed_buffer_len;
-    uint64_t offset;        /**< data offset */
-} HttpReassembledBody;
-
 #define DETECT_FILESTORE_MAX 15
 
 typedef struct SignatureNonPrefilterStore_ {
     SigIntId id;
     SignatureMask mask;
-    uint8_t alproto;
+    AppProto alproto;
 } SignatureNonPrefilterStore;
 
 /** array of TX inspect rule candidates */
@@ -1084,6 +1058,10 @@ typedef struct DetectEngineThreadCtx_ {
 
     /** id for alert counter */
     uint16_t counter_alerts;
+    /** id for discarded alerts counter */
+    uint16_t counter_alerts_overflow;
+    /** id for suppressed alerts counter */
+    uint16_t counter_alerts_suppressed;
 #ifdef PROFILING
     uint16_t counter_mpm_list;
     uint16_t counter_nonmpm_list;
@@ -1119,6 +1097,10 @@ typedef struct DetectEngineThreadCtx_ {
     uint64_t tx_id;
     int64_t frame_id;
     Packet *p;
+
+    uint16_t alert_queue_size;
+    uint16_t alert_queue_capacity;
+    PacketAlert *alert_queue;
 
     SC_ATOMIC_DECLARE(int, so_far_used_by_detect);
 
@@ -1207,6 +1189,10 @@ typedef struct DetectEngineThreadCtx_ {
 
     struct SCProfilePrefilterData_ *prefilter_perf_data;
     int prefilter_perf_size;
+    /** bytes inspected by current prefilter callback call */
+    uint64_t prefilter_bytes;
+    /** number of times we inspected a buffer */
+    uint64_t prefilter_bytes_called;
 #endif
 } DetectEngineThreadCtx;
 
@@ -1265,12 +1251,11 @@ enum {
     FILE_DECODER_EVENT_Z_STREAM_ERROR,
     FILE_DECODER_EVENT_Z_BUF_ERROR,
     FILE_DECODER_EVENT_Z_UNKNOWN_ERROR,
+    FILE_DECODER_EVENT_LZMA_IO_ERROR,
+    FILE_DECODER_EVENT_LZMA_HEADER_TOO_SHORT_ERROR,
     FILE_DECODER_EVENT_LZMA_DECODER_ERROR,
     FILE_DECODER_EVENT_LZMA_MEMLIMIT_ERROR,
-    FILE_DECODER_EVENT_LZMA_OPTIONS_ERROR,
-    FILE_DECODER_EVENT_LZMA_FORMAT_ERROR,
-    FILE_DECODER_EVENT_LZMA_DATA_ERROR,
-    FILE_DECODER_EVENT_LZMA_BUF_ERROR,
+    FILE_DECODER_EVENT_LZMA_XZ_ERROR,
     FILE_DECODER_EVENT_LZMA_UNKNOWN_ERROR,
 
     DETECT_EVENT_TOO_MANY_BUFFERS,
@@ -1312,6 +1297,10 @@ typedef struct MpmStore_ {
 typedef void (*PrefilterFrameFn)(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
         const struct Frames *frames, const struct Frame *frame, const uint32_t idx);
 
+typedef struct AppLayerTxData AppLayerTxData;
+typedef void (*PrefilterTxFn)(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p, Flow *f,
+        void *tx, const uint64_t tx_id, const AppLayerTxData *tx_data, const uint8_t flags);
+
 typedef struct PrefilterEngineList_ {
     uint16_t id;
 
@@ -1328,9 +1317,7 @@ typedef struct PrefilterEngineList_ {
     void *pectx;
 
     void (*Prefilter)(DetectEngineThreadCtx *det_ctx, Packet *p, const void *pectx);
-    void (*PrefilterTx)(DetectEngineThreadCtx *det_ctx, const void *pectx,
-            Packet *p, Flow *f, void *tx,
-            const uint64_t idx, const uint8_t flags);
+    PrefilterTxFn PrefilterTx;
     PrefilterFrameFn PrefilterFrame;
 
     struct PrefilterEngineList_ *next;
@@ -1362,9 +1349,7 @@ typedef struct PrefilterEngine_ {
 
     union {
         void (*Prefilter)(DetectEngineThreadCtx *det_ctx, Packet *p, const void *pectx);
-        void (*PrefilterTx)(DetectEngineThreadCtx *det_ctx, const void *pectx,
-                Packet *p, Flow *f, void *tx,
-                const uint64_t idx, const uint8_t flags);
+        PrefilterTxFn PrefilterTx;
         PrefilterFrameFn PrefilterFrame;
     } cb;
 
@@ -1541,13 +1526,17 @@ const SigGroupHead *SigMatchSignaturesGetSgh(const DetectEngineCtx *de_ctx, cons
 
 Signature *DetectGetTagSignature(void);
 
-
-int DetectUnregisterThreadCtxFuncs(DetectEngineCtx *, DetectEngineThreadCtx *,void *data, const char *name);
+int DetectUnregisterThreadCtxFuncs(DetectEngineCtx *, void *data, const char *name);
 int DetectRegisterThreadCtxFuncs(DetectEngineCtx *, const char *name, void *(*InitFunc)(void *), void *data, void (*FreeFunc)(void *), int);
 void *DetectThreadCtxGetKeywordThreadCtx(DetectEngineThreadCtx *, int);
 
 void RuleMatchCandidateTxArrayInit(DetectEngineThreadCtx *det_ctx, uint32_t size);
 void RuleMatchCandidateTxArrayFree(DetectEngineThreadCtx *det_ctx);
+
+void AlertQueueInit(DetectEngineThreadCtx *det_ctx);
+void AlertQueueFree(DetectEngineThreadCtx *det_ctx);
+void AlertQueueAppend(DetectEngineThreadCtx *det_ctx, const Signature *s, Packet *p, uint64_t tx_id,
+        uint8_t alert_flags);
 
 int DetectFlowbitsAnalyze(DetectEngineCtx *de_ctx);
 
@@ -1562,8 +1551,6 @@ int DetectEngineGetEventInfo(const char *event_name, int *event_id,
 
 void DumpPatterns(DetectEngineCtx *de_ctx);
 
-#include "detect-engine-build.h"
-#include "detect-engine-register.h"
 
 #endif /* __DETECT_H__ */
 

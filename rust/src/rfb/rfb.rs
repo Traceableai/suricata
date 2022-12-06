@@ -1,4 +1,4 @@
-/* Copyright (C) 2020 Open Information Security Foundation
+/* Copyright (C) 2020-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -78,20 +78,27 @@ impl RFBTransaction {
 }
 
 pub struct RFBState {
+    state_data: AppLayerStateData,
     tx_id: u64,
     transactions: Vec<RFBTransaction>,
     state: parser::RFBGlobalState
 }
 
 impl State<RFBTransaction> for RFBState {
-    fn get_transactions(&self) -> &[RFBTransaction] {
-        &self.transactions
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
     }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&RFBTransaction> {
+        self.transactions.get(index)
+    }
+
 }
 
 impl RFBState {
     pub fn new() -> Self {
         Self {
+            state_data: AppLayerStateData::new(),
             tx_id: 0,
             transactions: Vec::new(),
             state: parser::RFBGlobalState::TCServerProtocolVersion
@@ -143,7 +150,7 @@ impl RFBState {
 
     fn parse_request(&mut self, input: &[u8]) -> AppLayerResult {
         // We're not interested in empty requests.
-        if input.len() == 0 {
+        if input.is_empty() {
             return AppLayerResult::ok();
         }
 
@@ -151,7 +158,7 @@ impl RFBState {
         let mut consumed = 0;
         SCLogDebug!("request_state {}, input_len {}", self.state, input.len());
         loop {
-            if current.len() == 0 {
+            if current.is_empty() {
                 return AppLayerResult::ok();
             }
             match self.state {
@@ -272,7 +279,7 @@ impl RFBState {
 
     fn parse_response(&mut self, input: &[u8]) -> AppLayerResult {
         // We're not interested in empty responses.
-        if input.len() == 0 {
+        if input.is_empty() {
             return AppLayerResult::ok();
         }
 
@@ -280,7 +287,7 @@ impl RFBState {
         let mut consumed = 0;
         SCLogDebug!("response_state {}, response_len {}", self.state, input.len());
         loop {
-            if current.len() == 0 {
+            if current.is_empty() {
                 return AppLayerResult::ok();
             }
             match self.state {
@@ -562,9 +569,10 @@ pub unsafe extern "C" fn rs_rfb_tx_get_alstate_progress(
 }
 
 // Parser name as a C style string.
-const PARSER_NAME: &'static [u8] = b"rfb\0";
+const PARSER_NAME: &[u8] = b"rfb\0";
 
 export_tx_data_get!(rs_rfb_get_tx_data, RFBTransaction);
+export_state_data_get!(rs_rfb_get_state_data, RFBState);
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_rfb_register_parser() {
@@ -590,9 +598,10 @@ pub unsafe extern "C" fn rs_rfb_register_parser() {
         get_eventinfo_byid: None,
         localstorage_new: None,
         localstorage_free: None,
-        get_files: None,
+        get_tx_files: None,
         get_tx_iterator: Some(applayer::state_get_tx_iterator::<RFBState, RFBTransaction>),
         get_tx_data: rs_rfb_get_tx_data,
+        get_state_data: rs_rfb_get_state_data,
         apply_tx_config: None,
         flags: 0,
         truncate: None,

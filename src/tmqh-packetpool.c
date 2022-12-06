@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2014 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -23,32 +23,17 @@
  * Packetpool queue handlers. Packet pool is implemented as a stack.
  */
 
-#include "suricata.h"
-#include "packet-queue.h"
-#include "decode.h"
-#include "detect.h"
-#include "detect-uricontent.h"
-#include "threads.h"
-#include "threadvars.h"
-#include "flow.h"
-#include "flow-util.h"
-#include "host.h"
-
-#include "stream.h"
-#include "stream-tcp-reassemble.h"
-
+#include "suricata-common.h"
+#include "tmqh-packetpool.h"
 #include "tm-queuehandlers.h"
 #include "tm-threads.h"
+#include "threads.h"
+#include "decode.h"
 #include "tm-modules.h"
-
-#include "pkt-var.h"
-
-#include "tmqh-packetpool.h"
-
-#include "util-debug.h"
-#include "util-error.h"
+#include "packet.h"
 #include "util-profiling.h"
-#include "util-device.h"
+#include "util-validate.h"
+#include "action-globals.h"
 
 /* Number of freed packet to save for one pool before freeing them. */
 #define MAX_PENDING_RETURN_PACKETS 32
@@ -113,13 +98,13 @@ void PacketPoolWait(void)
 void PacketPoolWaitForN(int n)
 {
     PktPool *my_pool = GetThreadPacketPool();
-    Packet *p, *pp;
 
     while (1) {
         PacketPoolWait();
 
         /* count packets in our stack */
         int i = 0;
+        Packet *p, *pp;
         pp = p = my_pool->head;
         while (p != NULL) {
             if (++i == n)
@@ -158,9 +143,6 @@ void PacketPoolWaitForN(int n)
  */
 static void PacketPoolStorePacket(Packet *p)
 {
-    /* Clear the PKT_ALLOC flag, since that indicates to push back
-     * onto the ring buffer. */
-    p->flags &= ~PKT_ALLOC;
     p->pool = GetThreadPacketPool();
     p->ReleasePacket = PacketPoolReturnPacket;
     PacketPoolReturnPacket(p);
@@ -194,7 +176,7 @@ Packet *PacketPoolGetPacket(void)
         Packet *p = pool->head;
         pool->head = p->next;
         p->pool = pool;
-        PACKET_REINIT(p);
+        PacketReinit(p);
         return p;
     }
 
@@ -210,7 +192,7 @@ Packet *PacketPoolGetPacket(void)
         Packet *p = pool->head;
         pool->head = p->next;
         p->pool = pool;
-        PACKET_REINIT(p);
+        PacketReinit(p);
         return p;
     }
 
@@ -225,14 +207,14 @@ Packet *PacketPoolGetPacket(void)
 void PacketPoolReturnPacket(Packet *p)
 {
     PktPool *my_pool = GetThreadPacketPool();
-
-    PACKET_RELEASE_REFS(p);
-
     PktPool *pool = p->pool;
     if (pool == NULL) {
         PacketFree(p);
         return;
     }
+
+    PacketReleaseRefs(p);
+
 #ifdef DEBUG_VALIDATION
     BUG_ON(pool->initialized == 0);
     BUG_ON(pool->destroyed == 1);
@@ -338,7 +320,7 @@ void PacketPoolDestroy(void)
     PktPool *my_pool = GetThreadPacketPool();
 
 #ifdef DEBUG_VALIDATION
-    BUG_ON(my_pool->destroyed);
+    BUG_ON(my_pool && my_pool->destroyed);
 #endif /* DEBUG_VALIDATION */
 
     if (my_pool && my_pool->pending_pool != NULL) {
@@ -377,15 +359,15 @@ void TmqhOutputPacketpool(ThreadVars *t, Packet *p)
     bool proot = false;
 
     SCEnter();
-    SCLogDebug("Packet %p, p->root %p, alloced %s", p, p->root, p->flags & PKT_ALLOC ? "true" : "false");
+    SCLogDebug("Packet %p, p->root %p, alloced %s", p, p->root, BOOL2STR(p->pool == NULL));
 
     if (IS_TUNNEL_PKT(p)) {
         SCLogDebug("Packet %p is a tunnel packet: %s",
             p,p->root ? "upper layer" : "tunnel root");
 
         /* get a lock to access root packet fields */
-        SCMutex *m = p->root ? &p->root->tunnel_mutex : &p->tunnel_mutex;
-        SCMutexLock(m);
+        SCSpinlock *lock = p->root ? &p->root->persistent.tunnel_lock : &p->persistent.tunnel_lock;
+        SCSpinLock(lock);
 
         if (IS_TUNNEL_ROOT_PKT(p)) {
             SCLogDebug("IS_TUNNEL_ROOT_PKT == TRUE");
@@ -409,7 +391,7 @@ void TmqhOutputPacketpool(ThreadVars *t, Packet *p)
                 SET_TUNNEL_PKT_VERDICTED(p);
 
                 PACKET_PROFILING_END(p);
-                SCMutexUnlock(m);
+                SCSpinUnlock(lock);
                 SCReturn;
             }
         } else {
@@ -445,23 +427,28 @@ void TmqhOutputPacketpool(ThreadVars *t, Packet *p)
                 /* fall through */
             }
         }
-        SCMutexUnlock(m);
+        SCSpinUnlock(lock);
 
         SCLogDebug("tunnel stuff done, move on (proot %d)", proot);
     }
 
+    SCLogDebug("[packet %p][%s] %s", p,
+            IS_TUNNEL_PKT(p) ? IS_TUNNEL_ROOT_PKT(p) ? "tunnel::root" : "tunnel::leaf"
+                             : "no tunnel",
+            (p->action & ACTION_DROP) ? "DROP" : "no drop");
+
     /* we're done with the tunnel root now as well */
     if (proot == true) {
-        SCLogDebug("getting rid of root pkt... alloc'd %s", p->root->flags & PKT_ALLOC ? "true" : "false");
+        SCLogDebug("getting rid of root pkt... alloc'd %s", BOOL2STR(p->root->pool == NULL));
 
-        PACKET_RELEASE_REFS(p->root);
+        PacketReleaseRefs(p->root);
         p->root->ReleasePacket(p->root);
         p->root = NULL;
     }
 
     PACKET_PROFILING_END(p);
 
-    PACKET_RELEASE_REFS(p);
+    PacketReleaseRefs(p);
     p->ReleasePacket(p);
 
     SCReturn;

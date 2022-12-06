@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2021 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -24,7 +24,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 
 #include "detect.h"
@@ -50,6 +49,7 @@
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-file-decompression.h"
+#include "util-profiling.h"
 
 static int DetectFiledataSetup (DetectEngineCtx *, Signature *, const char *);
 #ifdef UNITTESTS
@@ -66,16 +66,14 @@ static int PrefilterMpmHTTPFiledataRegister(DetectEngineCtx *de_ctx, SigGroupHea
         MpmCtx *mpm_ctx, const DetectBufferMpmRegistery *mpm_reg, int list_id);
 
 /* file API */
-static int DetectEngineInspectFiledata(
-        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const DetectEngineAppInspectionEngine *engine,
-        const Signature *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
+static uint8_t DetectEngineInspectFiledata(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+        const DetectEngineAppInspectionEngine *engine, const Signature *s, Flow *f, uint8_t flags,
+        void *alstate, void *txv, uint64_t tx_id);
 int PrefilterMpmFiledataRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
         const DetectBufferMpmRegistery *mpm_reg, int list_id);
 
-static int DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
+static uint8_t DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
         DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
         const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id);
 
@@ -99,6 +97,8 @@ void DetectFiledataRegister(void)
             ALPROTO_SMTP, 0);
     DetectAppLayerMpmRegister2("file_data", SIG_FLAG_TOCLIENT, 2, PrefilterMpmHTTPFiledataRegister,
             NULL, ALPROTO_HTTP1, HTP_RESPONSE_BODY);
+    DetectAppLayerMpmRegister2("file_data", SIG_FLAG_TOSERVER, 2, PrefilterMpmFiledataRegister,
+            NULL, ALPROTO_HTTP1, HTP_REQUEST_BODY);
     DetectAppLayerMpmRegister2("file_data", SIG_FLAG_TOSERVER, 2,
             PrefilterMpmFiledataRegister, NULL,
             ALPROTO_SMB, 0);
@@ -126,6 +126,8 @@ void DetectFiledataRegister(void)
 
     DetectAppLayerInspectEngineRegister2("file_data", ALPROTO_HTTP1, SIG_FLAG_TOCLIENT,
             HTP_RESPONSE_BODY, DetectEngineInspectBufferHttpBody, NULL);
+    DetectAppLayerInspectEngineRegister2("file_data", ALPROTO_HTTP1, SIG_FLAG_TOSERVER,
+            HTP_REQUEST_BODY, DetectEngineInspectFiledata, NULL);
     DetectAppLayerInspectEngineRegister2("file_data",
             ALPROTO_SMTP, SIG_FLAG_TOSERVER, 0,
             DetectEngineInspectFiledata, NULL);
@@ -156,15 +158,10 @@ void DetectFiledataRegister(void)
     DetectAppLayerInspectEngineRegister2(
             "file_data", ALPROTO_FTP, SIG_FLAG_TOCLIENT, 0, DetectEngineInspectFiledata, NULL);
 
-    DetectBufferTypeSetDescriptionByName("file_data",
-            "http response body, smb files or smtp attachments data");
+    DetectBufferTypeSetDescriptionByName("file_data", "data from tracked files");
 
     g_file_data_buffer_id = DetectBufferTypeGetByName("file_data");
 }
-
-#define FILEDATA_CONTENT_LIMIT 100000
-#define FILEDATA_CONTENT_INSPECT_MIN_SIZE 32768
-#define FILEDATA_CONTENT_INSPECT_WINDOW 4096
 
 static void SetupDetectEngineConfig(DetectEngineCtx *de_ctx) {
     if (de_ctx->filedata_config_initialized)
@@ -209,14 +206,6 @@ static int DetectFiledataSetup (DetectEngineCtx *de_ctx, Signature *s, const cha
                     s->alproto != ALPROTO_FTPDATA && s->alproto != ALPROTO_HTTP &&
                     s->alproto != ALPROTO_NFS)) {
         SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting keywords.");
-        return -1;
-    }
-
-    if ((s->alproto == ALPROTO_HTTP1 || s->alproto == ALPROTO_HTTP) &&
-            (s->init_data->init_flags & SIG_FLAG_INIT_FLOW) && (s->flags & SIG_FLAG_TOSERVER) &&
-            !(s->flags & SIG_FLAG_TOCLIENT)) {
-        SCLogError(SC_ERR_INVALID_SIGNATURE, "Can't use file_data with "
-                "flow:to_server or flow:from_client with http.");
         return -1;
     }
 
@@ -401,7 +390,7 @@ static InspectionBuffer *HttpServerBodyGetDataCallback(DetectEngineThreadCtx *de
     SCReturnPtr(buffer, "InspectionBuffer");
 }
 
-static int DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
+static uint8_t DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
         DetectEngineThreadCtx *det_ctx, const DetectEngineAppInspectionEngine *engine,
         const Signature *s, Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
 {
@@ -456,7 +445,7 @@ static int DetectEngineInspectBufferHttpBody(DetectEngineCtx *de_ctx,
  *  \param flags STREAM_* flags including direction
  */
 static void PrefilterTxHTTPFiledata(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
-        Flow *f, void *txv, const uint64_t idx, const uint8_t flags)
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *_txd, const uint8_t flags)
 {
     SCEnter();
 
@@ -472,6 +461,7 @@ static void PrefilterTxHTTPFiledata(DetectEngineThreadCtx *det_ctx, const void *
     if (buffer->inspect_len >= mpm_ctx->minlen) {
         (void)mpm_table[mpm_ctx->mpm_type].Search(
                 mpm_ctx, &det_ctx->mtcu, &det_ctx->pmq, buffer->inspect, buffer->inspect_len);
+        PREFILTER_PROFILING_ADD_BYTES(det_ctx, buffer->inspect_len);
     }
 }
 
@@ -596,11 +586,9 @@ static InspectionBuffer *FiledataGetDataCallback(DetectEngineThreadCtx *det_ctx,
     }
 }
 
-static int DetectEngineInspectFiledata(
-        DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const DetectEngineAppInspectionEngine *engine,
-        const Signature *s,
-        Flow *f, uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
+static uint8_t DetectEngineInspectFiledata(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
+        const DetectEngineAppInspectionEngine *engine, const Signature *s, Flow *f, uint8_t flags,
+        void *alstate, void *txv, uint64_t tx_id)
 {
     int r = 0;
     int match = 0;
@@ -610,17 +598,14 @@ static int DetectEngineInspectFiledata(
         transforms = engine->v2.transforms;
     }
 
-    FileContainer *ffc = AppLayerParserGetFiles(f, flags);
+    FileContainer *ffc = AppLayerParserGetTxFiles(f, txv, flags);
     if (ffc == NULL) {
-        return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
+        return DETECT_ENGINE_INSPECT_SIG_CANT_MATCH_FILES;
     }
 
     int local_file_id = 0;
     File *file = ffc->head;
     for (; file != NULL; file = file->next) {
-        if (file->txid != tx_id)
-            continue;
-
         InspectionBuffer *buffer = FiledataGetDataCallback(det_ctx, transforms, f, flags, file,
                 engine->sm_list, engine->sm_list_base, local_file_id, false);
         if (buffer == NULL)
@@ -663,25 +648,22 @@ static int DetectEngineInspectFiledata(
  *  \param idx transaction id
  *  \param flags STREAM_* flags including direction
  */
-static void PrefilterTxFiledata(DetectEngineThreadCtx *det_ctx,
-        const void *pectx,
-        Packet *p, Flow *f, void *txv,
-        const uint64_t idx, const uint8_t flags)
+static void PrefilterTxFiledata(DetectEngineThreadCtx *det_ctx, const void *pectx, Packet *p,
+        Flow *f, void *txv, const uint64_t idx, const AppLayerTxData *txd, const uint8_t flags)
 {
     SCEnter();
+
+    if (!AppLayerParserHasFilesInDir(txd, flags))
+        return;
 
     const PrefilterMpmFiledata *ctx = (const PrefilterMpmFiledata *)pectx;
     const MpmCtx *mpm_ctx = ctx->mpm_ctx;
     const int list_id = ctx->list_id;
 
-    FileContainer *ffc = AppLayerParserGetFiles(f, flags);
-    int local_file_id = 0;
+    FileContainer *ffc = AppLayerParserGetTxFiles(f, txv, flags);
     if (ffc != NULL) {
-        File *file = ffc->head;
-        for (; file != NULL; file = file->next) {
-            if (file->txid != idx)
-                continue;
-
+        int local_file_id = 0;
+        for (File *file = ffc->head; file != NULL; file = file->next) {
             InspectionBuffer *buffer = FiledataGetDataCallback(det_ctx, ctx->transforms, f, flags,
                     file, list_id, ctx->base_list_id, local_file_id, true);
             if (buffer == NULL)
@@ -691,6 +673,7 @@ static void PrefilterTxFiledata(DetectEngineThreadCtx *det_ctx,
                 (void)mpm_table[mpm_ctx->mpm_type].Search(mpm_ctx,
                         &det_ctx->mtcu, &det_ctx->pmq,
                         buffer->inspect, buffer->inspect_len);
+                PREFILTER_PROFILING_ADD_BYTES(det_ctx, buffer->inspect_len);
             }
             local_file_id++;
         }

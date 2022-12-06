@@ -25,7 +25,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -40,7 +39,6 @@
 #include "flow-var.h"
 
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-spm.h"
 #include "util-print.h"
 
@@ -55,9 +53,6 @@
 #include "util-unittest-helper.h"
 
 static int DetectTlsSniSetup(DetectEngineCtx *, Signature *, const char *);
-#ifdef UNITTESTS
-static void DetectTlsSniRegisterTests(void);
-#endif
 static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
        const DetectEngineTransforms *transforms,
        Flow *f, const uint8_t flow_flags,
@@ -71,12 +66,10 @@ void DetectTlsSniRegister(void)
 {
     sigmatch_table[DETECT_AL_TLS_SNI].name = "tls.sni";
     sigmatch_table[DETECT_AL_TLS_SNI].alias = "tls_sni";
-    sigmatch_table[DETECT_AL_TLS_SNI].desc = "content modifier to match specifically and only on the TLS SNI buffer";
+    sigmatch_table[DETECT_AL_TLS_SNI].desc =
+            "sticky buffer to match specifically and only on the TLS SNI buffer";
     sigmatch_table[DETECT_AL_TLS_SNI].url = "/rules/tls-keywords.html#tls-sni";
     sigmatch_table[DETECT_AL_TLS_SNI].Setup = DetectTlsSniSetup;
-#ifdef UNITTESTS
-    sigmatch_table[DETECT_AL_TLS_SNI].RegisterTests = DetectTlsSniRegisterTests;
-#endif
     sigmatch_table[DETECT_AL_TLS_SNI].flags |= SIGMATCH_NOOPT;
     sigmatch_table[DETECT_AL_TLS_SNI].flags |= SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -135,7 +128,3 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
 
     return buffer;
 }
-
-#ifdef UNITTESTS
-#include "tests/detect-tls-sni.c"
-#endif

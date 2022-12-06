@@ -25,8 +25,9 @@
  */
 
 #include "suricata-common.h"
+#include "suricata.h"
 #include "util-random.h"
-
+#include "util-debug.h"
 
 #if !(defined(HAVE_WINCRYPT_H) &&  defined(OS_WIN32))
 #if defined(HAVE_CLOCK_GETTIME)

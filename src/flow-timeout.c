@@ -53,6 +53,7 @@
 
 #include "util-debug.h"
 #include "util-privs.h"
+#include "util-datalink.h"
 
 #include "detect.h"
 #include "detect-engine-state.h"
@@ -82,7 +83,7 @@ static inline Packet *FlowForceReassemblyPseudoPacketSetup(Packet *p,
 {
     const int orig_dir = direction;
     p->tenant_id = f->tenant_id;
-    p->datalink = DLT_RAW;
+    p->datalink = DatalinkGetGlobalType();
     p->proto = IPPROTO_TCP;
     FlowReference(&p->flow, f);
     p->flags |= PKT_STREAM_EST;
@@ -300,8 +301,8 @@ int FlowForceReassemblyNeedReassembly(Flow *f)
     }
 
     TcpSession *ssn = (TcpSession *)f->protoctx;
-    int client = StreamNeedsReassembly(ssn, STREAM_TOSERVER);
-    int server = StreamNeedsReassembly(ssn, STREAM_TOCLIENT);
+    uint8_t client = StreamNeedsReassembly(ssn, STREAM_TOSERVER);
+    uint8_t server = StreamNeedsReassembly(ssn, STREAM_TOCLIENT);
 
     /* if state is not fully closed we assume that we haven't fully
      * inspected the app layer state yet */

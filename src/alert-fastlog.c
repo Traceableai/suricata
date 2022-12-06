@@ -25,7 +25,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "flow.h"
 #include "conf.h"
@@ -40,6 +39,7 @@
 
 #include "detect-parse.h"
 #include "detect-engine.h"
+#include "detect-engine-build.h"
 #include "detect-engine-mpm.h"
 #include "detect-reference.h"
 #include "util-classification-config.h"
@@ -53,6 +53,8 @@
 #include "util-optimize.h"
 #include "util-logopenfile.h"
 #include "util-time.h"
+
+#include "action-globals.h"
 
 #define DEFAULT_LOG_FILENAME "fast.log"
 
@@ -69,7 +71,7 @@ TmEcode AlertFastLogThreadDeinit(ThreadVars *, void *);
 void AlertFastLogRegisterTests(void);
 static void AlertFastLogDeInitCtx(OutputCtx *);
 
-int AlertFastLogCondition(ThreadVars *tv, const Packet *p);
+int AlertFastLogCondition(ThreadVars *tv, void *thread_data, const Packet *p);
 int AlertFastLogger(ThreadVars *tv, void *data, const Packet *p);
 
 void AlertFastLogRegister(void)
@@ -85,7 +87,7 @@ typedef struct AlertFastLogThread_ {
     LogFileCtx* file_ctx;
 } AlertFastLogThread;
 
-int AlertFastLogCondition(ThreadVars *tv, const Packet *p)
+int AlertFastLogCondition(ThreadVars *tv, void *thread_data, const Packet *p)
 {
     return (p->alerts.cnt ? TRUE : FALSE);
 }

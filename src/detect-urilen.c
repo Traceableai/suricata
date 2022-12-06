@@ -34,7 +34,9 @@
 #include "detect-parse.h"
 #include "detect-engine.h"
 #include "detect-engine-state.h"
+#include "detect-engine-build.h"
 #include "detect-content.h"
+#include "detect-engine-uint.h"
 
 #include "detect-urilen.h"
 #include "util-debug.h"
@@ -42,12 +44,6 @@
 #include "flow-util.h"
 #include "stream-tcp.h"
 
-/**
- * \brief Regex for parsing our urilen
- */
-#define PARSE_REGEX  "^(?:\\s*)(<|>)?(?:\\s*)([0-9]{1,5})(?:\\s*)(?:(<>)(?:\\s*)([0-9]{1,5}))?\\s*(?:,\\s*(norm|raw))?\\s*$"
-
-static DetectParseRegex parse_regex;
 
 /*prototypes*/
 static int DetectUrilenSetup (DetectEngineCtx *, Signature *, const char *);
@@ -73,7 +69,6 @@ void DetectUrilenRegister(void)
 #ifdef UNITTESTS
     sigmatch_table[DETECT_AL_URILEN].RegisterTests = DetectUrilenRegisterTests;
 #endif
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     g_http_uri_buffer_id = DetectBufferTypeRegister("http_uri");
     g_http_raw_uri_buffer_id = DetectBufferTypeRegister("http_raw_uri");
@@ -90,147 +85,7 @@ void DetectUrilenRegister(void)
 
 static DetectUrilenData *DetectUrilenParse (const char *urilenstr)
 {
-    DetectUrilenData *urilend = NULL;
-    char *arg1 = NULL;
-    char *arg2 = NULL;
-    char *arg3 = NULL;
-    char *arg4 = NULL;
-    char *arg5 = NULL;
-    int ret = 0, res = 0;
-    size_t pcre2_len;
-
-    ret = DetectParsePcreExec(&parse_regex, urilenstr, 0, 0);
-    if (ret < 3 || ret > 6) {
-        SCLogError(SC_ERR_PCRE_PARSE, "urilen option pcre parse error: \"%s\"", urilenstr);
-        goto error;
-    }
-    const char *str_ptr;
-
-    SCLogDebug("ret %d", ret);
-
-    res = SC_Pcre2SubstringGet(parse_regex.match, 1, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-    if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-        goto error;
-    }
-    arg1 = (char *) str_ptr;
-    SCLogDebug("Arg1 \"%s\"", arg1);
-
-    res = pcre2_substring_get_bynumber(parse_regex.match, 2, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-    if (res < 0) {
-        SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-        goto error;
-    }
-    arg2 = (char *) str_ptr;
-    SCLogDebug("Arg2 \"%s\"", arg2);
-
-    if (ret > 3) {
-        res = SC_Pcre2SubstringGet(parse_regex.match, 3, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-        if (res < 0) {
-            SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-            goto error;
-        }
-        arg3 = (char *) str_ptr;
-        SCLogDebug("Arg3 \"%s\"", arg3);
-
-        if (ret > 4) {
-            res = SC_Pcre2SubstringGet(parse_regex.match, 4, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-            if (res < 0) {
-                SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-                goto error;
-            }
-            arg4 = (char *) str_ptr;
-            SCLogDebug("Arg4 \"%s\"", arg4);
-        }
-        if (ret > 5) {
-            res = pcre2_substring_get_bynumber(
-                    parse_regex.match, 5, (PCRE2_UCHAR8 **)&str_ptr, &pcre2_len);
-            if (res < 0) {
-                SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre2_substring_get_bynumber failed");
-                goto error;
-            }
-            arg5 = (char *) str_ptr;
-            SCLogDebug("Arg5 \"%s\"", arg5);
-        }
-    }
-
-    urilend = SCMalloc(sizeof (DetectUrilenData));
-    if (unlikely(urilend == NULL))
-        goto error;
-    memset(urilend, 0, sizeof(DetectUrilenData));
-
-    if (arg1 != NULL && arg1[0] == '<')
-        urilend->mode = DETECT_URILEN_LT;
-    else if (arg1 != NULL && arg1[0] == '>')
-        urilend->mode = DETECT_URILEN_GT;
-    else
-        urilend->mode = DETECT_URILEN_EQ;
-
-    if (arg3 != NULL && strcmp("<>", arg3) == 0) {
-        if (arg1 != NULL && strlen(arg1) != 0) {
-            SCLogError(SC_ERR_INVALID_ARGUMENT,"Range specified but mode also set");
-            goto error;
-        }
-        urilend->mode = DETECT_URILEN_RA;
-    }
-
-    /** set the first urilen value */
-    if (StringParseUint16(&urilend->urilen1,10,strlen(arg2),arg2) <= 0){
-        SCLogError(SC_ERR_INVALID_ARGUMENT,"Invalid size :\"%s\"",arg2);
-        goto error;
-    }
-
-    /** set the second urilen value if specified */
-    if (arg4 != NULL && strlen(arg4) > 0) {
-        if (urilend->mode != DETECT_URILEN_RA) {
-            SCLogError(SC_ERR_INVALID_ARGUMENT,"Multiple urilen values specified"
-                                           " but mode is not range");
-            goto error;
-        }
-
-        if(StringParseUint16(&urilend->urilen2,10,strlen(arg4),arg4) <= 0)
-        {
-            SCLogError(SC_ERR_INVALID_ARGUMENT,"Invalid size :\"%s\"",arg4);
-            goto error;
-        }
-
-        if (urilend->urilen2 <= urilend->urilen1){
-            SCLogError(SC_ERR_INVALID_ARGUMENT,"urilen2:%"PRIu16" <= urilen:"
-                        "%"PRIu16"",urilend->urilen2,urilend->urilen1);
-            goto error;
-        }
-    }
-
-    if (arg5 != NULL) {
-        if (strcasecmp("raw", arg5) == 0) {
-            urilend->raw_buffer = 1;
-        }
-    }
-
-    pcre2_substring_free((PCRE2_UCHAR *)arg1);
-    pcre2_substring_free((PCRE2_UCHAR *)arg2);
-    if (arg3 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg3);
-    if (arg4 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg4);
-    if (arg5 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg5);
-    return urilend;
-
-error:
-    if (urilend)
-        SCFree(urilend);
-    if (arg1 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg1);
-    if (arg2 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg2);
-    if (arg3 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg3);
-    if (arg4 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg4);
-    if (arg5 != NULL)
-        pcre2_substring_free((PCRE2_UCHAR *)arg5);
-    return NULL;
+    return rs_detect_urilen_parse(urilenstr);
 }
 
 /**
@@ -284,7 +139,7 @@ static void DetectUrilenFree(DetectEngineCtx *de_ctx, void *ptr)
         return;
 
     DetectUrilenData *urilend = (DetectUrilenData *)ptr;
-    SCFree(urilend);
+    rs_detect_urilen_free(urilend);
 }
 
 /** \brief set prefilter dsize pair
@@ -292,7 +147,7 @@ static void DetectUrilenFree(DetectEngineCtx *de_ctx, void *ptr)
  */
 void DetectUrilenApplyToContent(Signature *s, int list)
 {
-    uint16_t high = 65535;
+    uint16_t high = UINT16_MAX;
     bool found = false;
 
     SigMatch *sm = s->init_data->smlists[list];
@@ -302,25 +157,35 @@ void DetectUrilenApplyToContent(Signature *s, int list)
 
         DetectUrilenData *dd = (DetectUrilenData *)sm->ctx;
 
-        switch (dd->mode) {
-            case DETECT_URILEN_LT:
-                high = dd->urilen1 + 1;
+        switch (dd->du16.mode) {
+            case DETECT_UINT_LT:
+                if (dd->du16.arg1 < UINT16_MAX) {
+                    high = dd->du16.arg1 + 1;
+                }
                 break;
-            case DETECT_URILEN_EQ:
-                high = dd->urilen1;
+            case DETECT_UINT_LTE:
+                // fallthrough
+            case DETECT_UINT_EQ:
+                high = dd->du16.arg1;
                 break;
-            case DETECT_URILEN_RA:
-                high = dd->urilen2 + 1;
+            case DETECT_UINT_RA:
+                if (dd->du16.arg2 < UINT16_MAX) {
+                    high = dd->du16.arg2 + 1;
+                }
                 break;
-            case DETECT_URILEN_GT:
-                high = 65535;
+            case DETECT_UINT_NE:
+                // fallthrough
+            case DETECT_UINT_GTE:
+                // fallthrough
+            case DETECT_UINT_GT:
+                high = UINT16_MAX;
                 break;
         }
         found = true;
     }
 
     // skip 65535 to avoid mismatch on uri > 64k
-    if (!found || high == 65535)
+    if (!found || high == UINT16_MAX)
         return;
 
     SCLogDebug("high %u", high);
@@ -336,7 +201,7 @@ void DetectUrilenApplyToContent(Signature *s, int list)
         }
 
         if (cd->depth == 0 || cd->depth > high) {
-            cd->depth = (uint16_t)high;
+            cd->depth = high;
             SCLogDebug("updated %u, content %u to have depth %u "
                     "because of urilen.", s->id, cd->id, cd->depth);
         }
@@ -370,9 +235,9 @@ bool DetectUrilenValidateContent(const Signature *s, int list, const char **sige
 #include "stream.h"
 #include "stream-tcp-private.h"
 #include "stream-tcp-reassemble.h"
-#include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "app-layer-parser.h"
+#include "detect-engine-alert.h"
 
 /** \test   Test the Urilen keyword setup */
 static int DetectUrilenParseTest01(void)
@@ -382,8 +247,8 @@ static int DetectUrilenParseTest01(void)
 
     urilend = DetectUrilenParse("10");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 10 && urilend->mode == DETECT_URILEN_EQ &&
-            !urilend->raw_buffer)
+        if (urilend->du16.arg1 == 10 && urilend->du16.mode == DETECT_UINT_EQ &&
+                !urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -399,8 +264,8 @@ static int DetectUrilenParseTest02(void)
 
     urilend = DetectUrilenParse(" < 10  ");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 10 && urilend->mode == DETECT_URILEN_LT &&
-            !urilend->raw_buffer)
+        if (urilend->du16.arg1 == 10 && urilend->du16.mode == DETECT_UINT_LT &&
+                !urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -416,8 +281,8 @@ static int DetectUrilenParseTest03(void)
 
     urilend = DetectUrilenParse(" > 10 ");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 10 && urilend->mode == DETECT_URILEN_GT &&
-            !urilend->raw_buffer)
+        if (urilend->du16.arg1 == 10 && urilend->du16.mode == DETECT_UINT_GT &&
+                !urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -433,9 +298,8 @@ static int DetectUrilenParseTest04(void)
 
     urilend = DetectUrilenParse(" 5 <> 10 ");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 5 && urilend->urilen2 == 10 &&
-            urilend->mode == DETECT_URILEN_RA &&
-            !urilend->raw_buffer)
+        if (urilend->du16.arg1 == 5 && urilend->du16.arg2 == 10 &&
+                urilend->du16.mode == DETECT_UINT_RA && !urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -451,9 +315,8 @@ static int DetectUrilenParseTest05(void)
 
     urilend = DetectUrilenParse("5<>10,norm");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 5 && urilend->urilen2 == 10 &&
-            urilend->mode == DETECT_URILEN_RA &&
-            !urilend->raw_buffer)
+        if (urilend->du16.arg1 == 5 && urilend->du16.arg2 == 10 &&
+                urilend->du16.mode == DETECT_UINT_RA && !urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -469,9 +332,8 @@ static int DetectUrilenParseTest06(void)
 
     urilend = DetectUrilenParse("5<>10,raw");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 5 && urilend->urilen2 == 10 &&
-            urilend->mode == DETECT_URILEN_RA &&
-            urilend->raw_buffer)
+        if (urilend->du16.arg1 == 5 && urilend->du16.arg2 == 10 &&
+                urilend->du16.mode == DETECT_UINT_RA && urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -487,8 +349,8 @@ static int DetectUrilenParseTest07(void)
 
     urilend = DetectUrilenParse(">10, norm ");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 10 && urilend->mode == DETECT_URILEN_GT &&
-            !urilend->raw_buffer)
+        if (urilend->du16.arg1 == 10 && urilend->du16.mode == DETECT_UINT_GT &&
+                !urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -504,8 +366,8 @@ static int DetectUrilenParseTest08(void)
 
     urilend = DetectUrilenParse("<10, norm ");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 10 && urilend->mode == DETECT_URILEN_LT &&
-            !urilend->raw_buffer)
+        if (urilend->du16.arg1 == 10 && urilend->du16.mode == DETECT_UINT_LT &&
+                !urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -521,8 +383,7 @@ static int DetectUrilenParseTest09(void)
 
     urilend = DetectUrilenParse(">10, raw ");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 10 && urilend->mode == DETECT_URILEN_GT &&
-            urilend->raw_buffer)
+        if (urilend->du16.arg1 == 10 && urilend->du16.mode == DETECT_UINT_GT && urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -538,8 +399,7 @@ static int DetectUrilenParseTest10(void)
 
     urilend = DetectUrilenParse("<10, raw ");
     if (urilend != NULL) {
-        if (urilend->urilen1 == 10 && urilend->mode == DETECT_URILEN_LT &&
-            urilend->raw_buffer)
+        if (urilend->du16.arg1 == 10 && urilend->du16.mode == DETECT_UINT_LT && urilend->raw_buffer)
             ret = 1;
 
         DetectUrilenFree(NULL, urilend);
@@ -613,13 +473,14 @@ static int DetectUrilenSetpTest01(void)
         goto cleanup;
 
     if (urilend != NULL) {
-        if (urilend->urilen1 == 1 && urilend->urilen2 == 2 &&
-                urilend->mode == DETECT_URILEN_RA)
+        if (urilend->du16.arg1 == 1 && urilend->du16.arg2 == 2 &&
+                urilend->du16.mode == DETECT_UINT_RA)
             res = 1;
     }
 
 cleanup:
-    if (urilend) SCFree(urilend);
+    if (urilend)
+        DetectUrilenFree(NULL, urilend);
     SigGroupCleanup(de_ctx);
     SigCleanSignatures(de_ctx);
     DetectEngineCtxFree(de_ctx);
@@ -688,15 +549,12 @@ static int DetectUrilenSigTest01(void)
     SigGroupBuild(de_ctx);
     DetectEngineThreadCtxInit(&th_v, (void *)de_ctx, (void *)&det_ctx);
 
-    FLOWLOCK_WRLOCK(&f);
     int r = AppLayerParserParse(
             NULL, alp_tctx, &f, ALPROTO_HTTP1, STREAM_TOSERVER, httpbuf1, httplen1);
     if (r != 0) {
         SCLogDebug("toserver chunk 1 returned %" PRId32 ", expected 0: ", r);
-        FLOWLOCK_UNLOCK(&f);
         goto end;
     }
-    FLOWLOCK_UNLOCK(&f);
 
     HtpState *htp_state = f.alstate;
     if (htp_state == NULL) {

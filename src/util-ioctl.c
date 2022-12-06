@@ -23,8 +23,10 @@
  */
 
 #include "suricata-common.h"
+#include "util-ioctl.h"
 #include "conf.h"
-#include "util-device.h"
+#include "decode.h"
+#include "decode-sll.h"
 
 #ifdef HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
@@ -47,8 +49,6 @@
 #ifdef OS_WIN32
 #include "win32-syscall.h"
 #endif
-
-#include "util-ioctl.h"
 
 /**
  * \brief output a majorant of hardware header length
@@ -206,7 +206,7 @@ int SetIfaceFlags(const char *ifname, int flags)
     ifr.ifr_flags = flags & 0xffff;
     ifr.ifr_flagshigh = flags >> 16;
 #else
-    ifr.ifr_flags = flags;
+    ifr.ifr_flags = (uint16_t)flags;
 #endif
 
     if (ioctl(fd, SIOCSIFFLAGS, &ifr) == -1) {

@@ -24,13 +24,13 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 
 #include "detect.h"
 #include "detect-parse.h"
 #include "detect-engine-prefilter-common.h"
 #include "detect-engine-uint.h"
+#include "detect-engine-build.h"
 
 #include "detect-icode.h"
 
@@ -136,7 +136,7 @@ static int DetectICodeSetup(DetectEngineCtx *de_ctx, Signature *s, const char *i
 
 error:
     if (icd != NULL)
-        SCFree(icd);
+        rs_detect_u8_free(icd);
     if (sm != NULL) SCFree(sm);
     return -1;
 }
@@ -148,7 +148,7 @@ error:
  */
 void DetectICodeFree(DetectEngineCtx *de_ctx, void *ptr)
 {
-    SCFree(ptr);
+    rs_detect_u8_free(ptr);
 }
 
 /* prefilter code */
@@ -177,30 +177,10 @@ static void PrefilterPacketICodeMatch(DetectEngineThreadCtx *det_ctx,
     }
 }
 
-static void
-PrefilterPacketICodeSet(PrefilterPacketHeaderValue *v, void *smctx)
-{
-    const DetectU8Data *a = smctx;
-    v->u8[0] = a->mode;
-    v->u8[1] = a->arg1;
-    v->u8[2] = a->arg2;
-}
-
-static bool
-PrefilterPacketICodeCompare(PrefilterPacketHeaderValue v, void *smctx)
-{
-    const DetectU8Data *a = smctx;
-    if (v.u8[0] == a->mode && v.u8[1] == a->arg1 && v.u8[2] == a->arg2)
-        return true;
-    return false;
-}
-
 static int PrefilterSetupICode(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
 {
-    return PrefilterSetupPacketHeaderU8Hash(de_ctx, sgh, DETECT_ICODE,
-            PrefilterPacketICodeSet,
-            PrefilterPacketICodeCompare,
-            PrefilterPacketICodeMatch);
+    return PrefilterSetupPacketHeaderU8Hash(de_ctx, sgh, DETECT_ICODE, PrefilterPacketU8Set,
+            PrefilterPacketU8Compare, PrefilterPacketICodeMatch);
 }
 
 static bool PrefilterICodeIsPrefilterable(const Signature *s)
@@ -218,6 +198,7 @@ static bool PrefilterICodeIsPrefilterable(const Signature *s)
 #ifdef UNITTESTS
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
+#include "detect-engine-alert.h"
 
 /**
  * \test DetectICodeParseTest01 is a test for setting a valid icode value

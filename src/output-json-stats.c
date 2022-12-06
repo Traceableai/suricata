@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -35,6 +34,7 @@
 #include "tm-threads.h"
 
 #include "util-print.h"
+#include "util-time.h"
 #include "util-unittest.h"
 
 #include "util-debug.h"
@@ -64,7 +64,7 @@ typedef enum OutputEngineInfo_ {
 
 typedef struct OutputStatsCtx_ {
     LogFileCtx *file_ctx;
-    uint32_t flags; /** Store mode */
+    uint8_t flags; /** Store mode */
 } OutputStatsCtx;
 
 typedef struct JsonStatsLogThread_ {
@@ -401,8 +401,9 @@ static OutputInitResult OutputStatsLogInitSub(ConfNode *conf, OutputCtx *parent_
 
     if (stats_decoder_events &&
             strcmp(stats_decoder_events_prefix, "decoder") == 0) {
-        SCLogWarning(SC_WARN_EVE_MISSING_EVENTS, "eve.stats will not display "
-                "all decoder events correctly. See #2225. Set a prefix in "
+        SCLogWarning(SC_WARN_EVE_MISSING_EVENTS,
+                "eve.stats will not display "
+                "all decoder events correctly. See ticket #2225. Set a prefix in "
                 "stats.decoder-events-prefix.");
     }
 

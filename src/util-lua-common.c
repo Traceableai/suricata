@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -47,6 +46,7 @@
 #include "util-proto-name.h"
 #include "util-logopenfile.h"
 #include "util-time.h"
+#include "util-conf.h"
 
 #ifdef HAVE_LUA
 
@@ -56,6 +56,7 @@
 
 #include "util-lua.h"
 #include "util-lua-common.h"
+#include "action-globals.h"
 
 int LuaCallbackError(lua_State *luastate, const char *msg)
 {
@@ -821,8 +822,9 @@ static int LuaCallbackFileInfoPushToStackFromFile(lua_State *luastate, const Fil
         }
     }
 
+    lua_Integer tx_id = LuaStateGetTxId(luastate);
     lua_pushinteger(luastate, file->file_store_id);
-    lua_pushinteger(luastate, file->txid);
+    lua_pushinteger(luastate, tx_id);
     lua_pushlstring(luastate, (char *)file->name, file->name_len);
     lua_pushinteger(luastate, FileTrackedSize(file));
     lua_pushstring (luastate,

@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2012 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -25,11 +25,11 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 
 #include "detect.h"
 #include "detect-parse.h"
+#include "detect-content.h"
 
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
@@ -50,6 +50,12 @@
 
 #include "stream-tcp.h"
 #include "detect-fileext.h"
+
+typedef struct DetectFileextData_ {
+    uint8_t *ext; /** file extension to match */
+    uint16_t len; /** length of the file */
+    uint32_t flags;
+} DetectFileextData;
 
 static int DetectFileextMatch (DetectEngineThreadCtx *, Flow *,
         uint8_t, File *, const Signature *, const SigMatchCtx *);
@@ -154,7 +160,7 @@ static DetectFileextData *DetectFileextParse (DetectEngineCtx *de_ctx, const cha
     }
     uint16_t u;
     for (u = 0; u < fileext->len; u++)
-        fileext->ext[u] = tolower(fileext->ext[u]);
+        fileext->ext[u] = u8_tolower(fileext->ext[u]);
 
     if (negate) {
         fileext->flags |= DETECT_CONTENT_NEGATED;
@@ -199,16 +205,13 @@ error:
  */
 static int DetectFileextSetup (DetectEngineCtx *de_ctx, Signature *s, const char *str)
 {
-    DetectFileextData *fileext= NULL;
-    SigMatch *sm = NULL;
-
-    fileext = DetectFileextParse(de_ctx, str, s->init_data->negated);
+    DetectFileextData *fileext = DetectFileextParse(de_ctx, str, s->init_data->negated);
     if (fileext == NULL)
-        goto error;
+        return -1;
 
     /* Okay so far so good, lets get this into a SigMatch
      * and put it in the Signature. */
-    sm = SigMatchAlloc();
+    SigMatch *sm = SigMatchAlloc();
     if (sm == NULL)
         goto error;
 
@@ -221,12 +224,10 @@ static int DetectFileextSetup (DetectEngineCtx *de_ctx, Signature *s, const char
     return 0;
 
 error:
-    if (fileext != NULL)
-        DetectFileextFree(de_ctx, fileext);
+    DetectFileextFree(de_ctx, fileext);
     if (sm != NULL)
         SCFree(sm);
     return -1;
-
 }
 
 /**
@@ -252,11 +253,10 @@ static void DetectFileextFree(DetectEngineCtx *de_ctx, void *ptr)
 static int DetectFileextTestParse01 (void)
 {
     DetectFileextData *dfd = DetectFileextParse(NULL, "doc", false);
-    if (dfd != NULL) {
-        DetectFileextFree(NULL, dfd);
-        return 1;
-    }
-    return 0;
+    FAIL_IF_NULL(dfd);
+    DetectFileextFree(NULL, dfd);
+
+    PASS;
 }
 
 /**
@@ -264,18 +264,13 @@ static int DetectFileextTestParse01 (void)
  */
 static int DetectFileextTestParse02 (void)
 {
-    int result = 0;
-
     DetectFileextData *dfd = DetectFileextParse(NULL, "tar.gz", false);
-    if (dfd != NULL) {
-        if (dfd->len == 6 && memcmp(dfd->ext, "tar.gz", 6) == 0) {
-            result = 1;
-        }
+    FAIL_IF_NULL(dfd);
+    FAIL_IF_NOT(dfd->len == 6);
+    FAIL_IF_NOT(memcmp(dfd->ext, "tar.gz", 6) == 0);
+    DetectFileextFree(NULL, dfd);
 
-        DetectFileextFree(NULL, dfd);
-        return result;
-    }
-    return 0;
+    PASS;
 }
 
 /**
@@ -283,18 +278,13 @@ static int DetectFileextTestParse02 (void)
  */
 static int DetectFileextTestParse03 (void)
 {
-    int result = 0;
-
     DetectFileextData *dfd = DetectFileextParse(NULL, "pdf", false);
-    if (dfd != NULL) {
-        if (dfd->len == 3 && memcmp(dfd->ext, "pdf", 3) == 0) {
-            result = 1;
-        }
+    FAIL_IF_NULL(dfd);
+    FAIL_IF_NOT(dfd->len == 3);
+    FAIL_IF_NOT(memcmp(dfd->ext, "pdf", 3) == 0);
+    DetectFileextFree(NULL, dfd);
 
-        DetectFileextFree(NULL, dfd);
-        return result;
-    }
-    return 0;
+    PASS;
 }
 
 /**

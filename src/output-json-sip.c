@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -95,7 +94,7 @@ static OutputInitResult OutputSIPLogInitSub(ConfNode *conf,
 void JsonSIPLogRegister(void)
 {
     /* Register as an eve sub-module. */
-    OutputRegisterTxSubModule(LOGGER_JSON_SIP, "eve-log", "JsonSIPLog", "eve-log.sip",
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonSIPLog", "eve-log.sip",
             OutputSIPLogInitSub, ALPROTO_SIP, JsonSIPLogger, JsonLogThreadInit, JsonLogThreadDeinit,
             NULL);
 

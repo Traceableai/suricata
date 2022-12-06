@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2020 Open Information Security Foundation
+/* Copyright (C) 2017-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -31,8 +31,6 @@
 
 static StreamingBufferConfig sbcfg = STREAMING_BUFFER_CONFIG_INITIALIZER;
 static SuricataFileContext sfc = { &sbcfg };
-
-#define SMB_CONFIG_DEFAULT_STREAM_DEPTH 0
 
 #ifdef UNITTESTS
 static void SMBParserRegisterTests(void);
@@ -113,7 +111,7 @@ static int SMBParserTxCleanupTest(void)
     FAIL_IF_NOT(r == 0);
     req_str[28]++;
 
-    AppLayerParserTransactionsCleanup(f);
+    AppLayerParserTransactionsCleanup(f, STREAM_TOSERVER);
     UTHAppLayerParserStateGetIds(f->alparser, &ret[0], &ret[1], &ret[2], &ret[3]);
     FAIL_IF_NOT(ret[0] == 0); // inspect_id[0]
     FAIL_IF_NOT(ret[1] == 0); // inspect_id[1]
@@ -159,7 +157,7 @@ static int SMBParserTxCleanupTest(void)
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_SMB,
                                 STREAM_TOCLIENT, (uint8_t *)resp_str, sizeof(resp_str));
     FAIL_IF_NOT(r == 0);
-    AppLayerParserTransactionsCleanup(f);
+    AppLayerParserTransactionsCleanup(f, STREAM_TOCLIENT);
 
     UTHAppLayerParserStateGetIds(f->alparser, &ret[0], &ret[1], &ret[2], &ret[3]);
     FAIL_IF_NOT(ret[0] == 2); // inspect_id[0]
@@ -171,7 +169,7 @@ static int SMBParserTxCleanupTest(void)
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_SMB,
                                 STREAM_TOCLIENT, (uint8_t *)resp_str, sizeof(resp_str));
     FAIL_IF_NOT(r == 0);
-    AppLayerParserTransactionsCleanup(f);
+    AppLayerParserTransactionsCleanup(f, STREAM_TOCLIENT);
 
     UTHAppLayerParserStateGetIds(f->alparser, &ret[0], &ret[1], &ret[2], &ret[3]);
     FAIL_IF_NOT(ret[0] == 8); // inspect_id[0]
@@ -183,7 +181,7 @@ static int SMBParserTxCleanupTest(void)
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_SMB,
                                 STREAM_TOSERVER | STREAM_EOF, (uint8_t *)req_str, sizeof(req_str));
     FAIL_IF_NOT(r == 0);
-    AppLayerParserTransactionsCleanup(f);
+    AppLayerParserTransactionsCleanup(f, STREAM_TOSERVER);
 
     UTHAppLayerParserStateGetIds(f->alparser, &ret[0], &ret[1], &ret[2], &ret[3]);
     FAIL_IF_NOT(ret[0] == 8); // inspect_id[0] not updated by ..Cleanup() until full tx is done
@@ -195,7 +193,7 @@ static int SMBParserTxCleanupTest(void)
     r = AppLayerParserParse(NULL, alp_tctx, f, ALPROTO_SMB,
                                 STREAM_TOCLIENT | STREAM_EOF, (uint8_t *)resp_str, sizeof(resp_str));
     FAIL_IF_NOT(r == 0);
-    AppLayerParserTransactionsCleanup(f);
+    AppLayerParserTransactionsCleanup(f, STREAM_TOCLIENT);
 
     UTHAppLayerParserStateGetIds(f->alparser, &ret[0], &ret[1], &ret[2], &ret[3]);
     FAIL_IF_NOT(ret[0] == 9); // inspect_id[0]

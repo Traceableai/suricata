@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -24,9 +24,7 @@
 #ifndef __APP_LAYER_SMTP_H__
 #define __APP_LAYER_SMTP_H__
 
-#include "decode-events.h"
 #include "util-decode-mime.h"
-#include "queue.h"
 #include "util-streaming-buffer.h"
 #include "rust.h"
 
@@ -40,6 +38,7 @@ enum {
     SMTP_DECODER_EVENT_NO_SERVER_WELCOME_MESSAGE,
     SMTP_DECODER_EVENT_TLS_REJECTED,
     SMTP_DECODER_EVENT_DATA_COMMAND_REJECTED,
+    SMTP_DECODER_EVENT_FAILED_PROTOCOL_CHANGE,
 
     /* MIME Events */
     SMTP_DECODER_EVENT_MIME_PARSE_FAILED,
@@ -56,6 +55,8 @@ enum {
     /* Invalid behavior or content */
     SMTP_DECODER_EVENT_DUPLICATE_FIELDS,
     SMTP_DECODER_EVENT_UNPARSABLE_CONTENT,
+    /* For line >= 4KB */
+    SMTP_DECODER_EVENT_TRUNCATED_LINE,
 };
 
 typedef struct SMTPString_ {
@@ -85,6 +86,8 @@ typedef struct SMTPTransaction_ {
 
     TAILQ_HEAD(, SMTPString_) rcpt_to_list;  /**< rcpt to string list */
 
+    FileContainer files_ts;
+
     TAILQ_ENTRY(SMTPTransaction_) next;
 } SMTPTransaction;
 
@@ -102,25 +105,15 @@ typedef struct SMTPConfig {
 } SMTPConfig;
 
 typedef struct SMTPState_ {
+    AppLayerStateData state_data;
     SMTPTransaction *curr_tx;
     TAILQ_HEAD(, SMTPTransaction_) tx_list;  /**< transaction list */
     uint64_t tx_cnt;
     uint64_t toserver_data_count;
     uint64_t toserver_last_data_stamp;
 
-    /* current input that is being parsed */
-    const uint8_t *input;
-    int32_t input_len;
-    uint8_t direction;
-
-    /* --parser details-- */
-    /** current line extracted by the parser from the call to SMTPGetline() */
-    const uint8_t *current_line;
-    /** length of the line in current_line.  Doesn't include the delimiter */
-    int32_t current_line_len;
-    uint8_t current_line_delimiter_len;
-    /* Consumed bytes till current line */
-    int32_t consumed;
+    /* If rest of the bytes should be discarded in case of long line w/o LF */
+    bool discard_till_lf;
 
     /** var to indicate parser state */
     uint8_t parser_state;
@@ -149,7 +142,6 @@ typedef struct SMTPState_ {
 
     /* SMTP Mime decoding and file extraction */
     /** the list of files sent to the server */
-    FileContainer *files_ts;
     uint32_t file_track_id;
 } SMTPState;
 

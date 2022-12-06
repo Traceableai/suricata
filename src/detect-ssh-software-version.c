@@ -33,7 +33,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 
 #include "detect.h"
@@ -42,6 +41,7 @@
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-state.h"
+#include "detect-engine-build.h"
 
 #include "flow.h"
 #include "flow-var.h"
@@ -76,13 +76,6 @@ static void DetectSshSoftwareVersionRegisterTests(void);
 static void DetectSshSoftwareVersionFree(DetectEngineCtx *de_ctx, void *);
 static int g_ssh_banner_list_id = 0;
 
-static int InspectSshBanner(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
-        const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
-        uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
-{
-    return DetectEngineInspectGenericList(
-            de_ctx, det_ctx, s, engine->smd, f, flags, alstate, txv, tx_id);
-}
 
 /**
  * \brief Registration function for keyword: ssh.softwareversion
@@ -106,9 +99,9 @@ void DetectSshSoftwareVersionRegister(void)
     g_ssh_banner_list_id = DetectBufferTypeRegister("ssh_banner");
 
     DetectAppLayerInspectEngineRegister2("ssh_banner", ALPROTO_SSH, SIG_FLAG_TOSERVER,
-            SshStateBannerDone, InspectSshBanner, NULL);
+            SshStateBannerDone, DetectEngineInspectGenericList, NULL);
     DetectAppLayerInspectEngineRegister2("ssh_banner", ALPROTO_SSH, SIG_FLAG_TOCLIENT,
-            SshStateBannerDone, InspectSshBanner, NULL);
+            SshStateBannerDone, DetectEngineInspectGenericList, NULL);
 }
 
 /**
@@ -193,7 +186,7 @@ static DetectSshSoftwareVersionData *DetectSshSoftwareVersionParse (DetectEngine
         }
         pcre2_substring_free((PCRE2_UCHAR *)str_ptr);
 
-        ssh->len = strlen((char *)ssh->software_ver);
+        ssh->len = (uint16_t)strlen((char *)ssh->software_ver);
 
         SCLogDebug("will look for ssh %s", ssh->software_ver);
     }
@@ -268,6 +261,7 @@ static void DetectSshSoftwareVersionFree(DetectEngineCtx *de_ctx, void *ptr)
 }
 
 #ifdef UNITTESTS /* UNITTESTS */
+#include "detect-engine-alert.h"
 
 /**
  * \test DetectSshSoftwareVersionTestParse01 is a test to make sure that we parse

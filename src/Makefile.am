@@ -14,7 +14,6 @@ noinst_HEADERS = \
 	alert-debuglog.h \
 	alert-fastlog.h \
 	alert-syslog.h \
-	app-layer-dcerpc-common.h \
 	app-layer-detect-proto.h \
 	app-layer-dnp3.h \
 	app-layer-dnp3-objects.h \
@@ -38,7 +37,6 @@ noinst_HEADERS = \
 	app-layer-modbus.h \
 	app-layer-quic.h \
 	app-layer-mqtt.h \
-	app-layer-nbss.h \
 	app-layer-nfs-tcp.h \
 	app-layer-nfs-udp.h \
 	app-layer-ntp.h \
@@ -62,11 +60,12 @@ noinst_HEADERS = \
 	conf-yaml-loader.h \
 	counters.h \
 	datasets.h \
+	datasets-ipv4.h \
+	datasets-ipv6.h \
 	datasets-md5.h \
 	datasets-reputation.h \
 	datasets-sha256.h \
 	datasets-string.h \
-	debug.h \
 	decode-chdlc.h \
 	decode-erspan.h \
 	decode-esp.h \
@@ -81,7 +80,6 @@ noinst_HEADERS = \
 	decode-ipv6.h \
 	decode-mpls.h \
 	decode-nsh.h \
-	decode-null.h \
 	decode-ppp.h \
 	decode-pppoe.h \
 	decode-raw.h \
@@ -170,6 +168,7 @@ noinst_HEADERS = \
 	detect-filestore.h \
 	detect-flowbits.h \
 	detect-flow.h \
+	detect-flow-age.h \
 	detect-flowint.h \
 	detect-flowvar.h \
 	detect-fragbits.h \
@@ -225,6 +224,7 @@ noinst_HEADERS = \
 	detect-ike-nonce-payload-length.h \
 	detect-ike-nonce-payload.h \
 	detect-ike-key-exchange-payload.h \
+	detect-ipaddr.h \
 	detect-ipopts.h \
 	detect-ipproto.h \
 	detect-iprep.h \
@@ -236,6 +236,7 @@ noinst_HEADERS = \
 	detect-krb5-errcode.h \
 	detect-krb5-msgtype.h \
 	detect-krb5-sname.h \
+	detect-krb5-ticket-encryption.h \
 	detect-l3proto.h \
 	detect-lua-extensions.h \
 	detect-lua.h \
@@ -292,10 +293,15 @@ noinst_HEADERS = \
 	detect-sip-stat-code.h \
 	detect-sip-stat-msg.h \
 	detect-sip-uri.h \
+	detect-smb-ntlmssp.h \
 	detect-smb-share.h \
 	detect-snmp-community.h \
 	detect-snmp-pdu_type.h \
+	detect-snmp-usm.h \
 	detect-snmp-version.h \
+	detect-dhcp-leasetime.h \
+	detect-dhcp-rebinding-time.h \
+	detect-dhcp-renewal-time.h \
 	detect-ssh-hassh.h \
 	detect-ssh-hassh-server.h \
 	detect-ssh-hassh-server-string.h \
@@ -333,6 +339,7 @@ noinst_HEADERS = \
 	detect-tls-ja3-string.h \
 	detect-tls-sni.h \
 	detect-tls-version.h \
+	detect-tls-random.h \
 	detect-tos.h \
 	detect-transform-compress-whitespace.h \
 	detect-transform-dotprefix.h \
@@ -388,6 +395,7 @@ noinst_HEADERS = \
 	output.h \
 	output-json-alert.h \
 	output-json-anomaly.h \
+	output-json-bittorrent-dht.h \
 	output-json-dcerpc.h \
 	output-json-dhcp.h \
 	output-json-dnp3.h \
@@ -429,6 +437,7 @@ noinst_HEADERS = \
 	output-stats.h \
 	output-streaming.h \
 	output-tx.h \
+	packet.h \
 	packet-queue.h \
 	pkt-var.h \
 	queue.h \
@@ -436,6 +445,7 @@ noinst_HEADERS = \
 	respond-reject.h \
 	respond-reject-libnet11.h \
 	runmode-af-packet.h \
+	runmode-af-xdp.h \
 	runmode-dpdk.h \
 	runmode-erf-dag.h \
 	runmode-erf-file.h \
@@ -454,6 +464,7 @@ noinst_HEADERS = \
 	rust-context.h \
 	rust.h \
 	source-af-packet.h \
+	source-af-xdp.h \
 	source-dpdk.h \
 	source-erf-dag.h \
 	source-erf-file.h \
@@ -472,6 +483,7 @@ noinst_HEADERS = \
 	source-windivert-prototypes.h \
 	stream.h \
 	stream-tcp.h \
+	stream-tcp-cache.h \
 	stream-tcp-inline.h \
 	stream-tcp-list.h \
 	stream-tcp-private.h \
@@ -513,6 +525,7 @@ noinst_HEADERS = \
 	util-coredump-config.h \
 	util-cpu.h \
 	util-daemon.h \
+	util-datalink.h \
 	util-debug-filters.h \
 	util-debug.h \
 	util-decode-mime.h \
@@ -525,6 +538,7 @@ noinst_HEADERS = \
 	util-ebpf.h \
 	util-enum.h \
 	util-error.h \
+	util-exception-policy.h \
 	util-file-decompression.h \
 	util-file.h \
 	util-file-swf-decompression.h \
@@ -540,6 +554,7 @@ noinst_HEADERS = \
 	util-ioctl.h \
 	util-ip.h \
 	util-ja3.h \
+	util-landlock.h \
 	util-logopenfile.h \
 	util-log-redis.h \
 	util-lua-common.h \
@@ -596,6 +611,7 @@ noinst_HEADERS = \
 	util-storage.h \
 	util-streaming-buffer.h \
 	util-syslog.h \
+	util-sysfs.h \
 	util-thash.h \
 	util-threshold-config.h \
 	util-time.h \
@@ -604,7 +620,6 @@ noinst_HEADERS = \
 	util-validate.h \
 	util-var.h \
 	util-var-name.h \
-	util-vector.h \
 	win32-misc.h \
 	win32-service.h \
 	win32-syscall.h \
@@ -658,6 +673,8 @@ libsuricata_c_a_SOURCES = \
 	conf-yaml-loader.c \
 	counters.c \
 	datasets.c \
+	datasets-ipv4.c \
+	datasets-ipv6.c \
 	datasets-md5.c \
 	datasets-sha256.c \
 	datasets-string.c \
@@ -765,6 +782,7 @@ libsuricata_c_a_SOURCES = \
 	detect-filestore.c \
 	detect-flowbits.c \
 	detect-flow.c \
+	detect-flow-age.c \
 	detect-flowint.c \
 	detect-flowvar.c \
 	detect-fragbits.c \
@@ -818,6 +836,7 @@ libsuricata_c_a_SOURCES = \
 	detect-ike-nonce-payload-length.c \
 	detect-ike-nonce-payload.c \
 	detect-ike-key-exchange-payload.c \
+	detect-ipaddr.c \
 	detect-ipopts.c \
 	detect-ipproto.c \
 	detect-iprep.c \
@@ -829,6 +848,7 @@ libsuricata_c_a_SOURCES = \
 	detect-krb5-errcode.c \
 	detect-krb5-msgtype.c \
 	detect-krb5-sname.c \
+	detect-krb5-ticket-encryption.c \
 	detect-l3proto.c \
 	detect-lua.c \
 	detect-lua-extensions.c \
@@ -885,10 +905,15 @@ libsuricata_c_a_SOURCES = \
 	detect-sip-stat-code.c \
 	detect-sip-stat-msg.c \
 	detect-sip-uri.c \
+	detect-smb-ntlmssp.c \
 	detect-smb-share.c \
 	detect-snmp-community.c \
 	detect-snmp-pdu_type.c \
+	detect-snmp-usm.c \
 	detect-snmp-version.c \
+	detect-dhcp-leasetime.c \
+	detect-dhcp-rebinding-time.c \
+	detect-dhcp-renewal-time.c \
 	detect-ssh-hassh.c \
 	detect-ssh-hassh-server.c \
 	detect-ssh-hassh-server-string.c \
@@ -926,6 +951,7 @@ libsuricata_c_a_SOURCES = \
 	detect-tls-ja3-string.c \
 	detect-tls-sni.c \
 	detect-tls-version.c \
+	detect-tls-random.c \
 	detect-tos.c \
 	detect-transform-compress-whitespace.c \
 	detect-transform-dotprefix.c \
@@ -980,6 +1006,7 @@ libsuricata_c_a_SOURCES = \
 	output-flow.c \
 	output-json-alert.c \
 	output-json-anomaly.c \
+	output-json-bittorrent-dht.c \
 	output-json.c \
 	output-json-common.c \
 	output-json-dcerpc.c \
@@ -1022,12 +1049,14 @@ libsuricata_c_a_SOURCES = \
 	output-stats.c \
 	output-streaming.c \
 	output-tx.c \
+	packet.c \
 	packet-queue.c \
 	pkt-var.c \
 	reputation.c \
 	respond-reject.c \
 	respond-reject-libnet11.c \
 	runmode-af-packet.c \
+	runmode-af-xdp.c \
 	runmode-dpdk.c \
 	runmode-erf-dag.c \
 	runmode-erf-file.c \
@@ -1045,6 +1074,7 @@ libsuricata_c_a_SOURCES = \
 	runmode-windivert.c \
 	rust-context.c \
 	source-af-packet.c \
+	source-af-xdp.c \
 	source-dpdk.c \
 	source-erf-dag.c \
 	source-erf-file.c \
@@ -1061,6 +1091,7 @@ libsuricata_c_a_SOURCES = \
 	source-windivert.c \
 	stream.c \
 	stream-tcp.c \
+	stream-tcp-cache.c \
 	stream-tcp-inline.c \
 	stream-tcp-list.c \
 	stream-tcp-reassemble.c \
@@ -1092,6 +1123,7 @@ libsuricata_c_a_SOURCES = \
 	util-coredump-config.c \
 	util-cpu.c \
 	util-daemon.c \
+	util-datalink.c \
 	util-debug.c \
 	util-debug-filters.c \
 	util-decode-mime.c \
@@ -1104,6 +1136,7 @@ libsuricata_c_a_SOURCES = \
 	util-ebpf.c \
 	util-enum.c \
 	util-error.c \
+	util-exception-policy.c \
 	util-file.c \
 	util-file-decompression.c \
 	util-file-swf-decompression.c \
@@ -1119,6 +1152,7 @@ libsuricata_c_a_SOURCES = \
 	util-ioctl.c \
 	util-ip.c \
 	util-ja3.c \
+	util-landlock.c \
 	util-logopenfile.c \
 	util-log-redis.c \
 	util-lua.c \
@@ -1181,6 +1215,7 @@ libsuricata_c_a_SOURCES = \
 	util-strlcpyu.c \
 	util-strptime.c \
 	util-syslog.c \
+	util-sysfs.c \
 	util-thash.c \
 	util-threshold-config.c \
 	util-time.c \
@@ -1206,13 +1241,13 @@ EXTRA_DIST = \
 	tests/detect-icmpv6hdr.c \
 	tests/detect-snmp-pdu_type.c \
 	tests/detect-snmp-version.c \
-	tests/detect-tcpmss.c \
 	tests/detect-template.c \
 	tests/detect-transform-pcrexform.c \
 	tests/detect-transform-xor.c \
 	tests/detect-ttl.c \
 	tests/source-pcap.c \
 	tests/app-layer-htp-file.c \
+	tests/detect-engine-alert.c \
 	tests/detect-engine-content-inspection.c \
 	tests/detect-icmpv4hdr.c \
 	tests/detect-parse.c \
@@ -1233,19 +1268,14 @@ EXTRA_DIST = \
 	tests/detect-ssl-state.c \
 	tests/detect-ssl-version.c \
 	tests/detect-template-buffer.c \
-	tests/detect-template2.c \
 	tests/detect-tls-cert-fingerprint.c \
 	tests/detect-tls-cert-issuer.c \
 	tests/detect-tls-cert-serial.c \
 	tests/detect-tls-cert-subject.c \
 	tests/detect-tls-cert-validity.c \
 	tests/detect-tls-certs.c \
-	tests/detect-tls-ja3-hash.c \
-	tests/detect-tls-ja3-string.c \
-	tests/detect-tls-ja3s-hash.c \
-	tests/detect-tls-ja3s-string.c \
-	tests/detect-tls-sni.c \
 	tests/detect-tls-version.c \
+	tests/detect-ipaddr.c \
 	tests/detect.c \
 	tests/stream-tcp.c
 
@@ -1265,7 +1295,7 @@ suricata_SOURCES = main.c
 # the library search path.
 suricata_LDFLAGS = $(all_libraries) ${SECLDFLAGS}
 suricata_LDADD = libsuricata_c.a $(RUST_SURICATA_LIB) $(HTP_LDADD) $(RUST_LDADD)
-suricata_DEPENDENCIES = libsuricata_c.a
+suricata_DEPENDENCIES = libsuricata_c.a $(RUST_SURICATA_LIB)
 
 if BUILD_SHARED_LIBRARY
 libsuricata.so.$(VERSION): libsuricata_c.a

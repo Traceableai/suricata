@@ -1,4 +1,4 @@
-/* Copyright (C) 2020 Open Information Security Foundation
+/* Copyright (C) 2020-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -97,6 +97,7 @@ pub struct IKETransaction {
     tx_id: u64,
 
     pub ike_version: u8,
+    pub direction: Direction,
     pub hdr: IkeHeaderWrapper,
     pub payload_types: IkePayloadWrapper,
     pub notify_types: Vec<NotifyType>,
@@ -119,6 +120,7 @@ impl IKETransaction {
         IKETransaction {
             tx_id: 0,
             ike_version: 0,
+            direction: Direction::ToServer,
             hdr: IkeHeaderWrapper::new(),
             payload_types: Default::default(),
             notify_types: vec![],
@@ -136,6 +138,7 @@ impl IKETransaction {
 
 #[derive(Default)]
 pub struct IKEState {
+    state_data: AppLayerStateData,
     tx_id: u64,
     pub transactions: Vec<IKETransaction>,
 
@@ -144,8 +147,12 @@ pub struct IKEState {
 }
 
 impl State<IKETransaction> for IKEState {
-    fn get_transactions(&self) -> &[IKETransaction] {
-        &self.transactions
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&IKETransaction> {
+        self.transactions.get(index)
     }
 }
 
@@ -156,7 +163,7 @@ impl IKEState {
             .transactions
             .iter()
             .position(|tx| tx.tx_id == tx_id + 1);
-        debug_assert!(tx != None);
+        debug_assert!(tx.is_some());
         if let Some(idx) = tx {
             let _ = self.transactions.remove(idx);
         }
@@ -192,7 +199,7 @@ impl IKEState {
 
     fn handle_input(&mut self, input: &[u8], direction: Direction) -> AppLayerResult {
         // We're not interested in empty requests.
-        if input.len() == 0 {
+        if input.is_empty() {
             return AppLayerResult::ok();
         }
 
@@ -316,8 +323,7 @@ pub unsafe extern "C" fn rs_ike_state_tx_free(state: *mut std::os::raw::c_void, 
 #[no_mangle]
 pub unsafe extern "C" fn rs_ike_parse_request(
     _flow: *const Flow, state: *mut std::os::raw::c_void, _pstate: *mut std::os::raw::c_void,
-    stream_slice: StreamSlice,
-    _data: *const std::os::raw::c_void,
+    stream_slice: StreamSlice, _data: *const std::os::raw::c_void,
 ) -> AppLayerResult {
     let state = cast_pointer!(state, IKEState);
     return state.handle_input(stream_slice.as_slice(), Direction::ToServer);
@@ -326,8 +332,7 @@ pub unsafe extern "C" fn rs_ike_parse_request(
 #[no_mangle]
 pub unsafe extern "C" fn rs_ike_parse_response(
     _flow: *const Flow, state: *mut std::os::raw::c_void, _pstate: *mut std::os::raw::c_void,
-    stream_slice: StreamSlice,
-    _data: *const std::os::raw::c_void,
+    stream_slice: StreamSlice, _data: *const std::os::raw::c_void,
 ) -> AppLayerResult {
     let state = cast_pointer!(state, IKEState);
     return state.handle_input(stream_slice.as_slice(), Direction::ToClient);
@@ -383,45 +388,47 @@ pub unsafe extern "C" fn rs_ike_tx_set_logged(
     tx.logged.set(logged);
 }
 
-static mut ALPROTO_IKE : AppProto = ALPROTO_UNKNOWN;
+static mut ALPROTO_IKE: AppProto = ALPROTO_UNKNOWN;
 
 // Parser name as a C style string.
-const PARSER_NAME: &'static [u8] = b"ike\0";
-const PARSER_ALIAS: &'static [u8] = b"ikev2\0";
+const PARSER_NAME: &[u8] = b"ike\0";
+const PARSER_ALIAS: &[u8] = b"ikev2\0";
 
 export_tx_data_get!(rs_ike_get_tx_data, IKETransaction);
+export_state_data_get!(rs_ike_get_state_data, IKEState);
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_ike_register_parser() {
     let default_port = CString::new("500").unwrap();
     let parser = RustParser {
-        name               : PARSER_NAME.as_ptr() as *const std::os::raw::c_char,
-        default_port       : default_port.as_ptr(),
-        ipproto            : core::IPPROTO_UDP,
-        probe_ts           : Some(rs_ike_probing_parser),
-        probe_tc           : Some(rs_ike_probing_parser),
-        min_depth          : 0,
-        max_depth          : 16,
-        state_new          : rs_ike_state_new,
-        state_free         : rs_ike_state_free,
-        tx_free            : rs_ike_state_tx_free,
-        parse_ts           : rs_ike_parse_request,
-        parse_tc           : rs_ike_parse_response,
-        get_tx_count       : rs_ike_state_get_tx_count,
-        get_tx             : rs_ike_state_get_tx,
-        tx_comp_st_ts      : 1,
-        tx_comp_st_tc      : 1,
-        tx_get_progress    : rs_ike_tx_get_alstate_progress,
-        get_eventinfo      : Some(IkeEvent::get_event_info),
-        get_eventinfo_byid : Some(IkeEvent::get_event_info_by_id),
-        localstorage_new   : None,
-        localstorage_free  : None,
-        get_files          : None,
-        get_tx_iterator    : Some(applayer::state_get_tx_iterator::<IKEState, IKETransaction>),
-        get_tx_data        : rs_ike_get_tx_data,
-        apply_tx_config    : None,
-        flags              : APP_LAYER_PARSER_OPT_UNIDIR_TXS,
-        truncate           : None,
+        name: PARSER_NAME.as_ptr() as *const std::os::raw::c_char,
+        default_port: default_port.as_ptr(),
+        ipproto: core::IPPROTO_UDP,
+        probe_ts: Some(rs_ike_probing_parser),
+        probe_tc: Some(rs_ike_probing_parser),
+        min_depth: 0,
+        max_depth: 16,
+        state_new: rs_ike_state_new,
+        state_free: rs_ike_state_free,
+        tx_free: rs_ike_state_tx_free,
+        parse_ts: rs_ike_parse_request,
+        parse_tc: rs_ike_parse_response,
+        get_tx_count: rs_ike_state_get_tx_count,
+        get_tx: rs_ike_state_get_tx,
+        tx_comp_st_ts: 1,
+        tx_comp_st_tc: 1,
+        tx_get_progress: rs_ike_tx_get_alstate_progress,
+        get_eventinfo: Some(IkeEvent::get_event_info),
+        get_eventinfo_byid: Some(IkeEvent::get_event_info_by_id),
+        localstorage_new: None,
+        localstorage_free: None,
+        get_tx_files: None,
+        get_tx_iterator: Some(applayer::state_get_tx_iterator::<IKEState, IKETransaction>),
+        get_tx_data: rs_ike_get_tx_data,
+        get_state_data: rs_ike_get_state_data,
+        apply_tx_config: None,
+        flags: APP_LAYER_PARSER_OPT_UNIDIR_TXS,
+        truncate: None,
         get_frame_id_by_name: None,
         get_frame_name_by_id: None,
     };

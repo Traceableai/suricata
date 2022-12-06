@@ -26,21 +26,20 @@
 #define __APP_LAYER_PARSER_H__
 
 #include "app-layer-events.h"
-#include "app-layer-frames.h"
-#include "detect-engine-state.h"
 #include "util-file.h"
-#include "stream-tcp-private.h"
 #include "rust.h"
 #include "util-config.h"
 
 /* Flags for AppLayerParserState. */
-// flag available                               BIT_U8(0)
-#define APP_LAYER_PARSER_NO_INSPECTION          BIT_U8(1)
-#define APP_LAYER_PARSER_NO_REASSEMBLY          BIT_U8(2)
-#define APP_LAYER_PARSER_NO_INSPECTION_PAYLOAD  BIT_U8(3)
-#define APP_LAYER_PARSER_BYPASS_READY           BIT_U8(4)
-#define APP_LAYER_PARSER_EOF_TS                 BIT_U8(5)
-#define APP_LAYER_PARSER_EOF_TC                 BIT_U8(6)
+// flag available                               BIT_U16(0)
+#define APP_LAYER_PARSER_NO_INSPECTION         BIT_U16(1)
+#define APP_LAYER_PARSER_NO_REASSEMBLY         BIT_U16(2)
+#define APP_LAYER_PARSER_NO_INSPECTION_PAYLOAD BIT_U16(3)
+#define APP_LAYER_PARSER_BYPASS_READY          BIT_U16(4)
+#define APP_LAYER_PARSER_EOF_TS                BIT_U16(5)
+#define APP_LAYER_PARSER_EOF_TC                BIT_U16(6)
+#define APP_LAYER_PARSER_TRUNC_TS              BIT_U16(7)
+#define APP_LAYER_PARSER_TRUNC_TC              BIT_U16(8)
 
 /* Flags for AppLayerParserProtoCtx. */
 #define APP_LAYER_PARSER_OPT_ACCEPT_GAPS        BIT_U32(0)
@@ -175,12 +174,11 @@ void AppLayerParserRegisterOptionFlags(uint8_t ipproto, AppProto alproto,
 void AppLayerParserRegisterStateFuncs(uint8_t ipproto, AppProto alproto,
         void *(*StateAlloc)(void *, AppProto), void (*StateFree)(void *));
 void AppLayerParserRegisterLocalStorageFunc(uint8_t ipproto, AppProto proto,
-                                 void *(*LocalStorageAlloc)(void),
-                                 void (*LocalStorageFree)(void *));
-void AppLayerParserRegisterGetFilesFunc(uint8_t ipproto, AppProto alproto,
-                             FileContainer *(*StateGetFiles)(void *, uint8_t));
+        void *(*LocalStorageAlloc)(void), void (*LocalStorageFree)(void *));
 // void AppLayerParserRegisterGetEventsFunc(uint8_t ipproto, AppProto proto,
 //     AppLayerDecoderEvents *(*StateGetEvents)(void *) __attribute__((nonnull)));
+void AppLayerParserRegisterGetTxFilesFunc(
+        uint8_t ipproto, AppProto alproto, FileContainer *(*GetTxFiles)(void *, uint8_t));
 void AppLayerParserRegisterLoggerFuncs(uint8_t ipproto, AppProto alproto,
                          LoggerId (*StateGetTxLogged)(void *, void *),
                          void (*StateSetTxLogged)(void *, void *, LoggerId));
@@ -219,6 +217,8 @@ void AppLayerParserRegisterTxDataFunc(uint8_t ipproto, AppProto alproto,
         AppLayerTxData *(*GetTxData)(void *tx));
 void AppLayerParserRegisterApplyTxConfigFunc(uint8_t ipproto, AppProto alproto,
         bool (*ApplyTxConfig)(void *state, void *tx, int mode, AppLayerTxConfig));
+void AppLayerParserRegisterStateDataFunc(
+        uint8_t ipproto, AppProto alproto, AppLayerStateData *(*GetStateData)(void *state));
 
 /***** Get and transaction functions *****/
 
@@ -241,7 +241,7 @@ void AppLayerParserSetTransactionInspectId(const Flow *f, AppLayerParserState *p
 AppLayerDecoderEvents *AppLayerParserGetDecoderEvents(AppLayerParserState *pstate);
 void AppLayerParserSetDecoderEvents(AppLayerParserState *pstate, AppLayerDecoderEvents *devents);
 AppLayerDecoderEvents *AppLayerParserGetEventsByTx(uint8_t ipproto, AppProto alproto, void *tx);
-FileContainer *AppLayerParserGetFiles(const Flow *f, const uint8_t direction);
+FileContainer *AppLayerParserGetTxFiles(const Flow *f, void *tx, const uint8_t direction);
 int AppLayerParserGetStateProgress(uint8_t ipproto, AppProto alproto,
                         void *alstate, uint8_t direction);
 uint64_t AppLayerParserGetTxCnt(const Flow *, void *alstate);
@@ -259,8 +259,31 @@ uint8_t AppLayerParserGetFirstDataDir(uint8_t ipproto, AppProto alproto);
 int AppLayerParserSupportsFiles(uint8_t ipproto, AppProto alproto);
 
 AppLayerTxData *AppLayerParserGetTxData(uint8_t ipproto, AppProto alproto, void *tx);
+AppLayerStateData *AppLayerParserGetStateData(uint8_t ipproto, AppProto alproto, void *state);
 void AppLayerParserApplyTxConfig(uint8_t ipproto, AppProto alproto,
         void *state, void *tx, enum ConfigAction mode, AppLayerTxConfig);
+
+static inline bool AppLayerParserIsFileTx(const AppLayerTxData *txd)
+{
+    if (txd->file_tx != 0) {
+        return true;
+    }
+    return false;
+}
+
+static inline bool AppLayerParserIsFileTxInDir(const AppLayerTxData *txd, const uint8_t direction)
+{
+    if ((txd->file_tx & direction) != 0) {
+        return true;
+    }
+    return false;
+}
+
+/** \brief check if tx (possibly) has files in this tx for the direction */
+static inline bool AppLayerParserHasFilesInDir(const AppLayerTxData *txd, const uint8_t direction)
+{
+    return (txd->files_opened && AppLayerParserIsFileTxInDir(txd, direction));
+}
 
 /***** General *****/
 
@@ -286,19 +309,13 @@ void AppLayerParserStateCleanup(const Flow *f, void *alstate, AppLayerParserStat
 
 void AppLayerParserRegisterProtocolParsers(void);
 
-
-void AppLayerParserStateSetFlag(AppLayerParserState *pstate, uint8_t flag);
-int AppLayerParserStateIssetFlag(AppLayerParserState *pstate, uint8_t flag);
-
-void AppLayerParserStreamTruncated(uint8_t ipproto, AppProto alproto, void *alstate,
-                        uint8_t direction);
-
-
+void AppLayerParserStateSetFlag(AppLayerParserState *pstate, uint16_t flag);
+uint16_t AppLayerParserStateIssetFlag(AppLayerParserState *pstate, uint16_t flag);
 
 AppLayerParserState *AppLayerParserStateAlloc(void);
 void AppLayerParserStateFree(AppLayerParserState *pstate);
 
-void AppLayerParserTransactionsCleanup(Flow *f);
+void AppLayerParserTransactionsCleanup(Flow *f, const uint8_t pkt_dir);
 
 #ifdef DEBUG
 void AppLayerParserStatePrintDetails(AppLayerParserState *pstate);
@@ -317,5 +334,6 @@ void UTHAppLayerParserStateGetIds(void *ptr, uint64_t *i1, uint64_t *i2, uint64_
 #endif
 
 void AppLayerFramesFreeContainer(Flow *f);
+void FileApplyTxFlags(const AppLayerTxData *txd, const uint8_t direction, File *file);
 
 #endif /* __APP_LAYER_PARSER_H__ */

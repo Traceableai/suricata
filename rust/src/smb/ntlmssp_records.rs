@@ -1,4 +1,4 @@
-/* Copyright (C) 2017 Open Information Security Foundation
+/* Copyright (C) 2017-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -19,12 +19,12 @@ use crate::common::nom7::{bits, take_until_and_consume};
 use std::fmt;
 use nom7::bits::streaming::take as take_bits;
 use nom7::bytes::streaming::take;
-use nom7::combinator::{cond, rest};
+use nom7::combinator::{cond, rest, verify};
 use nom7::number::streaming::{le_u8, le_u16, le_u32};
 use nom7::sequence::tuple;
 use nom7::IResult;
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct NTLMSSPVersion {
     pub ver_major: u8,
     pub ver_minor: u8,
@@ -55,7 +55,7 @@ fn parse_ntlm_auth_version(i: &[u8]) -> IResult<&[u8], NTLMSSPVersion> {
     Ok((i, version))
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct NTLMSSPAuthRecord<'a> {
     pub domain: &'a[u8],
     pub user: &'a[u8],
@@ -72,38 +72,40 @@ fn parse_ntlm_auth_nego_flags(i:&[u8]) -> IResult<&[u8],(u8,u8,u32)> {
 }
 
 pub fn parse_ntlm_auth_record(i: &[u8]) -> IResult<&[u8], NTLMSSPAuthRecord> {
-    let (i, _lm_blob_len) = le_u16(i)?;
+    let record_len = i.len() + 12; // idenfier (8) and type (4) are cut before we are called
+
+    let (i, _lm_blob_len) = verify(le_u16, |&v| (v as usize) < record_len)(i)?;
     let (i, _lm_blob_maxlen) = le_u16(i)?;
-    let (i, _lm_blob_offset) = le_u32(i)?;
+    let (i, _lm_blob_offset) = verify(le_u32, |&v| (v as usize) < record_len)(i)?;
 
-    let (i, _ntlmresp_blob_len) = le_u16(i)?;
+    let (i, _ntlmresp_blob_len) = verify(le_u16, |&v| (v as usize) < record_len)(i)?;
     let (i, _ntlmresp_blob_maxlen) = le_u16(i)?;
-    let (i, _ntlmresp_blob_offset) = le_u32(i)?;
+    let (i, _ntlmresp_blob_offset) = verify(le_u32, |&v| (v as usize) < record_len)(i)?;
 
-    let (i, domain_blob_len) = le_u16(i)?;
+    let (i, domain_blob_len) = verify(le_u16, |&v| (v as usize) < record_len)(i)?;
     let (i, _domain_blob_maxlen) = le_u16(i)?;
-    let (i, domain_blob_offset) = le_u32(i)?;
+    let (i, domain_blob_offset) = verify(le_u32, |&v| (v as usize) < record_len)(i)?;
 
-    let (i, user_blob_len) = le_u16(i)?;
+    let (i, user_blob_len) = verify(le_u16, |&v| (v as usize) < record_len)(i)?;
     let (i, _user_blob_maxlen) = le_u16(i)?;
-    let (i, _user_blob_offset) = le_u32(i)?;
+    let (i, _user_blob_offset) = verify(le_u32, |&v| (v as usize) < record_len)(i)?;
 
-    let (i, host_blob_len) = le_u16(i)?;
+    let (i, host_blob_len) = verify(le_u16, |&v| (v as usize) < record_len)(i)?;
     let (i, _host_blob_maxlen) = le_u16(i)?;
-    let (i, _host_blob_offset) = le_u32(i)?;
+    let (i, _host_blob_offset) = verify(le_u32, |&v| (v as usize) < record_len)(i)?;
 
-    let (i, _ssnkey_blob_len) = le_u16(i)?;
+    let (i, _ssnkey_blob_len) = verify(le_u16, |&v| (v as usize) < record_len)(i)?;
     let (i, _ssnkey_blob_maxlen) = le_u16(i)?;
-    let (i, _ssnkey_blob_offset) = le_u32(i)?;
+    let (i, _ssnkey_blob_offset) = verify(le_u32, |&v| (v as usize) < record_len)(i)?;
 
     let (i, nego_flags) = parse_ntlm_auth_nego_flags(i)?;
     let (i, version) = cond(nego_flags.1==1, parse_ntlm_auth_version)(i)?;
 
     // subtrack 12 as idenfier (8) and type (4) are cut before we are called
     // subtract 60 for the len/offset/maxlen fields above
-    let (i, _) = cond(nego_flags.1==1, |b| take(domain_blob_offset - (12 + 60))(b))(i)?;
+    let (i, _) = cond(nego_flags.1==1 && domain_blob_offset > 72, |b| take(domain_blob_offset - (12 + 60))(b))(i)?;
     // or 52 if we have no version
-    let (i, _) = cond(nego_flags.1==0, |b| take(domain_blob_offset - (12 + 52))(b))(i)?;
+    let (i, _) = cond(nego_flags.1==0 && domain_blob_offset > 64, |b| take(domain_blob_offset - (12 + 52))(b))(i)?;
 
     let (i, domain_blob) = take(domain_blob_len)(i)?;
     let (i, user_blob) = take(user_blob_len)(i)?;
@@ -119,7 +121,7 @@ pub fn parse_ntlm_auth_record(i: &[u8]) -> IResult<&[u8], NTLMSSPAuthRecord> {
     Ok((i, record))
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct NTLMSSPRecord<'a> {
     pub msg_type: u32,
     pub data: &'a[u8],

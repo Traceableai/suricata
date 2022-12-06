@@ -28,6 +28,7 @@
 #include "tmqh-packetpool.h"
 #include "tm-threads-common.h"
 #include "tm-modules.h"
+#include "flow.h" // for the FlowQueue
 
 #ifdef OS_WIN32
 static inline void SleepUsec(uint64_t usec)
@@ -78,7 +79,6 @@ extern ThreadVars *tv_root[TVT_MAX];
 extern SCMutex tv_root_lock;
 
 void TmSlotSetFuncAppend(ThreadVars *, TmModule *, const void *);
-TmSlot *TmSlotGetSlotForTM(int);
 
 ThreadVars *TmThreadCreate(const char *, const char *, const char *, const char *, const char *, const char *,
                            void *(fn_p)(void *), int);
@@ -96,7 +96,6 @@ void TmThreadKillThreads(void);
 void TmThreadClearThreadsFamily(int family);
 void TmThreadAppend(ThreadVars *, int);
 void TmThreadSetGroupName(ThreadVars *tv, const char *name);
-void TmThreadDumpThreads(void);
 
 TmEcode TmThreadSetCPUAffinity(ThreadVars *, uint16_t);
 TmEcode TmThreadSetThreadPriority(ThreadVars *, int);
@@ -109,11 +108,8 @@ void TmThreadInitMC(ThreadVars *);
 void TmThreadTestThreadUnPaused(ThreadVars *);
 void TmThreadContinue(ThreadVars *);
 void TmThreadContinueThreads(void);
-void TmThreadPause(ThreadVars *);
-void TmThreadPauseThreads(void);
 void TmThreadCheckThreadState(void);
 TmEcode TmThreadWaitOnThreadInit(void);
-ThreadVars *TmThreadsGetCallingThread(void);
 
 int TmThreadsCheckFlag(ThreadVars *, uint32_t);
 void TmThreadsSetFlag(ThreadVars *, uint32_t);
@@ -122,12 +118,12 @@ void TmThreadWaitForFlag(ThreadVars *, uint32_t);
 
 TmEcode TmThreadsSlotVarRun (ThreadVars *tv, Packet *p, TmSlot *slot);
 
-ThreadVars *TmThreadsGetTVContainingSlot(TmSlot *);
 void TmThreadDisablePacketThreads(void);
 void TmThreadDisableReceiveThreads(void);
-TmSlot *TmThreadGetFirstTmSlotForPartialPattern(const char *);
 
 uint32_t TmThreadCountThreadsByTmmFlags(uint8_t flags);
+
+TmEcode TmThreadWaitOnThreadRunning(void);
 
 static inline void TmThreadsCleanDecodePQ(PacketQueueNoLock *pq)
 {
@@ -257,7 +253,6 @@ static inline void TmThreadsCaptureHandleTimeout(ThreadVars *tv, Packet *p)
 void TmThreadsListThreads(void);
 int TmThreadsRegisterThread(ThreadVars *tv, const int type);
 void TmThreadsUnregisterThread(const int id);
-int TmThreadsInjectPacketsById(Packet **, int id);
 void TmThreadsInjectFlowById(Flow *f, const int id);
 
 void TmThreadsInitThreadsTimestamp(const struct timeval *ts);

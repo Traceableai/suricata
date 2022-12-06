@@ -22,6 +22,10 @@
  *
  */
 
+#include "detect-engine-build.h"
+#include "detect-engine-alert.h"
+#include "app-layer-parser.h"
+
 /**
  * \test This is a test for a valid value 1430000000.
  *

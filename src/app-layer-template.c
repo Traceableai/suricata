@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2020 Open Information Security Foundation
+/* Copyright (C) 2015-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -34,6 +34,7 @@
  */
 
 #include "suricata-common.h"
+#include "suricata.h"
 #include "stream.h"
 #include "conf.h"
 #include "app-layer.h"
@@ -43,6 +44,7 @@
 
 #include "util-unittest.h"
 #include "util-validate.h"
+#include "util-enum.h"
 
 /* The default port to probe for echo traffic if not provided in the
  * configuration file. */
@@ -390,17 +392,16 @@ static void *TemplateGetTx(void *statev, uint64_t tx_id)
     TemplateState *state = statev;
     TemplateTransaction *tx;
 
-    SCLogNotice("Requested tx ID %"PRIu64".", tx_id);
+    SCLogDebug("Requested tx ID %" PRIu64 ".", tx_id);
 
     TAILQ_FOREACH(tx, &state->tx_list, next) {
         if (tx->tx_id == tx_id) {
-            SCLogNotice("Transaction %"PRIu64" found, returning tx object %p.",
-                tx_id, tx);
+            SCLogDebug("Transaction %" PRIu64 " found, returning tx object %p.", tx_id, tx);
             return tx;
         }
     }
 
-    SCLogNotice("Transaction ID %"PRIu64" not found.", tx_id);
+    SCLogDebug("Transaction ID %" PRIu64 " not found.", tx_id);
     return NULL;
 }
 
@@ -443,6 +444,15 @@ static AppLayerTxData *TemplateGetTxData(void *vtx)
 {
     TemplateTransaction *tx = vtx;
     return &tx->tx_data;
+}
+
+/**
+ * \brief retrieve the state data
+ */
+static AppLayerStateData *TemplateGetStateData(void *vstate)
+{
+    TemplateState *state = vstate;
+    return &state->state_data;
 }
 
 void RegisterTemplateParsers(void)
@@ -522,6 +532,7 @@ void RegisterTemplateParsers(void)
             TemplateGetTx);
         AppLayerParserRegisterTxDataFunc(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateGetTxData);
+        AppLayerParserRegisterStateDataFunc(IPPROTO_TCP, ALPROTO_TEMPLATE, TemplateGetStateData);
 
         AppLayerParserRegisterGetEventInfo(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateStateGetEventInfo);

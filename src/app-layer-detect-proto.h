@@ -25,6 +25,9 @@
 #ifndef __APP_LAYER_DETECT_PROTO__H__
 #define __APP_LAYER_DETECT_PROTO__H__
 
+#include "flow.h"
+#include "app-layer-protos.h"
+
 typedef struct AppLayerProtoDetectThreadCtx_ AppLayerProtoDetectThreadCtx;
 
 typedef AppProto (*ProbingParserFPtr)(
@@ -115,8 +118,8 @@ int AppLayerProtoDetectSetup(void);
  */
 void AppLayerProtoDetectReset(Flow *);
 
-void AppLayerRequestProtocolChange(Flow *f, uint16_t dp, AppProto expect_proto);
-void AppLayerRequestProtocolTLSUpgrade(Flow *f);
+bool AppLayerRequestProtocolChange(Flow *f, uint16_t dp, AppProto expect_proto);
+bool AppLayerRequestProtocolTLSUpgrade(Flow *f);
 
 /**
  * \brief Cleans up the app layer protocol detection phase.

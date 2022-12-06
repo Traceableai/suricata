@@ -25,7 +25,6 @@
 
 #include "suricata-common.h"
 #include "suricata.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -39,6 +38,7 @@
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-debug.h"
+#include "detect-engine-build.h"
 
 #define TRACK_DST      1
 #define TRACK_SRC      2
@@ -103,7 +103,7 @@ static DetectThresholdData *DetectDetectionFilterParse (const char *rawstr)
     char *copy_str = NULL, *df_opt = NULL;
     int seconds_found = 0, count_found = 0, track_found = 0;
     int seconds_pos = 0, count_pos = 0;
-    uint16_t pos = 0;
+    size_t pos = 0;
     int i = 0;
     char *saveptr = NULL;
 
@@ -273,8 +273,11 @@ static void DetectDetectionFilterFree(DetectEngineCtx *de_ctx, void *df_ptr)
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-threshold.h"
+#include "detect-engine-alert.h"
 #include "util-time.h"
 #include "util-hashlist.h"
+#include "action-globals.h"
+#include "packet.h"
 
 /**
  * \test DetectDetectionFilterTestParse01 is a test for a valid detection_filter options

@@ -28,6 +28,7 @@
 #include "detect.h"
 #include "detect-engine.h"
 #include "detect-engine-prefilter.h"
+#include "detect-engine-build.h"
 #include "detect-parse.h"
 #include "detect-transform-strip-whitespace.h"
 
@@ -102,6 +103,9 @@ static void TransformStripWhitespace(InspectionBuffer *buffer, void *options)
 {
     const uint8_t *input = buffer->inspect;
     const uint32_t input_len = buffer->inspect_len;
+    if (input_len == 0) {
+        return;
+    }
     uint8_t output[input_len]; // we can only shrink
     uint8_t *oi = output, *os = output;
 

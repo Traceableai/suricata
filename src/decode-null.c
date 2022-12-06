@@ -40,10 +40,6 @@
 #include "util-unittest.h"
 #include "util-debug.h"
 
-#include "pkt-var.h"
-#include "util-profiling.h"
-#include "host.h"
-
 #define HDR_SIZE 4
 
 #define AF_INET6_BSD     24
@@ -76,7 +72,11 @@ int DecodeNull(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
     switch(type) {
         case AF_INET:
             SCLogDebug("IPV4 Packet");
-            DecodeIPV4(tv, dtv, p, GET_PKT_DATA(p)+HDR_SIZE, GET_PKT_LEN(p)-HDR_SIZE);
+            if (GET_PKT_LEN(p) - HDR_SIZE > USHRT_MAX) {
+                return TM_ECODE_FAILED;
+            }
+            DecodeIPV4(
+                    tv, dtv, p, GET_PKT_DATA(p) + HDR_SIZE, (uint16_t)(GET_PKT_LEN(p) - HDR_SIZE));
             break;
         case AF_INET6_BSD:
         case AF_INET6_FREEBSD:
@@ -85,7 +85,11 @@ int DecodeNull(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
         case AF_INET6_SOLARIS:
         case AF_INET6_WINSOCK:
             SCLogDebug("IPV6 Packet");
-            DecodeIPV6(tv, dtv, p, GET_PKT_DATA(p)+HDR_SIZE, GET_PKT_LEN(p)-HDR_SIZE);
+            if (GET_PKT_LEN(p) - HDR_SIZE > USHRT_MAX) {
+                return TM_ECODE_FAILED;
+            }
+            DecodeIPV6(
+                    tv, dtv, p, GET_PKT_DATA(p) + HDR_SIZE, (uint16_t)(GET_PKT_LEN(p) - HDR_SIZE));
             break;
         default:
             SCLogDebug("Unknown Null packet type version %" PRIu32 "", type);
@@ -95,18 +99,6 @@ int DecodeNull(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
     return TM_ECODE_OK;
 }
 
-#ifdef UNITTESTS
-
-#endif /* UNITTESTS */
-
-/**
- * \brief Registers Null unit tests
- */
-void DecodeNullRegisterTests(void)
-{
-#ifdef UNITTESTS
-#endif /* UNITTESTS */
-}
 /**
  * @}
  */

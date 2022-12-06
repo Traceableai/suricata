@@ -26,16 +26,13 @@
 #ifndef __OUTPUT_PACKET_H__
 #define __OUTPUT_PACKET_H__
 
-#include "decode.h"
-#include "output.h"
-
 /** packet logger function pointer type */
 typedef int (*PacketLogger)(ThreadVars *, void *thread_data, const Packet *);
 
 /** packet logger condition function pointer type,
  *  must return true for packets that should be logged
  */
-typedef int (*PacketLogCondition)(ThreadVars *, const Packet *);
+typedef int (*PacketLogCondition)(ThreadVars *, void *thread_data, const Packet *);
 
 int OutputRegisterPacketLogger(LoggerId logger_id, const char *name,
     PacketLogger LogFunc, PacketLogCondition ConditionFunc, OutputCtx *,

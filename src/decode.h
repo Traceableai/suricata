@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2020 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -32,7 +32,10 @@
 #include "threadvars.h"
 #include "util-debug.h"
 #include "decode-events.h"
+#ifdef PROFILING
 #include "flow-worker.h"
+#include "app-layer-protos.h"
+#endif
 
 #ifdef HAVE_NAPATECH
 #include "util-napatech.h"
@@ -75,17 +78,14 @@ enum PktSrcEnum {
 #ifdef HAVE_PF_RING_FLOW_OFFLOAD
 #include "source-pfring.h"
 #endif
+#ifdef HAVE_AF_XDP
+#include "source-af-xdp.h"
+#endif
 
-#include "action-globals.h"
-
-#include "decode-erspan.h"
 #include "decode-ethernet.h"
-#include "decode-chdlc.h"
 #include "decode-gre.h"
-#include "decode-geneve.h"
 #include "decode-ppp.h"
 #include "decode-pppoe.h"
-#include "decode-sll.h"
 #include "decode-ipv4.h"
 #include "decode-ipv6.h"
 #include "decode-icmpv4.h"
@@ -94,17 +94,9 @@ enum PktSrcEnum {
 #include "decode-udp.h"
 #include "decode-sctp.h"
 #include "decode-esp.h"
-#include "decode-raw.h"
-#include "decode-null.h"
 #include "decode-vlan.h"
-#include "decode-vntag.h"
-#include "decode-vxlan.h"
 #include "decode-mpls.h"
-#include "decode-nsh.h"
 
-#include "detect-reference.h"
-
-#include "app-layer-protos.h"
 
 /* forward declarations */
 struct DetectionEngineThreadCtx_;
@@ -161,15 +153,6 @@ typedef struct Address_ {
         (a)->addr_data32[1] = 0;                                  \
         (a)->addr_data32[2] = 0;                                  \
         (a)->addr_data32[3] = 0;                                  \
-    } while (0)
-
-/* clear the address structure by setting all fields to 0 */
-#define CLEAR_ADDR(a) do {       \
-        (a)->family = 0;         \
-        (a)->addr_data32[0] = 0; \
-        (a)->addr_data32[1] = 0; \
-        (a)->addr_data32[2] = 0; \
-        (a)->addr_data32[3] = 0; \
     } while (0)
 
 /* Set the IPv6 addresses into the Addrs of the Packet.
@@ -279,10 +262,10 @@ typedef uint16_t Port;
  * found in this packet */
 typedef struct PacketAlert_ {
     SigIntId num; /* Internal num, used for sorting */
-    uint8_t action; /* Internal num, used for sorting */
+    uint8_t action; /* Internal num, used for thresholding */
     uint8_t flags;
     const struct Signature_ *s;
-    uint64_t tx_id;
+    uint64_t tx_id; /* Used for sorting */
     int64_t frame_id;
 } PacketAlert;
 
@@ -299,15 +282,22 @@ typedef struct PacketAlert_ {
 /** alert is in a frame, frame_id set */
 #define PACKET_ALERT_FLAG_FRAME 0x20
 
+extern uint16_t packet_alert_max;
 #define PACKET_ALERT_MAX 15
 
 typedef struct PacketAlerts_ {
     uint16_t cnt;
-    PacketAlert alerts[PACKET_ALERT_MAX];
+    uint16_t discarded;
+    uint16_t suppressed;
+    PacketAlert *alerts;
     /* single pa used when we're dropping,
      * so we can log it out in the drop log. */
     PacketAlert drop;
 } PacketAlerts;
+
+PacketAlert *PacketAlertCreate(void);
+
+void PacketAlertFree(PacketAlert *pa);
 
 /** number of decoder events we support per packet. Power of 2 minus 1
  *  for memory layout */
@@ -396,6 +386,24 @@ typedef struct PktProfiling_ {
 } PktProfiling;
 
 #endif /* PROFILING */
+
+enum PacketDropReason {
+    PKT_DROP_REASON_NOT_SET = 0,
+    PKT_DROP_REASON_DECODE_ERROR,
+    PKT_DROP_REASON_DEFRAG_ERROR,
+    PKT_DROP_REASON_DEFRAG_MEMCAP,
+    PKT_DROP_REASON_FLOW_MEMCAP,
+    PKT_DROP_REASON_FLOW_DROP,
+    PKT_DROP_REASON_APPLAYER_ERROR,
+    PKT_DROP_REASON_APPLAYER_MEMCAP,
+    PKT_DROP_REASON_RULES,
+    PKT_DROP_REASON_RULES_THRESHOLD, /**< detection_filter in action */
+    PKT_DROP_REASON_STREAM_ERROR,
+    PKT_DROP_REASON_STREAM_MEMCAP,
+    PKT_DROP_REASON_STREAM_MIDSTREAM,
+    PKT_DROP_REASON_NFQ_ERROR,    /**< no nfq verdict, must be error */
+    PKT_DROP_REASON_INNER_PACKET, /**< drop issued by inner (tunnel) packet */
+};
 
 /* forward declaration since Packet struct definition requires this */
 struct PacketQueue_;
@@ -490,7 +498,12 @@ typedef struct Packet_
 #ifdef HAVE_DPDK
         DPDKPacketVars dpdk_v;
 #endif
-
+#ifdef HAVE_NAPATECH
+        NapatechPacketVars ntpv;
+#endif
+#ifdef HAVE_AF_XDP
+        AFXDPPacketVars afxdp_v;
+#endif
         /* A chunk of memory that a plugin can use for its packet vars. */
         uint8_t plugin_v[PLUGIN_VAR_SIZE];
 
@@ -593,6 +606,14 @@ typedef struct Packet_
     /** data linktype in host order */
     int datalink;
 
+    /* count decoded layers of packet : too many layers
+     * cause issues with performance and stability (stack exhaustion)
+     */
+    uint8_t nb_decoded_layers;
+
+    /* enum PacketDropReason::PKT_DROP_REASON_* as uint8_t for compactness */
+    uint8_t drop_reason;
+
     /* tunnel/encapsulation handling */
     struct Packet_ *root; /* in case of tunnel this is a ptr
                            * to the 'real' packet, the one we
@@ -600,11 +621,6 @@ typedef struct Packet_
                            * It should always point to the lowest
                            * packet in a encapsulated packet */
 
-    /** mutex to protect access to:
-     *  - tunnel_rtv_cnt
-     *  - tunnel_tpr_cnt
-     */
-    SCMutex tunnel_mutex;
     /* ready to set verdict counter, only set in root */
     uint16_t tunnel_rtv_cnt;
     /* tunnel packet ref count */
@@ -618,17 +634,19 @@ typedef struct Packet_
      */
     struct PktPool_ *pool;
 
-    /* count decoded layers of packet : too many layers
-     * cause issues with performance and stability (stack exhaustion)
-     */
-    uint8_t nb_decoded_layers;
-
 #ifdef PROFILING
     PktProfiling *profile;
 #endif
-#ifdef HAVE_NAPATECH
-    NapatechPacketVars ntpv;
-#endif
+    /* things in the packet that live beyond a reinit */
+    struct {
+        /** lock to protect access to:
+         *  - tunnel_rtv_cnt
+         *  - tunnel_tpr_cnt
+         *  - nfq_v.mark
+         *  - flags
+         */
+        SCSpinlock tunnel_lock;
+    } persistent;
 } Packet;
 
 /** highest mtu of the interfaces we monitor */
@@ -699,6 +717,9 @@ typedef struct DecodeThreadVars_
 
     uint16_t counter_flow_memcap;
 
+    uint16_t counter_tcp_active_sessions;
+    uint16_t counter_flow_total;
+    uint16_t counter_flow_active;
     uint16_t counter_flow_tcp;
     uint16_t counter_flow_udp;
     uint16_t counter_flow_icmp4;
@@ -757,175 +778,17 @@ void CaptureStatsSetup(ThreadVars *tv, CaptureStats *s);
         }                                           \
     } while(0)
 
-/**
- *  \brief Initialize a packet structure for use.
- */
-#define PACKET_INITIALIZE(p) {         \
-    SCMutexInit(&(p)->tunnel_mutex, NULL); \
-    PACKET_RESET_CHECKSUMS((p)); \
-    (p)->livedev = NULL; \
-}
-
-#define PACKET_RELEASE_REFS(p) do {              \
-        FlowDeReference(&((p)->flow));          \
-        HostDeReference(&((p)->host_src));      \
-        HostDeReference(&((p)->host_dst));      \
-    } while (0)
-
-/**
- *  \brief Recycle a packet structure for reuse.
- */
-#define PACKET_REINIT(p)                                                                           \
-    do {                                                                                           \
-        CLEAR_ADDR(&(p)->src);                                                                     \
-        CLEAR_ADDR(&(p)->dst);                                                                     \
-        (p)->sp = 0;                                                                               \
-        (p)->dp = 0;                                                                               \
-        (p)->proto = 0;                                                                            \
-        (p)->recursion_level = 0;                                                                  \
-        PACKET_FREE_EXTDATA((p));                                                                  \
-        (p)->flags = (p)->flags & PKT_ALLOC;                                                       \
-        (p)->flowflags = 0;                                                                        \
-        (p)->pkt_src = 0;                                                                          \
-        (p)->vlan_id[0] = 0;                                                                       \
-        (p)->vlan_id[1] = 0;                                                                       \
-        (p)->vlan_idx = 0;                                                                         \
-        (p)->ts.tv_sec = 0;                                                                        \
-        (p)->ts.tv_usec = 0;                                                                       \
-        (p)->datalink = 0;                                                                         \
-        (p)->action = 0;                                                                           \
-        if ((p)->pktvar != NULL) {                                                                 \
-            PktVarFree((p)->pktvar);                                                               \
-            (p)->pktvar = NULL;                                                                    \
-        }                                                                                          \
-        (p)->ethh = NULL;                                                                          \
-        if ((p)->ip4h != NULL) {                                                                   \
-            CLEAR_IPV4_PACKET((p));                                                                \
-        }                                                                                          \
-        if ((p)->ip6h != NULL) {                                                                   \
-            CLEAR_IPV6_PACKET((p));                                                                \
-        }                                                                                          \
-        if ((p)->tcph != NULL) {                                                                   \
-            CLEAR_TCP_PACKET((p));                                                                 \
-        }                                                                                          \
-        if ((p)->udph != NULL) {                                                                   \
-            CLEAR_UDP_PACKET((p));                                                                 \
-        }                                                                                          \
-        if ((p)->sctph != NULL) {                                                                  \
-            CLEAR_SCTP_PACKET((p));                                                                \
-        }                                                                                          \
-        if ((p)->esph != NULL) {                                                                   \
-            CLEAR_ESP_PACKET((p));                                                                 \
-        }                                                                                          \
-        if ((p)->icmpv4h != NULL) {                                                                \
-            CLEAR_ICMPV4_PACKET((p));                                                              \
-        }                                                                                          \
-        if ((p)->icmpv6h != NULL) {                                                                \
-            CLEAR_ICMPV6_PACKET((p));                                                              \
-        }                                                                                          \
-        (p)->ppph = NULL;                                                                          \
-        (p)->pppoesh = NULL;                                                                       \
-        (p)->pppoedh = NULL;                                                                       \
-        (p)->greh = NULL;                                                                          \
-        (p)->payload = NULL;                                                                       \
-        (p)->payload_len = 0;                                                                      \
-        (p)->BypassPacketsFlow = NULL;                                                             \
-        (p)->pktlen = 0;                                                                           \
-        (p)->alerts.cnt = 0;                                                                       \
-        (p)->alerts.drop.action = 0;                                                               \
-        (p)->pcap_cnt = 0;                                                                         \
-        (p)->tunnel_rtv_cnt = 0;                                                                   \
-        (p)->tunnel_tpr_cnt = 0;                                                                   \
-        (p)->events.cnt = 0;                                                                       \
-        AppLayerDecoderEventsResetEvents((p)->app_layer_events);                                   \
-        (p)->next = NULL;                                                                          \
-        (p)->prev = NULL;                                                                          \
-        (p)->root = NULL;                                                                          \
-        (p)->livedev = NULL;                                                                       \
-        PACKET_RESET_CHECKSUMS((p));                                                               \
-        PACKET_PROFILING_RESET((p));                                                               \
-        p->tenant_id = 0;                                                                          \
-        p->nb_decoded_layers = 0;                                                                  \
-    } while (0)
-
-#define PACKET_RECYCLE(p) do { \
-        PACKET_RELEASE_REFS((p)); \
-        PACKET_REINIT((p)); \
-    } while (0)
-
-/**
- *  \brief Cleanup a packet so that we can free it. No memset needed..
- */
-#define PACKET_DESTRUCTOR(p) do {                  \
-        if ((p)->pktvar != NULL) {              \
-            PktVarFree((p)->pktvar);            \
-        }                                       \
-        PACKET_FREE_EXTDATA((p));               \
-        SCMutexDestroy(&(p)->tunnel_mutex);     \
-        AppLayerDecoderEventsFreeEvents(&(p)->app_layer_events); \
-        PACKET_PROFILING_RESET((p));            \
-    } while (0)
-
-
-/* macro's for setting the action
- * handle the case of a root packet
- * for tunnels */
-
-#define PACKET_SET_ACTION(p, a) (p)->action = (a)
-
-static inline void PacketSetAction(Packet *p, const uint8_t a)
-{
-    if (likely(p->root == NULL)) {
-        PACKET_SET_ACTION(p, a);
-    } else {
-        PACKET_SET_ACTION(p->root, a);
-    }
-}
-
-#define PACKET_ALERT(p) PACKET_SET_ACTION(p, ACTION_ALERT)
-
-#define PACKET_ACCEPT(p) PACKET_SET_ACTION(p, ACTION_ACCEPT)
-
-#define PACKET_DROP(p) PACKET_SET_ACTION(p, ACTION_DROP)
-
-#define PACKET_REJECT(p) PACKET_SET_ACTION(p, (ACTION_REJECT|ACTION_DROP))
-
-#define PACKET_REJECT_DST(p) PACKET_SET_ACTION(p, (ACTION_REJECT_DST|ACTION_DROP))
-
-#define PACKET_REJECT_BOTH(p) PACKET_SET_ACTION(p, (ACTION_REJECT_BOTH|ACTION_DROP))
-
-#define PACKET_PASS(p) PACKET_SET_ACTION(p, ACTION_PASS)
-
-#define PACKET_TEST_ACTION(p, a) (p)->action &(a)
-
-static inline uint8_t PacketTestAction(const Packet *p, const uint8_t a)
-{
-    if (likely(p->root == NULL)) {
-        return PACKET_TEST_ACTION(p, a);
-    } else {
-        return PACKET_TEST_ACTION(p->root, a);
-    }
-}
-
-#define PACKET_UPDATE_ACTION(p, a) (p)->action |= (a)
-static inline void PacketUpdateAction(Packet *p, const uint8_t a)
-{
-    if (likely(p->root == NULL)) {
-        PACKET_UPDATE_ACTION(p, a);
-    } else {
-        PACKET_UPDATE_ACTION(p->root, a);
-    }
-}
-
 #define TUNNEL_INCR_PKT_RTV_NOLOCK(p) do {                                          \
         ((p)->root ? (p)->root->tunnel_rtv_cnt++ : (p)->tunnel_rtv_cnt++);          \
     } while (0)
 
-#define TUNNEL_INCR_PKT_TPR(p) do {                                                 \
-        SCMutexLock((p)->root ? &(p)->root->tunnel_mutex : &(p)->tunnel_mutex);     \
-        ((p)->root ? (p)->root->tunnel_tpr_cnt++ : (p)->tunnel_tpr_cnt++);          \
-        SCMutexUnlock((p)->root ? &(p)->root->tunnel_mutex : &(p)->tunnel_mutex);   \
-    } while (0)
+static inline void TUNNEL_INCR_PKT_TPR(Packet *p)
+{
+    Packet *rp = p->root ? p->root : p;
+    SCSpinLock(&rp->persistent.tunnel_lock);
+    rp->tunnel_tpr_cnt++;
+    SCSpinUnlock(&rp->persistent.tunnel_lock);
+}
 
 #define TUNNEL_PKT_RTV(p) ((p)->root ? (p)->root->tunnel_rtv_cnt : (p)->tunnel_rtv_cnt)
 #define TUNNEL_PKT_TPR(p) ((p)->root ? (p)->root->tunnel_tpr_cnt : (p)->tunnel_tpr_cnt)
@@ -975,6 +838,7 @@ DecodeThreadVars *DecodeThreadVarsAlloc(ThreadVars *);
 void DecodeThreadVarsFree(ThreadVars *, DecodeThreadVars *);
 void DecodeUpdatePacketCounters(ThreadVars *tv,
                                 const DecodeThreadVars *dtv, const Packet *p);
+const char *PacketDropReasonToString(enum PacketDropReason r);
 
 /* decoder functions */
 int DecodeEthernet(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint32_t);
@@ -1016,31 +880,8 @@ void AddressDebugPrint(Address *);
 typedef int (*DecoderFunc)(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
          const uint8_t *pkt, uint32_t len);
 void DecodeGlobalConfig(void);
+void PacketAlertGetMaxConfig(void);
 void DecodeUnregisterCounters(void);
-
-/** \brief Set the No payload inspection Flag for the packet.
- *
- * \param p Packet to set the flag in
- */
-#define DecodeSetNoPayloadInspectionFlag(p) do { \
-        (p)->flags |= PKT_NOPAYLOAD_INSPECTION;  \
-    } while (0)
-
-#define DecodeUnsetNoPayloadInspectionFlag(p) do { \
-        (p)->flags &= ~PKT_NOPAYLOAD_INSPECTION;  \
-    } while (0)
-
-/** \brief Set the No packet inspection Flag for the packet.
- *
- * \param p Packet to set the flag in
- */
-#define DecodeSetNoPacketInspectionFlag(p) do { \
-        (p)->flags |= PKT_NOPACKET_INSPECTION;  \
-    } while (0)
-#define DecodeUnsetNoPacketInspectionFlag(p) do { \
-        (p)->flags &= ~PKT_NOPACKET_INSPECTION;  \
-    } while (0)
-
 
 #define ENGINE_SET_EVENT(p, e) do { \
     SCLogDebug("p %p event %d", (p), e); \
@@ -1148,8 +989,8 @@ void DecodeUnregisterCounters(void);
 
 /** Flag to indicate that packet contents should not be inspected */
 #define PKT_NOPAYLOAD_INSPECTION BIT_U32(2)
-/** Packet was alloc'd this run, needs to be freed */
-#define PKT_ALLOC BIT_U32(3)
+// vacancy
+
 /** Packet has matched a tag */
 #define PKT_HAS_TAG BIT_U32(4)
 /** Packet payload was added to reassembled stream */
@@ -1206,6 +1047,13 @@ void DecodeUnregisterCounters(void);
  *  so flag it for not setting stream events */
 #define PKT_STREAM_NO_EVENTS BIT_U32(28)
 
+/** We had no alert on flow before this packet */
+#define PKT_FIRST_ALERTS BIT_U32(29)
+#define PKT_FIRST_TAG    BIT_U32(30)
+
+/** Packet updated the app-layer. */
+#define PKT_APPLAYER_UPDATE BIT_U32(31)
+
 /** \brief return 1 if the packet is a pseudo packet */
 #define PKT_IS_PSEUDOPKT(p) \
     ((p)->flags & (PKT_PSEUDO_STREAM_END|PKT_PSEUDO_DETECTLOG_FLUSH))
@@ -1225,6 +1073,24 @@ static inline bool PacketIncreaseCheckLayers(Packet *p)
     return true;
 }
 
+/** \brief Set the No payload inspection Flag for the packet.
+ *
+ * \param p Packet to set the flag in
+ */
+static inline void DecodeSetNoPayloadInspectionFlag(Packet *p)
+{
+    p->flags |= PKT_NOPAYLOAD_INSPECTION;
+}
+
+/** \brief Set the No packet inspection Flag for the packet.
+ *
+ * \param p Packet to set the flag in
+ */
+static inline void DecodeSetNoPacketInspectionFlag(Packet *p)
+{
+    p->flags |= PKT_NOPACKET_INSPECTION;
+}
+
 /** \brief return true if *this* packet needs to trigger a verdict.
  *
  *  If we have the root packet, and we have none outstanding,
@@ -1238,8 +1104,8 @@ static inline bool PacketIncreaseCheckLayers(Packet *p)
 static inline bool VerdictTunnelPacket(Packet *p)
 {
     bool verdict = true;
-    SCMutex *m = p->root ? &p->root->tunnel_mutex : &p->tunnel_mutex;
-    SCMutexLock(m);
+    SCSpinlock *lock = p->root ? &p->root->persistent.tunnel_lock : &p->persistent.tunnel_lock;
+    SCSpinLock(lock);
     const uint16_t outstanding = TUNNEL_PKT_TPR(p) - TUNNEL_PKT_RTV(p);
     SCLogDebug("tunnel: outstanding %u", outstanding);
 
@@ -1253,7 +1119,7 @@ static inline bool VerdictTunnelPacket(Packet *p)
     } else {
         verdict = false;
     }
-    SCMutexUnlock(m);
+    SCSpinUnlock(lock);
     return verdict;
 }
 

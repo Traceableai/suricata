@@ -20,26 +20,25 @@ use crate::kerberos::*;
 use crate::smb::ntlmssp_records::*;
 use crate::smb::smb::*;
 
-use nom;
-use nom::IResult;
+use nom7::{Err, IResult};
 use der_parser::ber::BerObjectContent;
 use der_parser::der::{parse_der_oid, parse_der_sequence};
 
 fn parse_secblob_get_spnego(blob: &[u8]) -> IResult<&[u8], &[u8], SecBlobError>
 {
-    let (rem, base_o) = der_parser::parse_der(blob).map_err(nom::Err::convert)?;
+    let (rem, base_o) = der_parser::parse_der(blob).map_err(Err::convert)?;
     SCLogDebug!("parse_secblob_get_spnego: base_o {:?}", base_o);
     let d = match base_o.content.as_slice() {
-        Err(_) => { return Err(nom::Err::Error(SecBlobError::NotSpNego)); },
+        Err(_) => { return Err(Err::Error(SecBlobError::NotSpNego)); },
         Ok(d) => d,
     };
-    let (next, o) = parse_der_oid(d).map_err(nom::Err::convert)?;
+    let (next, o) = parse_der_oid(d).map_err(Err::convert)?;
     SCLogDebug!("parse_secblob_get_spnego: sub_o {:?}", o);
 
     let oid = match o.content.as_oid() {
         Ok(oid) => oid,
         Err(_) => {
-            return Err(nom::Err::Error(SecBlobError::NotSpNego));
+            return Err(Err::Error(SecBlobError::NotSpNego));
         },
     };
     SCLogDebug!("oid {}", oid.to_string());
@@ -49,7 +48,7 @@ fn parse_secblob_get_spnego(blob: &[u8]) -> IResult<&[u8], &[u8], SecBlobError>
             SCLogDebug!("SPNEGO {}", oid);
         },
         _ => {
-            return Err(nom::Err::Error(SecBlobError::NotSpNego));
+            return Err(Err::Error(SecBlobError::NotSpNego));
         },
     }
 
@@ -60,14 +59,14 @@ fn parse_secblob_get_spnego(blob: &[u8]) -> IResult<&[u8], &[u8], SecBlobError>
 
 fn parse_secblob_spnego_start(blob: &[u8]) -> IResult<&[u8], &[u8], SecBlobError>
 {
-    let (rem, o) = der_parser::parse_der(blob).map_err(nom::Err::convert)?;
+    let (rem, o) = der_parser::parse_der(blob).map_err(Err::convert)?;
     let d = match o.content.as_slice() {
         Ok(d) => {
             SCLogDebug!("d: next data len {}",d.len());
             d
         },
         _ => {
-            return Err(nom::Err::Error(SecBlobError::NotSpNego));
+            return Err(Err::Error(SecBlobError::NotSpNego));
         },
     };
     Ok((rem, d))
@@ -133,7 +132,7 @@ fn parse_secblob_spnego(blob: &[u8]) -> Option<SpnegoRequest>
                     }
                 }
 
-                if have_ntlmssp && kticket == None {
+                if have_ntlmssp && kticket.is_none() {
                     SCLogDebug!("parsing expected NTLMSSP");
                     ntlmssp = parse_ntlmssp_blob(os);
                 }
@@ -144,12 +143,12 @@ fn parse_secblob_spnego(blob: &[u8]) -> Option<SpnegoRequest>
 
     let s = SpnegoRequest {
         krb: kticket,
-        ntlmssp: ntlmssp,
+        ntlmssp,
     };
     Some(s)
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct NtlmsspData {
     pub host: Vec<u8>,
     pub user: Vec<u8>,
@@ -182,9 +181,9 @@ fn parse_ntlmssp_blob(blob: &[u8]) -> Option<NtlmsspData>
                             domain.retain(|&i|i != 0x00);
 
                             let d = NtlmsspData {
-                                host: host,
-                                user: user,
-                                domain: domain,
+                                host,
+                                user,
+                                domain,
                                 version: ad.version,
                             };
                             ntlmssp_data = Some(d);

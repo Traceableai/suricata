@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -679,7 +678,7 @@ static TmEcode JsonHttpLogThreadDeinit(ThreadVars *t, void *data)
 void JsonHttpLogRegister (void)
 {
     /* register as child of eve-log */
-    OutputRegisterTxSubModule(LOGGER_JSON_HTTP, "eve-log", "JsonHttpLog", "eve-log.http",
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonHttpLog", "eve-log.http",
             OutputHttpLogInitSub, ALPROTO_HTTP1, JsonHttpLogger, JsonHttpLogThreadInit,
             JsonHttpLogThreadDeinit, NULL);
 }

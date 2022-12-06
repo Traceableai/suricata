@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2020 Open Information Security Foundation
+/* Copyright (C) 2017-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -26,9 +26,8 @@ use std::ffi::CString;
 use der_parser::ber::BerObjectContent;
 use der_parser::der::parse_der_sequence;
 use der_parser::oid::Oid;
-use nom;
-use nom::IResult;
-use nom::error::ErrorKind;
+use nom7::{Err, IResult};
+use nom7::error::{ErrorKind, make_error};
 
 #[derive(AppLayerEvent)]
 pub enum SNMPEvent {
@@ -38,6 +37,8 @@ pub enum SNMPEvent {
 }
 
 pub struct SNMPState<'a> {
+    state_data: AppLayerStateData,
+
     /// SNMP protocol version
     pub version: u32,
 
@@ -89,6 +90,7 @@ impl<'a> Transaction for SNMPTransaction<'a> {
 impl<'a> SNMPState<'a> {
     pub fn new() -> SNMPState<'a> {
         SNMPState{
+            state_data: AppLayerStateData::new(),
             version: 0,
             transactions: Vec::new(),
             tx_id: 0,
@@ -108,8 +110,12 @@ impl<'a> Default for SNMPPduInfo<'a> {
 }
 
 impl<'a> State<SNMPTransaction<'a>> for SNMPState<'a> {
-    fn get_transactions(&self) -> &[SNMPTransaction<'a>] {
-        &self.transactions
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&SNMPTransaction<'a>> {
+        self.transactions.get(index)
     }
 }
 
@@ -212,7 +218,7 @@ impl<'a> SNMPState<'a> {
 
     fn free_tx(&mut self, tx_id: u64) {
         let tx = self.transactions.iter().position(|tx| tx.id == tx_id + 1);
-        debug_assert!(tx != None);
+        debug_assert!(tx.is_some());
         if let Some(idx) = tx {
             let _ = self.transactions.remove(idx);
         }
@@ -239,7 +245,7 @@ impl<'a> SNMPTransaction<'a> {
             community: None,
             usm: None,
             encrypted: false,
-            id: id,
+            id,
             tx_data: applayer::AppLayerTxData::new(),
         }
     }
@@ -339,11 +345,11 @@ fn parse_pdu_enveloppe_version(i:&[u8]) -> IResult<&[u8],u32> {
                 },
                 _ => ()
             };
-            Err(nom::Err::Error(error_position!(i, ErrorKind::Verify)))
+            Err(Err::Error(make_error(i, ErrorKind::Verify)))
         },
-        Err(nom::Err::Incomplete(i)) => Err(nom::Err::Incomplete(i)),
-        Err(nom::Err::Failure(_)) |
-        Err(nom::Err::Error(_))      => Err(nom::Err::Error(error_position!(i,ErrorKind::Verify)))
+        Err(Err::Incomplete(i)) => Err(Err::Incomplete(i)),
+        Err(Err::Failure(_)) |
+        Err(Err::Error(_))      => Err(Err::Error(make_error(i,ErrorKind::Verify)))
     }
 }
 
@@ -357,15 +363,16 @@ pub unsafe extern "C" fn rs_snmp_probing_parser(_flow: *const Flow,
     let alproto = ALPROTO_SNMP;
     if slice.len() < 4 { return ALPROTO_FAILED; }
     match parse_pdu_enveloppe_version(slice) {
-        Ok((_,_))                    => alproto,
-        Err(nom::Err::Incomplete(_)) => ALPROTO_UNKNOWN,
-        _                            => ALPROTO_FAILED,
+        Ok((_,_))               => alproto,
+        Err(Err::Incomplete(_)) => ALPROTO_UNKNOWN,
+        _                       => ALPROTO_FAILED,
     }
 }
 
 export_tx_data_get!(rs_snmp_get_tx_data, SNMPTransaction);
+export_state_data_get!(rs_snmp_get_state_data, SNMPState);
 
-const PARSER_NAME : &'static [u8] = b"snmp\0";
+const PARSER_NAME : &[u8] = b"snmp\0";
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_register_snmp_parser() {
@@ -392,9 +399,10 @@ pub unsafe extern "C" fn rs_register_snmp_parser() {
         get_eventinfo_byid : Some(SNMPEvent::get_event_info_by_id),
         localstorage_new   : None,
         localstorage_free  : None,
-        get_files          : None,
+        get_tx_files       : None,
         get_tx_iterator    : Some(applayer::state_get_tx_iterator::<SNMPState, SNMPTransaction>),
         get_tx_data        : rs_snmp_get_tx_data,
+        get_state_data     : rs_snmp_get_state_data,
         apply_tx_config    : None,
         flags              : APP_LAYER_PARSER_OPT_UNIDIR_TXS,
         truncate           : None,

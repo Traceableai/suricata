@@ -25,6 +25,33 @@
 
 #include "suricata-common.h"
 #include "util-cidr.h"
+#include "util-debug.h"
+#include "util-unittest.h"
+
+/** \brief turn 32 bit mask into CIDR
+ *  \retval cidr cidr value or -1 if the netmask can't be expressed as cidr
+ */
+int CIDRFromMask(uint32_t netmask)
+{
+    netmask = ntohl(netmask);
+    if (netmask == 0) {
+        return 0;
+    }
+    int p = 0;
+    bool seen_1 = false;
+    while (netmask > 0) {
+        if (netmask & 1) {
+            seen_1 = true;
+            p++;
+        } else {
+            if (seen_1) {
+                return -1;
+            }
+        }
+        netmask >>= 1;
+    }
+    return p;
+}
 
 uint32_t CIDRGet(int cidr)
 {
@@ -68,4 +95,62 @@ void CIDRGetIPv6(int cidr, struct in6_addr *in6)
         if (--cidr > 0)
             in6->s6_addr[i] = in6->s6_addr[i] >> 1;
     }
+}
+
+#ifdef UNITTESTS
+
+static int CIDRFromMaskTest01(void)
+{
+    struct in_addr in;
+    int v = inet_pton(AF_INET, "255.255.255.0", &in);
+
+    FAIL_IF(v <= 0);
+    FAIL_IF_NOT(24 == CIDRFromMask(in.s_addr));
+
+    PASS;
+}
+
+static int CIDRFromMaskTest02(void)
+{
+    struct in_addr in;
+    int v = inet_pton(AF_INET, "255.255.0.42", &in);
+
+    FAIL_IF(v <= 0);
+    FAIL_IF_NOT(-1 == CIDRFromMask(in.s_addr));
+
+    PASS;
+}
+
+static int CIDRFromMaskTest03(void)
+{
+    struct in_addr in;
+    int v = inet_pton(AF_INET, "0.0.0.0", &in);
+
+    FAIL_IF(v <= 0);
+    FAIL_IF_NOT(0 == CIDRFromMask(in.s_addr));
+
+    PASS;
+}
+
+static int CIDRFromMaskTest04(void)
+{
+    struct in_addr in;
+    int v = inet_pton(AF_INET, "255.255.255.255", &in);
+
+    FAIL_IF(v <= 0);
+    FAIL_IF_NOT(32 == CIDRFromMask(in.s_addr));
+
+    PASS;
+}
+
+#endif /* UNITTESTS */
+
+void UtilCIDRTests(void)
+{
+#ifdef UNITTESTS
+    UtRegisterTest("CIDRFromMaskTest01", CIDRFromMaskTest01);
+    UtRegisterTest("CIDRFromMaskTest02", CIDRFromMaskTest02);
+    UtRegisterTest("CIDRFromMaskTest03", CIDRFromMaskTest03);
+    UtRegisterTest("CIDRFromMaskTest04", CIDRFromMaskTest04);
+#endif /* UNITTESTS */
 }

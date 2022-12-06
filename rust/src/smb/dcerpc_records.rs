@@ -26,7 +26,7 @@ use nom7::number::streaming::{be_u16, le_u8, le_u16, le_u32, u16, u32};
 use nom7::sequence::tuple;
 use nom7::{Err, IResult};
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct DceRpcResponseRecord<'a> {
     pub data: &'a[u8],
 }
@@ -45,9 +45,10 @@ pub fn parse_dcerpc_response_record(i:&[u8], frag_len: u16 )
     Ok((i, record))
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct DceRpcRequestRecord<'a> {
     pub opnum: u16,
+    pub context_id: u16,
     pub data: &'a[u8],
 }
 
@@ -59,15 +60,16 @@ pub fn parse_dcerpc_request_record(i:&[u8], frag_len: u16, little: bool)
     if frag_len < 24 {
         return Err(Err::Error(SmbError::RecordTooSmall));
     }
-    let (i, _) = take(6_usize)(i)?;
+    let (i, _) = take(4_usize)(i)?;
     let endian = if little { Endianness::Little } else { Endianness::Big };
+    let (i, context_id) = u16(endian)(i)?;
     let (i, opnum) = u16(endian)(i)?;
     let (i, data) = take(frag_len - 24)(i)?;
-    let record = DceRpcRequestRecord { opnum, data };
+    let record = DceRpcRequestRecord { opnum, context_id, data };
     Ok((i, record))
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct DceRpcBindIface<'a> {
     pub iface: &'a[u8],
     pub ver: u16,
@@ -106,7 +108,7 @@ pub fn parse_dcerpc_bind_iface_big(i: &[u8]) -> IResult<&[u8], DceRpcBindIface> 
     Ok((i, res))
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct DceRpcBindRecord<'a> {
     pub num_ctx_items: u8,
     pub ifaces: Vec<DceRpcBindIface<'a>>,
@@ -140,7 +142,7 @@ pub fn parse_dcerpc_bind_record_big(i: &[u8]) -> IResult<&[u8], DceRpcBindRecord
     Ok((i, record))
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct DceRpcBindAckResult<'a> {
     pub ack_result: u16,
     pub ack_reason: u16,
@@ -162,7 +164,7 @@ pub fn parse_dcerpc_bindack_result(i: &[u8]) -> IResult<&[u8], DceRpcBindAckResu
     Ok((i, res))
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct DceRpcBindAckRecord<'a> {
     pub num_results: u8,
     pub results: Vec<DceRpcBindAckResult<'a>>,
@@ -185,7 +187,7 @@ pub fn parse_dcerpc_bindack_record(i: &[u8]) -> IResult<&[u8], DceRpcBindAckReco
     Ok((i, record))
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Eq)]
 pub struct DceRpcRecord<'a> {
     pub version_major: u8,
     pub version_minor: u8,

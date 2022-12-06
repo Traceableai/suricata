@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2020 Open Information Security Foundation
+/* Copyright (C) 2017-2021 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -19,9 +19,8 @@
 
 use std;
 use std::ffi::CString;
-use nom;
-use nom::IResult;
-use nom::number::streaming::be_u32;
+use nom7::{Err, IResult};
+use nom7::number::streaming::be_u32;
 use der_parser::der::der_read_element_header;
 use der_parser::ber::BerClass;
 use kerberos_parser::krb5_parser;
@@ -37,6 +36,8 @@ pub enum KRB5Event {
 }
 
 pub struct KRB5State {
+    state_data: AppLayerStateData,
+
     pub req_id: u8,
 
     pub record_ts: usize,
@@ -52,8 +53,12 @@ pub struct KRB5State {
 }
 
 impl State<KRB5Transaction> for KRB5State {
-    fn get_transactions(&self) -> &[KRB5Transaction] {
-        &self.transactions
+    fn get_transaction_count(&self) -> usize {
+        self.transactions.len()
+    }
+
+    fn get_transaction_by_index(&self, index: usize) -> Option<&KRB5Transaction> {
+        self.transactions.get(index)
     }
 }
 
@@ -70,6 +75,9 @@ pub struct KRB5Transaction {
 
     /// Encryption used (only in AS-REP and TGS-REP)
     pub etype: Option<EncryptionType>,
+
+    /// Encryption used for ticket
+    pub ticket_etype: Option<EncryptionType>,
 
     /// Error code, if request has failed
     pub error_code: Option<ErrorCode>,
@@ -97,6 +105,7 @@ pub fn to_hex_string(bytes: &[u8]) -> String {
 impl KRB5State {
     pub fn new() -> KRB5State {
         KRB5State{
+            state_data: AppLayerStateData::new(),
             req_id: 0,
             record_ts: 0,
             defrag_buf_ts: Vec::new(),
@@ -127,6 +136,7 @@ impl KRB5State {
                             tx.cname = Some(kdc_rep.cname);
                             tx.realm = Some(kdc_rep.crealm);
                             tx.sname = Some(kdc_rep.ticket.sname);
+                            tx.ticket_etype = Some(kdc_rep.ticket.enc_part.etype);
                             tx.etype = Some(kdc_rep.enc_part.etype);
                             self.transactions.push(tx);
                             if test_weak_encryption(kdc_rep.enc_part.etype) {
@@ -145,6 +155,7 @@ impl KRB5State {
                             tx.msg_type = MessageType::KRB_TGS_REP;
                             tx.cname = Some(kdc_rep.cname);
                             tx.realm = Some(kdc_rep.crealm);
+                            tx.ticket_etype = Some(kdc_rep.ticket.enc_part.etype);
                             tx.sname = Some(kdc_rep.ticket.sname);
                             tx.etype = Some(kdc_rep.enc_part.etype);
                             self.transactions.push(tx);
@@ -177,7 +188,7 @@ impl KRB5State {
                 }
                 0
             },
-            Err(nom::Err::Incomplete(_)) => {
+            Err(Err::Incomplete(_)) => {
                 SCLogDebug!("Insufficient data while parsing KRB5 data");
                 self.set_event(KRB5Event::MalformedData);
                 -1
@@ -207,7 +218,7 @@ impl KRB5State {
 
     fn free_tx(&mut self, tx_id: u64) {
         let tx = self.transactions.iter().position(|tx| tx.id == tx_id + 1);
-        debug_assert!(tx != None);
+        debug_assert!(tx.is_some());
         if let Some(idx) = tx {
             let _ = self.transactions.remove(idx);
         }
@@ -229,8 +240,9 @@ impl KRB5Transaction {
             realm: None,
             sname: None,
             etype: None,
+            ticket_etype: None,
             error_code: None,
-            id: id,
+            id,
             tx_data: applayer::AppLayerTxData::new(),
         }
     }
@@ -336,7 +348,7 @@ pub unsafe extern "C" fn rs_krb5_probing_parser(_flow: *const Flow,
             }
             return ALPROTO_FAILED;
         },
-        Err(nom::Err::Incomplete(_)) => {
+        Err(Err::Incomplete(_)) => {
             return ALPROTO_UNKNOWN;
         },
         Err(_) => {
@@ -360,7 +372,7 @@ pub unsafe extern "C" fn rs_krb5_probing_parser_tcp(_flow: *const Flow,
             return rs_krb5_probing_parser(_flow, direction,
                     rem.as_ptr(), rem.len() as u32, rdir);
         },
-        Err(nom::Err::Incomplete(_)) => {
+        Err(Err::Incomplete(_)) => {
             return ALPROTO_UNKNOWN;
         },
         Err(_) => {
@@ -425,14 +437,14 @@ pub unsafe extern "C" fn rs_krb5_parse_request_tcp(_flow: *const core::Flow,
         }
     };
     let mut cur_i = tcp_buffer;
-    while cur_i.len() > 0 {
+    while !cur_i.is_empty() {
         if state.record_ts == 0 {
             match be_u32(cur_i) as IResult<&[u8],u32> {
                 Ok((rem,record)) => {
                     state.record_ts = record as usize;
                     cur_i = rem;
                 },
-                Err(nom::Err::Incomplete(_)) => {
+                Err(Err::Incomplete(_)) => {
                     state.defrag_buf_ts.extend_from_slice(cur_i);
                     return AppLayerResult::ok();
                 }
@@ -483,14 +495,14 @@ pub unsafe extern "C" fn rs_krb5_parse_response_tcp(_flow: *const core::Flow,
         }
     };
     let mut cur_i = tcp_buffer;
-    while cur_i.len() > 0 {
+    while !cur_i.is_empty() {
         if state.record_tc == 0 {
             match be_u32(cur_i) as IResult<&[u8],_> {
                 Ok((rem,record)) => {
                     state.record_tc = record as usize;
                     cur_i = rem;
                 },
-                Err(nom::Err::Incomplete(_)) => {
+                Err(Err::Incomplete(_)) => {
                     state.defrag_buf_tc.extend_from_slice(cur_i);
                     return AppLayerResult::ok();
                 }
@@ -516,8 +528,9 @@ pub unsafe extern "C" fn rs_krb5_parse_response_tcp(_flow: *const core::Flow,
 }
 
 export_tx_data_get!(rs_krb5_get_tx_data, KRB5Transaction);
+export_state_data_get!(rs_krb5_get_state_data, KRB5State);
 
-const PARSER_NAME : &'static [u8] = b"krb5\0";
+const PARSER_NAME : &[u8] = b"krb5\0";
 
 #[no_mangle]
 pub unsafe extern "C" fn rs_register_krb5_parser() {
@@ -544,9 +557,10 @@ pub unsafe extern "C" fn rs_register_krb5_parser() {
         get_eventinfo_byid : Some(KRB5Event::get_event_info_by_id),
         localstorage_new   : None,
         localstorage_free  : None,
-        get_files          : None,
+        get_tx_files       : None,
         get_tx_iterator    : Some(applayer::state_get_tx_iterator::<KRB5State, KRB5Transaction>),
         get_tx_data        : rs_krb5_get_tx_data,
+        get_state_data     : rs_krb5_get_state_data,
         apply_tx_config    : None,
         flags              : APP_LAYER_PARSER_OPT_UNIDIR_TXS,
         truncate           : None,

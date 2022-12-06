@@ -25,7 +25,6 @@
 
 #include "suricata-common.h"
 #include "threads.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -45,7 +44,6 @@
 #include "conf-yaml-loader.h"
 
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-spm.h"
 #include "util-print.h"
 #include "util-ja3.h"
@@ -59,9 +57,6 @@
 #include "util-unittest-helper.h"
 
 static int DetectTlsJa3HashSetup(DetectEngineCtx *, Signature *, const char *);
-#ifdef UNITTESTS
-static void DetectTlsJa3HashRegisterTests(void);
-#endif
 static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
        const DetectEngineTransforms *transforms,
        Flow *f, const uint8_t flow_flags,
@@ -79,12 +74,9 @@ void DetectTlsJa3HashRegister(void)
 {
     sigmatch_table[DETECT_AL_TLS_JA3_HASH].name = "ja3.hash";
     sigmatch_table[DETECT_AL_TLS_JA3_HASH].alias = "ja3_hash";
-    sigmatch_table[DETECT_AL_TLS_JA3_HASH].desc = "content modifier to match the JA3 hash buffer";
+    sigmatch_table[DETECT_AL_TLS_JA3_HASH].desc = "sticky buffer to match the JA3 hash buffer";
     sigmatch_table[DETECT_AL_TLS_JA3_HASH].url = "/rules/ja3-keywords.html#ja3-hash";
     sigmatch_table[DETECT_AL_TLS_JA3_HASH].Setup = DetectTlsJa3HashSetup;
-#ifdef UNITTESTS
-    sigmatch_table[DETECT_AL_TLS_JA3_HASH].RegisterTests = DetectTlsJa3HashRegisterTests;
-#endif
     sigmatch_table[DETECT_AL_TLS_JA3_HASH].flags |= SIGMATCH_NOOPT;
     sigmatch_table[DETECT_AL_TLS_JA3_HASH].flags |= SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -93,6 +85,12 @@ void DetectTlsJa3HashRegister(void)
 
     DetectAppLayerMpmRegister2("ja3.hash", SIG_FLAG_TOSERVER, 2,
             PrefilterGenericMpmRegister, GetData, ALPROTO_TLS, 0);
+
+    DetectAppLayerMpmRegister2("ja3.hash", SIG_FLAG_TOSERVER, 2, PrefilterGenericMpmRegister,
+            Ja3DetectGetHash, ALPROTO_QUIC, 1);
+
+    DetectAppLayerInspectEngineRegister2("ja3.hash", ALPROTO_QUIC, SIG_FLAG_TOSERVER, 1,
+            DetectEngineInspectBufferGeneric, Ja3DetectGetHash);
 
     DetectBufferTypeSetDescriptionByName("ja3.hash", "TLS JA3 hash");
 
@@ -121,8 +119,10 @@ static int DetectTlsJa3HashSetup(DetectEngineCtx *de_ctx, Signature *s, const ch
     if (DetectBufferSetActiveList(s, g_tls_ja3_hash_buffer_id) < 0)
         return -1;
 
-    if (DetectSignatureSetAppProto(s, ALPROTO_TLS) < 0)
+    if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_TLS && s->alproto != ALPROTO_QUIC) {
+        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS, "rule contains conflicting protocols.");
         return -1;
+    }
 
     /* try to enable JA3 */
     SSLEnableJA3();
@@ -134,6 +134,7 @@ static int DetectTlsJa3HashSetup(DetectEngineCtx *de_ctx, Signature *s, const ch
         }
         return -2;
     }
+    s->init_data->init_flags |= SIG_FLAG_INIT_JA3;
 
     return 0;
 }
@@ -178,7 +179,7 @@ static bool DetectTlsJa3HashValidateCallback(const Signature *s,
             SCLogWarning(SC_WARN_POOR_RULE, "rule %u: %s", s->id, *sigerror);
         }
 
-        if (cd->content_len == 32)
+        if (cd->content_len == SC_MD5_HEX_LEN)
             return true;
 
         *sigerror = "Invalid length of the specified JA3 hash (should "
@@ -207,7 +208,7 @@ static void DetectTlsJa3HashSetupCallback(const DetectEngineCtx *de_ctx,
         for (u = 0; u < cd->content_len; u++)
         {
             if (isupper(cd->content[u])) {
-                cd->content[u] = tolower(cd->content[u]);
+                cd->content[u] = u8_tolower(cd->content[u]);
                 changed = true;
             }
         }
@@ -220,7 +221,3 @@ static void DetectTlsJa3HashSetupCallback(const DetectEngineCtx *de_ctx,
         }
     }
 }
-
-#ifdef UNITTESTS
-#include "tests/detect-tls-ja3-hash.c"
-#endif

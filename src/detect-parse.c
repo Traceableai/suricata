@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 
 #include "detect.h"
 #include "detect-engine.h"
@@ -32,8 +31,10 @@
 #include "detect-engine-port.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-state.h"
+#include "detect-engine-build.h"
 
 #include "detect-content.h"
+#include "detect-bsize.h"
 #include "detect-pcre.h"
 #include "detect-uricontent.h"
 #include "detect-reference.h"
@@ -68,6 +69,8 @@
 #include "detect-parse.h"
 #include "detect-engine-iponly.h"
 #include "app-layer-detect-proto.h"
+
+#include "action-globals.h"
 
 /* Table with all SigMatch registrations */
 SigTableElmt sigmatch_table[DETECT_TBLSIZE];
@@ -719,7 +722,7 @@ static int SigParseOptions(DetectEngineCtx *de_ctx, Signature *s, char *optstr, 
     s->init_data->negated = false;
 
     if (st->flags & SIGMATCH_INFO_DEPRECATED) {
-#define URL "https://suricata-ids.org/about/deprecation-policy/"
+#define URL "https://suricata.io/our-story/deprecation-policy/"
         if (st->alternative == 0)
             SCLogWarning(SC_WARN_DEPRECATED, "keyword '%s' is deprecated "
                     "and will be removed soon. See %s", st->name, URL);
@@ -1273,6 +1276,7 @@ Signature *SigAlloc (void)
         SCFree(sig);
         return NULL;
     }
+    sig->init_data->mpm_sm_list = -1;
 
     sig->init_data->smlists_array_size = DetectBufferTypeMaxId();
     SCLogDebug("smlists size %u", sig->init_data->smlists_array_size);
@@ -1390,11 +1394,11 @@ void SigFree(DetectEngineCtx *de_ctx, Signature *s)
     if (s == NULL)
         return;
 
-    if (s->CidrDst != NULL)
-        IPOnlyCIDRListFree(s->CidrDst);
+    if (s->cidr_dst != NULL)
+        IPOnlyCIDRListFree(s->cidr_dst);
 
-    if (s->CidrSrc != NULL)
-        IPOnlyCIDRListFree(s->CidrSrc);
+    if (s->cidr_src != NULL)
+        IPOnlyCIDRListFree(s->cidr_src);
 
     int i;
 
@@ -1491,6 +1495,15 @@ int DetectSignatureSetAppProto(Signature *s, AppProto alproto)
     if (alproto == ALPROTO_UNKNOWN ||
         alproto >= ALPROTO_FAILED) {
         SCLogError(SC_ERR_INVALID_ARGUMENT, "invalid alproto %u", alproto);
+        return -1;
+    }
+
+    /* since AppProtoEquals is quite permissive wrt dcerpc and smb, make sure
+     * we refuse `alert dcerpc ... smb.share; content...` explicitly. */
+    if (alproto == ALPROTO_SMB && s->alproto == ALPROTO_DCERPC) {
+        SCLogError(SC_ERR_CONFLICTING_RULE_KEYWORDS,
+                "can't set rule app proto to %s: already set to %s", AppProtoToString(alproto),
+                AppProtoToString(s->alproto));
         return -1;
     }
 
@@ -1717,6 +1730,10 @@ static int SigValidate(DetectEngineCtx *de_ctx, Signature *s)
             if (!DetectEngineBufferRunValidateCallback(de_ctx, x, s, &de_ctx->sigerror)) {
                 SCReturnInt(0);
             }
+
+            if (!DetectBsizeValidateContentCallback(s, x)) {
+                SCReturnInt(0);
+            }
         }
     }
 
@@ -1902,6 +1919,12 @@ static int SigValidate(DetectEngineCtx *de_ctx, Signature *s)
     }
 #endif
 
+    if (s->init_data->init_flags & SIG_FLAG_INIT_JA3 && s->alproto != ALPROTO_UNKNOWN &&
+            s->alproto != ALPROTO_TLS && s->alproto != ALPROTO_QUIC) {
+        SCLogError(SC_ERR_INVALID_SIGNATURE, "Cannot have ja3 with protocol %s.",
+                AppProtoToString(s->alproto));
+        SCReturnInt(0);
+    }
     if ((s->flags & SIG_FLAG_FILESTORE) || s->file_flags != 0 ||
         (s->init_data->init_flags & SIG_FLAG_INIT_FILEDATA)) {
         if (s->alproto != ALPROTO_UNKNOWN &&
@@ -1919,14 +1942,6 @@ static int SigValidate(DetectEngineCtx *de_ctx, Signature *s)
 
         if (s->alproto == ALPROTO_HTTP1 || s->alproto == ALPROTO_HTTP) {
             AppLayerHtpNeedFileInspection();
-        }
-    }
-    if (s->init_data->init_flags & SIG_FLAG_INIT_DCERPC) {
-        if (s->alproto != ALPROTO_UNKNOWN && s->alproto != ALPROTO_DCERPC &&
-                s->alproto != ALPROTO_SMB) {
-            SCLogError(SC_ERR_NO_FILES_FOR_PROTOCOL, "protocol %s doesn't support DCERPC keyword",
-                    AppProtoToString(s->alproto));
-            SCReturnInt(0);
         }
     }
     if (s->id == 0) {
@@ -2606,6 +2621,9 @@ void DetectSetupParseRegexes(const char *parse_str, DetectParseRegex *detect_par
  */
 
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
+#include "packet.h"
+
 static int SigParseTest01 (void)
 {
     int result = 1;
@@ -3601,16 +3619,10 @@ static int SigTestBidirec03 (void)
 
 end:
     if (p != NULL) {
-        PACKET_RECYCLE(p);
+        PacketRecycle(p);
         SCFree(p);
     }
-    if (de_ctx != NULL) {
-        SigCleanSignatures(de_ctx);
-        SigGroupCleanup(de_ctx);
-        DetectEngineCtxFree(de_ctx);
-    }
     FlowShutdown();
-
     return result;
 }
 
@@ -3718,7 +3730,7 @@ static int SigTestBidirec04 (void)
         0x6b,0x65,0x65,0x70,0x2d,0x61,0x6c,0x69,
         0x76,0x65,0x0d,0x0a,0x0d,0x0a }; /* end rawpkt1_ether */
 
-    p = SCMalloc(SIZE_OF_PACKET);
+    p = PacketGetFromAlloc();
     if (unlikely(p == NULL))
         return 0;
     DecodeThreadVars dtv;
@@ -3726,7 +3738,6 @@ static int SigTestBidirec04 (void)
     DetectEngineThreadCtx *det_ctx;
 
     memset(&th_v, 0, sizeof(th_v));
-    memset(p, 0, SIZE_OF_PACKET);
 
     FlowInitConfig(FLOW_QUIET);
     DecodeEthernet(&th_v, &dtv, p, rawpkt1_ether, sizeof(rawpkt1_ether));
@@ -3746,7 +3757,7 @@ static int SigTestBidirec04 (void)
     }
 
     if (p != NULL) {
-        PACKET_RECYCLE(p);
+        PacketRecycle(p);
     }
     FlowShutdown();
     DetectEngineThreadCtxDeinit(&th_v, (void *)det_ctx);
@@ -3768,25 +3779,13 @@ end:
  */
 static int SigParseTestNegation01 (void)
 {
-    int result = 0;
-    DetectEngineCtx *de_ctx;
-    Signature *s=NULL;
-
-    de_ctx = DetectEngineCtxInit();
-    if (de_ctx == NULL)
-        goto end;
+    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
+    FAIL_IF_NULL(de_ctx);
     de_ctx->flags |= DE_QUIET;
-
-    s = SigInit(de_ctx,"alert tcp !any any -> any any (msg:\"SigTest41-01 src address is !any \"; classtype:misc-activity; sid:410001; rev:1;)");
-    if (s != NULL) {
-        SigFree(de_ctx, s);
-        goto end;
-    }
-
-    result = 1;
-end:
-    if (de_ctx != NULL) DetectEngineCtxFree(de_ctx);
-    return result;
+    Signature *s = DetectEngineAppendSig(de_ctx, "alert tcp !any any -> any any (sid:1;)");
+    FAIL_IF_NOT_NULL(s);
+    DetectEngineCtxFree(de_ctx);
+    PASS;
 }
 
 /**
@@ -3925,26 +3924,14 @@ end:
  */
 static int SigParseTestNegation07 (void)
 {
-    int result = 0;
-    DetectEngineCtx *de_ctx;
-    Signature *s=NULL;
-
-    de_ctx = DetectEngineCtxInit();
-    if (de_ctx == NULL)
-        goto end;
+    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
+    FAIL_IF_NULL(de_ctx);
     de_ctx->flags |= DE_QUIET;
-
-    s = SigInit(de_ctx,"alert tcp any any -> [192.168.0.2,!192.168.0.0/24] any (msg:\"SigTest41-06 dst ip [192.168.0.2,!192.168.0.0/24] \"; classtype:misc-activity; sid:410006; rev:1;)");
-    if (s != NULL) {
-        SigFree(de_ctx, s);
-        goto end;
-    }
-
-    result = 1;
-end:
-    if (de_ctx != NULL)
-        DetectEngineCtxFree(de_ctx);
-    return result;
+    Signature *s = DetectEngineAppendSig(
+            de_ctx, "alert tcp any any -> [192.168.0.2,!192.168.0.0/24] any (sid:410006;)");
+    FAIL_IF_NOT_NULL(s);
+    DetectEngineCtxFree(de_ctx);
+    PASS;
 }
 
 /**
@@ -4176,36 +4163,39 @@ static int SigParseTestContentGtDsize02(void)
     PASS;
 }
 
+static int CountSigsWithSid(const DetectEngineCtx *de_ctx, const uint32_t sid)
+{
+    int cnt = 0;
+    for (Signature *s = de_ctx->sig_list; s != NULL; s = s->next) {
+        if (sid == s->id)
+            cnt++;
+    }
+    return cnt;
+}
+
 static int SigParseBidirWithSameSrcAndDest01(void)
 {
     DetectEngineCtx *de_ctx = DetectEngineCtxInit();
     FAIL_IF_NULL(de_ctx);
     de_ctx->flags |= DE_QUIET;
 
-    Signature *s = SigInit(de_ctx,
-            "alert tcp any any <> any any (sid:1; rev:1;)");
+    Signature *s = DetectEngineAppendSig(de_ctx, "alert tcp any any <> any any (sid:1;)");
     FAIL_IF_NULL(s);
-    FAIL_IF_NOT_NULL(s->next);
+    FAIL_IF_NOT(CountSigsWithSid(de_ctx, 1) == 1);
     FAIL_IF(s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC);
 
-    SigFree(de_ctx, s);
-
-    s = SigInit(de_ctx,
-            "alert tcp any [80, 81] <> any [81, 80] (sid:1; rev:1;)");
+    s = DetectEngineAppendSig(de_ctx, "alert tcp any [80, 81] <> any [81, 80] (sid:2;)");
     FAIL_IF_NULL(s);
-    FAIL_IF_NOT_NULL(s->next);
+    FAIL_IF_NOT(CountSigsWithSid(de_ctx, 2) == 1);
     FAIL_IF(s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC);
 
-    SigFree(de_ctx, s);
-
-    s = SigInit(de_ctx,
-            "alert tcp [1.2.3.4, 5.6.7.8] [80, 81] <> [5.6.7.8, 1.2.3.4] [81, 80] (sid:1; rev:1;)");
+    s = DetectEngineAppendSig(de_ctx,
+            "alert tcp [1.2.3.4, 5.6.7.8] [80, 81] <> [5.6.7.8, 1.2.3.4] [81, 80] (sid:3;)");
     FAIL_IF_NULL(s);
-    FAIL_IF_NOT_NULL(s->next);
+    FAIL_IF_NOT(CountSigsWithSid(de_ctx, 3) == 1);
     FAIL_IF(s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC);
 
-    SigFree(de_ctx, s);
-
+    DetectEngineCtxFree(de_ctx);
     PASS;
 }
 
@@ -4216,32 +4206,73 @@ static int SigParseBidirWithSameSrcAndDest02(void)
     de_ctx->flags |= DE_QUIET;
 
     // Source is a subset of destination
-    Signature *s = SigInit(de_ctx,
-            "alert tcp 1.2.3.4 any <> [1.2.3.4, 5.6.7.8, ::1] any (sid:1; rev:1;)");
+    Signature *s = DetectEngineAppendSig(
+            de_ctx, "alert tcp 1.2.3.4 any <> [1.2.3.4, 5.6.7.8, ::1] any (sid:1;)");
     FAIL_IF_NULL(s);
-    FAIL_IF_NULL(s->next);
+    FAIL_IF_NOT(CountSigsWithSid(de_ctx, 1) == 2);
     FAIL_IF_NOT(s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC);
-
-    SigFree(de_ctx, s);
 
     // Source is a subset of destination
-    s = SigInit(de_ctx,
-            "alert tcp [1.2.3.4, ::1] [80, 81, 82] <> [1.2.3.4, ::1] [80, 81] (sid:1; rev:1;)");
+    s = DetectEngineAppendSig(
+            de_ctx, "alert tcp [1.2.3.4, ::1] [80, 81, 82] <> [1.2.3.4, ::1] [80, 81] (sid:2;)");
     FAIL_IF_NULL(s);
-    FAIL_IF_NULL(s->next);
+    FAIL_IF_NOT(CountSigsWithSid(de_ctx, 2) == 2);
     FAIL_IF_NOT(s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC);
-
-    SigFree(de_ctx, s);
 
     // Source intersects with destination
-    s = SigInit(de_ctx,
-            "alert tcp [1.2.3.4, ::1, ABCD:AAAA::1] [80] <> [1.2.3.4, ::1] [80, 81] (sid:1; rev:1;)");
+    s = DetectEngineAppendSig(de_ctx,
+            "alert tcp [1.2.3.4, ::1, ABCD:AAAA::1] [80] <> [1.2.3.4, ::1] [80, 81] (sid:3;)");
     FAIL_IF_NULL(s);
-    FAIL_IF_NULL(s->next);
+    FAIL_IF_NOT(CountSigsWithSid(de_ctx, 3) == 2);
     FAIL_IF_NOT(s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC);
 
-    SigFree(de_ctx, s);
+    // mix in negation, these are the same
+    s = DetectEngineAppendSig(
+            de_ctx, "alert tcp [!1.2.3.4, 1.2.3.0/24] any <> [1.2.3.0/24, !1.2.3.4] any (sid:4;)");
+    FAIL_IF_NULL(s);
+    FAIL_IF_NOT(CountSigsWithSid(de_ctx, 4) == 1);
+    FAIL_IF(s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC);
 
+    // mix in negation, these are not the same
+    s = DetectEngineAppendSig(
+            de_ctx, "alert tcp [1.2.3.4, 1.2.3.0/24] any <> [1.2.3.0/24, !1.2.3.4] any (sid:5;)");
+    FAIL_IF_NULL(s);
+    FAIL_IF_NOT(CountSigsWithSid(de_ctx, 5) == 2);
+    FAIL_IF_NOT(s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC);
+
+    DetectEngineCtxFree(de_ctx);
+    PASS;
+}
+
+static int SigParseTestActionReject(void)
+{
+    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
+    FAIL_IF_NULL(de_ctx);
+
+    Signature *sig = DetectEngineAppendSig(
+            de_ctx, "reject tcp 1.2.3.4 any -> !1.2.3.4 any (msg:\"SigParseTest01\"; sid:1;)");
+#ifdef HAVE_LIBNET11
+    FAIL_IF_NULL(sig);
+    FAIL_IF_NOT((sig->action & (ACTION_DROP | ACTION_REJECT)) == (ACTION_DROP | ACTION_REJECT));
+#else
+    FAIL_IF_NOT_NULL(sig);
+#endif
+
+    DetectEngineCtxFree(de_ctx);
+    PASS;
+}
+
+static int SigParseTestActionDrop(void)
+{
+    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
+    FAIL_IF_NULL(de_ctx);
+
+    Signature *sig = DetectEngineAppendSig(
+            de_ctx, "drop tcp 1.2.3.4 any -> !1.2.3.4 any (msg:\"SigParseTest01\"; sid:1;)");
+    FAIL_IF_NULL(sig);
+    FAIL_IF_NOT(sig->action & ACTION_DROP);
+
+    DetectEngineCtxFree(de_ctx);
     PASS;
 }
 
@@ -4319,5 +4350,7 @@ void SigParseRegisterTests(void)
             SigParseBidirWithSameSrcAndDest01);
     UtRegisterTest("SigParseBidirWithSameSrcAndDest02",
             SigParseBidirWithSameSrcAndDest02);
+    UtRegisterTest("SigParseTestActionReject", SigParseTestActionReject);
+    UtRegisterTest("SigParseTestActionDrop", SigParseTestActionDrop);
 #endif /* UNITTESTS */
 }

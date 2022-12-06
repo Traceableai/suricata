@@ -49,6 +49,7 @@
 #include "stream-tcp-private.h"
 #include "stream-tcp-reassemble.h"
 #include "util-host-os-info.h"
+#include "util-validate.h"
 
 #include "defrag.h"
 #include "defrag-hash.h"
@@ -94,7 +95,7 @@ enum defrag_policies {
     DEFRAG_POLICY_DEFAULT = DEFRAG_POLICY_BSD,
 };
 
-static int default_policy = DEFRAG_POLICY_BSD;
+static uint8_t default_policy = DEFRAG_POLICY_BSD;
 
 /** The global DefragContext so all threads operate from the same
  * context. */
@@ -287,8 +288,6 @@ Defrag4Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
      * SCFree all the resources held by this tracker. */
     rp = PacketDefragPktSetup(p, NULL, 0, IPV4_GET_IPPROTO(p));
     if (rp == NULL) {
-        SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate packet for "
-                   "fragmentation re-assembly, dumping fragments.");
         goto error_remove_tracker;
     }
     PKT_SET_SRC(rp, PKT_SRC_DEFRAG);
@@ -296,8 +295,8 @@ Defrag4Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
     rp->recursion_level = p->recursion_level;
 
     int fragmentable_offset = 0;
-    int fragmentable_len = 0;
-    int hlen = 0;
+    uint16_t fragmentable_len = 0;
+    uint16_t hlen = 0;
     int ip_hdr_offset = 0;
 
     RB_FOREACH(frag, IP_FRAGMENTS, &tracker->fragment_tree) {
@@ -325,14 +324,19 @@ Defrag4Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
         else {
             int pkt_end = fragmentable_offset + frag->offset + frag->data_len;
             if (pkt_end > (int)MAX_PAYLOAD_SIZE) {
-                SCLogWarning(SC_ERR_REASSEMBLY, "Failed re-assemble "
-                        "fragmented packet, exceeds size of packet buffer.");
+                SCLogDebug("Failed re-assemble "
+                           "fragmented packet, exceeds size of packet buffer.");
                 goto error_remove_tracker;
             }
             if (PacketCopyDataOffset(rp,
                     fragmentable_offset + frag->offset + frag->ltrim,
                     frag->pkt + frag->data_offset + frag->ltrim,
                     frag->data_len - frag->ltrim) == -1) {
+                goto error_remove_tracker;
+            }
+            if (frag->offset > UINT16_MAX - frag->data_len) {
+                SCLogDebug("Failed re-assemble "
+                           "fragmentable_len exceeds UINT16_MAX");
                 goto error_remove_tracker;
             }
             if (frag->offset + frag->data_len > fragmentable_len)
@@ -344,11 +348,12 @@ Defrag4Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
         }
     }
 
-    SCLogDebug("ip_hdr_offset %u, hlen %u, fragmentable_len %u",
-            ip_hdr_offset, hlen, fragmentable_len);
+    SCLogDebug("ip_hdr_offset %u, hlen %" PRIu16 ", fragmentable_len %" PRIu16, ip_hdr_offset, hlen,
+            fragmentable_len);
 
     rp->ip4h = (IPV4Hdr *)(GET_PKT_DATA(rp) + ip_hdr_offset);
-    int old = rp->ip4h->ip_len + rp->ip4h->ip_off;
+    uint16_t old = rp->ip4h->ip_len + rp->ip4h->ip_off;
+    DEBUG_VALIDATE_BUG_ON(hlen > UINT16_MAX - fragmentable_len);
     rp->ip4h->ip_len = htons(fragmentable_len + hlen);
     rp->ip4h->ip_off = 0;
     rp->ip4h->ip_csum = FixChecksum(rp->ip4h->ip_csum,
@@ -426,15 +431,13 @@ Defrag6Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
     rp = PacketDefragPktSetup(p, (uint8_t *)p->ip6h,
             IPV6_GET_PLEN(p) + sizeof(IPV6Hdr), 0);
     if (rp == NULL) {
-        SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate packet for "
-                "fragmentation re-assembly, dumping fragments.");
         goto error_remove_tracker;
     }
     PKT_SET_SRC(rp, PKT_SRC_DEFRAG);
 
-    int unfragmentable_len = 0;
+    uint16_t unfragmentable_len = 0;
     int fragmentable_offset = 0;
-    int fragmentable_len = 0;
+    uint16_t fragmentable_len = 0;
     int ip_hdr_offset = 0;
     uint8_t next_hdr = 0;
     RB_FOREACH(frag, IP_FRAGMENTS, &tracker->fragment_tree) {
@@ -466,7 +469,10 @@ Defrag6Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
 
             /* unfragmentable part is the part between the ipv6 header
              * and the frag header. */
-            unfragmentable_len = (fragmentable_offset - ip_hdr_offset) - IPV6_HEADER_LEN;
+            DEBUG_VALIDATE_BUG_ON(fragmentable_offset < ip_hdr_offset + IPV6_HEADER_LEN);
+            DEBUG_VALIDATE_BUG_ON(
+                    fragmentable_offset - ip_hdr_offset - IPV6_HEADER_LEN > UINT16_MAX);
+            unfragmentable_len = (uint16_t)(fragmentable_offset - ip_hdr_offset - IPV6_HEADER_LEN);
             if (unfragmentable_len >= fragmentable_offset)
                 goto error_remove_tracker;
         }
@@ -485,6 +491,7 @@ Defrag6Reassemble(ThreadVars *tv, DefragTracker *tracker, Packet *p)
     }
 
     rp->ip6h = (IPV6Hdr *)(GET_PKT_DATA(rp) + ip_hdr_offset);
+    DEBUG_VALIDATE_BUG_ON(unfragmentable_len > UINT16_MAX - fragmentable_len);
     rp->ip6h->s_ip6_plen = htons(fragmentable_len + unfragmentable_len);
     /* if we have no unfragmentable part, so no ext hdrs before the frag
      * header, we need to update the ipv6 headers next header field. This
@@ -531,13 +538,13 @@ static Packet *
 DefragInsertFrag(ThreadVars *tv, DecodeThreadVars *dtv, DefragTracker *tracker, Packet *p)
 {
     Packet *r = NULL;
-    int ltrim = 0;
+    uint16_t ltrim = 0;
 
     uint8_t more_frags;
     uint16_t frag_offset;
 
     /* IPv4 header length - IPv4 only. */
-    uint16_t hlen = 0;
+    uint8_t hlen = 0;
 
     /* This is the offset of the start of the data in the packet that
      * falls after the IP header. */
@@ -561,7 +568,7 @@ DefragInsertFrag(ThreadVars *tv, DecodeThreadVars *dtv, DefragTracker *tracker, 
 
     /* settings for updating a payload when an ip6 fragment with
      * unfragmentable exthdrs are encountered. */
-    int ip6_nh_set_offset = 0;
+    uint32_t ip6_nh_set_offset = 0;
     uint8_t ip6_nh_set_value = 0;
 
 #ifdef DEBUG
@@ -570,12 +577,12 @@ DefragInsertFrag(ThreadVars *tv, DecodeThreadVars *dtv, DefragTracker *tracker, 
 
     if (tracker->af == AF_INET) {
         more_frags = IPV4_GET_MF(p);
-        frag_offset = IPV4_GET_IPOFFSET(p) << 3;
+        frag_offset = (uint16_t)(IPV4_GET_IPOFFSET(p) << 3);
         hlen = IPV4_GET_HLEN(p);
-        data_offset = (uint8_t *)p->ip4h + hlen - GET_PKT_DATA(p);
+        data_offset = (uint16_t)((uint8_t *)p->ip4h + hlen - GET_PKT_DATA(p));
         data_len = IPV4_GET_IPLEN(p) - hlen;
         frag_end = frag_offset + data_len;
-        ip_hdr_offset = (uint8_t *)p->ip4h - GET_PKT_DATA(p);
+        ip_hdr_offset = (uint16_t)((uint8_t *)p->ip4h - GET_PKT_DATA(p));
 
         /* Ignore fragment if the end of packet extends past the
          * maximum size of a packet. */
@@ -590,7 +597,7 @@ DefragInsertFrag(ThreadVars *tv, DecodeThreadVars *dtv, DefragTracker *tracker, 
         data_offset = p->ip6eh.fh_data_offset;
         data_len = p->ip6eh.fh_data_len;
         frag_end = frag_offset + data_len;
-        ip_hdr_offset = (uint8_t *)p->ip6h - GET_PKT_DATA(p);
+        ip_hdr_offset = (uint16_t)((uint8_t *)p->ip6h - GET_PKT_DATA(p));
         frag_hdr_offset = p->ip6eh.fh_header_offset;
 
         SCLogDebug("mf %s frag_offset %u data_offset %u, data_len %u, "
@@ -620,14 +627,12 @@ DefragInsertFrag(ThreadVars *tv, DecodeThreadVars *dtv, DefragTracker *tracker, 
         }
     }
     else {
-        /* Abort - should not happen. */
-        SCLogWarning(SC_ERR_INVALID_ARGUMENT, "Invalid address family, aborting.");
+        DEBUG_VALIDATE_BUG_ON(1);
         return NULL;
     }
 
     /* Update timeout. */
-    tracker->timeout.tv_sec = p->ts.tv_sec + tracker->host_timeout;
-    tracker->timeout.tv_usec = p->ts.tv_usec;
+    tracker->timeout = TimevalWithSeconds(&p->ts, tracker->host_timeout);
 
     Frag *prev = NULL, *next = NULL;
     bool overlap = false;
@@ -838,7 +843,7 @@ DefragInsertFrag(ThreadVars *tv, DecodeThreadVars *dtv, DefragTracker *tracker, 
         goto done;
     }
     memcpy(new->pkt, GET_PKT_DATA(p) + ltrim, GET_PKT_LEN(p) - ltrim);
-    new->len = GET_PKT_LEN(p) - ltrim;
+    new->len = (GET_PKT_LEN(p) - ltrim);
     /* in case of unfragmentable exthdrs, update the 'next hdr' field
      * in the raw buffer so the reassembled packet will point to the
      * correct next header after stripping the frag header */
@@ -1080,6 +1085,9 @@ void DefragDestroy(void)
 }
 
 #ifdef UNITTESTS
+#include "util-unittest-helper.h"
+#include "packet.h"
+
 #define IP_MF 0x2000
 
 /**
@@ -1099,7 +1107,7 @@ static Packet *BuildTestPacket(uint8_t proto, uint16_t id, uint16_t off, int mf,
     if (unlikely(p == NULL))
         return NULL;
 
-    PACKET_INITIALIZE(p);
+    PacketInit(p);
 
     gettimeofday(&p->ts, NULL);
     //p->ip4h = (IPV4Hdr *)GET_PKT_DATA(p);
@@ -1169,7 +1177,7 @@ static Packet *IPV6BuildTestPacket(uint8_t proto, uint32_t id, uint16_t off,
     if (unlikely(p == NULL))
         return NULL;
 
-    PACKET_INITIALIZE(p);
+    PacketInit(p);
 
     gettimeofday(&p->ts, NULL);
 

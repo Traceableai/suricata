@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2020 Open Information Security Foundation
+/* Copyright (C) 2007-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "decode.h"
 #include "detect.h"
 
@@ -33,11 +32,13 @@
 #include "detect-parse.h"
 #include "detect-engine.h"
 #include "detect-engine-mpm.h"
+#include "detect-engine-build.h"
 
 #include "detect-engine-siggroup.h"
 #include "detect-engine-address.h"
 
 #include "util-byte.h"
+#include "util-proto-name.h"
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 
@@ -121,13 +122,12 @@ static DetectIPProtoData *DetectIPProtoParse(const char *optstr)
 
     /* Protocol name/number */
     if (!isdigit((unsigned char)*(args[1]))) {
-        struct protoent *pent = getprotobyname(args[1]);
-        if (pent == NULL) {
-            SCLogError(SC_ERR_INVALID_VALUE, "Malformed protocol name: %s",
-                       str_ptr);
+        uint8_t proto;
+        if (!SCGetProtoByName(args[1], &proto)) {
+            SCLogError(SC_ERR_INVALID_VALUE, "Unknown protocol name: \"%s\"", str_ptr);
             goto error;
         }
-        data->proto = (uint8_t)pent->p_proto;
+        data->proto = proto;
     }
     else {
         if (StringParseUint8(&data->proto, 10, 0, args[1]) <= 0) {
@@ -241,7 +241,7 @@ static int DetectIPProtoSetup(DetectEngineCtx *de_ctx, Signature *s, const char 
                 goto error;
             }
             if (!lt_set && !not_set) {
-                s->proto.proto[data->proto / 8] = 0xfe << (data->proto % 8);
+                s->proto.proto[data->proto / 8] = (uint8_t)(0xfe << (data->proto % 8));
                 for (i = (data->proto / 8) + 1; i < (256 / 8); i++) {
                     s->proto.proto[i] = 0xff;
                 }
@@ -319,7 +319,7 @@ static int DetectIPProtoSetup(DetectEngineCtx *de_ctx, Signature *s, const char 
                 for (i = 0; i < (data->proto / 8); i++) {
                     s->proto.proto[i] = 0xff;
                 }
-                s->proto.proto[data->proto / 8] = ~(0xff << (data->proto % 8));
+                s->proto.proto[data->proto / 8] = (uint8_t)(~(0xff << (data->proto % 8)));
             } else if (gt_set && !not_set) {
                 SigMatch *temp_sm = s->init_data->smlists[DETECT_SM_LIST_MATCH];
                 while (temp_sm != NULL) {
@@ -394,7 +394,7 @@ static int DetectIPProtoSetup(DetectEngineCtx *de_ctx, Signature *s, const char 
                 for (i = 0; i < (data->proto / 8); i++) {
                     s->proto.proto[i] = 0xff;
                 }
-                s->proto.proto[data->proto / 8] = ~(1 << (data->proto % 8));
+                s->proto.proto[data->proto / 8] = (uint8_t)(~(1 << (data->proto % 8)));
                 for (i = (data->proto / 8) + 1; i < (256 / 8); i++) {
                     s->proto.proto[i] = 0xff;
                 }
@@ -455,6 +455,7 @@ static void DetectIPProtoFree(DetectEngineCtx *de_ctx, void *ptr)
 
 /* UNITTESTS */
 #ifdef UNITTESTS
+#include "detect-engine-alert.h"
 
 /**
  * \test DetectIPProtoTestParse01 is a test for an invalid proto number
@@ -1915,10 +1916,9 @@ static int DetectIPProtoTestSig2(void)
         0x4a, 0xea, 0x7a, 0x8e,
     };
 
-    Packet *p = SCMalloc(SIZE_OF_PACKET);
+    Packet *p = PacketGetFromAlloc();
     if (unlikely(p == NULL))
         return 0;
-    memset(p, 0, SIZE_OF_PACKET);
 
     DecodeThreadVars dtv;
     ThreadVars th_v;

@@ -24,7 +24,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -72,7 +71,7 @@ static OutputInitResult OutputRdpLogInitSub(ConfNode *conf,
 void JsonRdpLogRegister(void)
 {
     /* Register as an eve sub-module. */
-    OutputRegisterTxSubModule(LOGGER_JSON_RDP, "eve-log", "JsonRdpLog", "eve-log.rdp",
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonRdpLog", "eve-log.rdp",
             OutputRdpLogInitSub, ALPROTO_RDP, JsonRdpLogger, JsonLogThreadInit, JsonLogThreadDeinit,
             NULL);
 

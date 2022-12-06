@@ -16,7 +16,6 @@
  */
 
 #include "suricata-common.h"
-#include "debug.h"
 #include "detect.h"
 #include "pkt-var.h"
 #include "conf.h"
@@ -153,7 +152,7 @@ bool JsonModbusAddMetadata(const Flow *f, uint64_t tx_id, JsonBuilder *js)
 void JsonModbusLogRegister(void)
 {
     /* Register as an eve sub-module. */
-    OutputRegisterTxSubModule(LOGGER_JSON_MODBUS, "eve-log", "JsonModbusLog", "eve-log.modbus",
+    OutputRegisterTxSubModule(LOGGER_JSON_TX, "eve-log", "JsonModbusLog", "eve-log.modbus",
             OutputModbusLogInitSub, ALPROTO_MODBUS, JsonModbusLogger, JsonModbusLogThreadInit,
             JsonModbusLogThreadDeinit, NULL);
 
