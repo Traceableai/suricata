@@ -35,17 +35,15 @@ pub enum TelnetFrameType {
     Data,
 }
 
+#[derive(Default)]
 pub struct TelnetTransaction {
     tx_id: u64,
     tx_data: AppLayerTxData,
 }
 
 impl TelnetTransaction {
-    pub fn new() -> TelnetTransaction {
-        TelnetTransaction {
-            tx_id: 0,
-            tx_data: AppLayerTxData::new(),
-        }
+    pub fn new() -> Self {
+        Default::default()
     }
 }
 
@@ -92,6 +90,12 @@ impl State<TelnetTransaction> for TelnetState {
     }
 }
 
+impl Default for TelnetState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TelnetState {
     pub fn new() -> Self {
         Self {
@@ -127,12 +131,7 @@ impl TelnetState {
     }
 
     pub fn get_tx(&mut self, tx_id: u64) -> Option<&TelnetTransaction> {
-        for tx in &mut self.transactions {
-            if tx.tx_id == tx_id + 1 {
-                return Some(tx);
-            }
-        }
-        return None;
+        self.transactions.iter().find(|tx| tx.tx_id == tx_id + 1)
     }
 
     fn _new_tx(&mut self) -> TelnetTransaction {

@@ -1371,6 +1371,12 @@
                 },
                 "message": {
                     "type": "string"
+                },
+                "thread_name": {
+                    "type": "string"
+                },
+                "module": {
+                    "type": "string"
                 }
             },
             "additionalProperties": false
@@ -3772,7 +3778,7 @@
                         "error": {
                             "type": "object",
                             "properties": {
-                                "bittorrent-dht": { 
+                                "bittorrent-dht": {
                                     "$ref": "#/$defs/stats_applayer_error"
                                 },
                                 "dcerpc_tcp": {

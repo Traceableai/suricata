@@ -89,6 +89,7 @@ impl ModbusTransaction {
     }
 }
 
+#[derive(Default)]
 pub struct ModbusState {
     state_data: AppLayerStateData,
     pub transactions: Vec<ModbusTransaction>,
@@ -108,21 +109,11 @@ impl State<ModbusTransaction> for ModbusState {
 
 impl ModbusState {
     pub fn new() -> Self {
-        Self {
-            state_data: AppLayerStateData::new(),
-            transactions: Vec::new(),
-            tx_id: 0,
-            givenup: false,
-        }
+        Default::default()
     }
 
     pub fn get_tx(&mut self, tx_id: u64) -> Option<&mut ModbusTransaction> {
-        for tx in &mut self.transactions {
-            if tx.id == tx_id + 1 {
-                return Some(tx);
-            }
-        }
-        None
+        self.transactions.iter_mut().find(|tx| tx.id == tx_id + 1)
     }
 
     /// Searches the requests in order to find one matching the given response. Returns the matching

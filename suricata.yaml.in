@@ -550,8 +550,11 @@ logging:
   # something reasonable if not provided.  Can be overridden in an
   # output section.  You can leave this out to get the default.
   #
-  # This value is overridden by the SC_LOG_FORMAT env var.
-  #default-log-format: "[%i] %t - (%f:%l) <%d> (%n) -- "
+  # This console log format value can be overridden by the SC_LOG_FORMAT env var.
+  #default-log-format: "%D: %S: %M"
+  #
+  # For the pre-7.0 log format use:
+  #default-log-format: "[%i] %t [%S] - (%f:%l) <%d> (%n) -- "
 
   # A regex to filter output.  Can be overridden in an output section.
   # Defaults to empty (no filter).
@@ -574,6 +577,7 @@ logging:
       enabled: yes
       level: info
       filename: suricata.log
+      # format: "[%i - %m] %z %d: %S: %M"
       # type: json
   - syslog:
       enabled: no
@@ -951,6 +955,8 @@ app-layer:
       enabled: yes
       detection-ports:
         dp: 139, 445
+      # Maximum number of live SMB transactions per flow
+      # max-tx: 1024
 
       # Stream reassembly size for SMB streams. By default track it completely.
       #stream-depth: 0

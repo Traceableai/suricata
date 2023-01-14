@@ -152,6 +152,7 @@ impl NFSState {
             }
 
             tx.auth_type = r.creds_flavor;
+            #[allow(clippy::single_match)]
             match r.creds {
                 RpcRequestCreds::Unix(ref u) => {
                     tx.request_machine_name = u.machine_name_buf.to_vec();
@@ -166,10 +167,7 @@ impl NFSState {
 
         } else if r.procedure == NFSPROC3_READ {
 
-            let found = match self.get_file_tx_by_handle(&xidmap.file_handle, Direction::ToClient) {
-                Some(_) => true,
-                None => false,
-            };
+            let found = self.get_file_tx_by_handle(&xidmap.file_handle, Direction::ToClient).is_some();
             if !found {
                 let tx = self.new_file_tx(&xidmap.file_handle, &xidmap.file_name, Direction::ToClient);
                 tx.procedure = NFSPROC3_READ;

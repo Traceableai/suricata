@@ -1,4 +1,4 @@
-/* Copyright (C) 2017 Open Information Security Foundation
+/* Copyright (C) 2017-2022 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -91,6 +91,12 @@ void DetectTlsFingerprintRegister(void)
             PrefilterGenericMpmRegister, GetData, ALPROTO_TLS,
             TLS_STATE_CERT_READY);
 
+    DetectAppLayerInspectEngineRegister2("tls.cert_fingerprint", ALPROTO_TLS, SIG_FLAG_TOSERVER,
+            TLS_STATE_CERT_READY, DetectEngineInspectBufferGeneric, GetData);
+
+    DetectAppLayerMpmRegister2("tls.cert_fingerprint", SIG_FLAG_TOSERVER, 2,
+            PrefilterGenericMpmRegister, GetData, ALPROTO_TLS, TLS_STATE_CERT_READY);
+
     DetectBufferTypeSetDescriptionByName("tls.cert_fingerprint",
             "TLS certificate fingerprint");
 
@@ -132,13 +138,20 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
     InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         const SSLState *ssl_state = (SSLState *)f->alstate;
+        const SSLStateConnp *connp;
 
-        if (ssl_state->server_connp.cert0_fingerprint == NULL) {
+        if (flow_flags & STREAM_TOSERVER) {
+            connp = &ssl_state->client_connp;
+        } else {
+            connp = &ssl_state->server_connp;
+        }
+
+        if (connp->cert0_fingerprint == NULL) {
             return NULL;
         }
 
-        const uint32_t data_len = strlen(ssl_state->server_connp.cert0_fingerprint);
-        const uint8_t *data = (uint8_t *)ssl_state->server_connp.cert0_fingerprint;
+        const uint32_t data_len = strlen(connp->cert0_fingerprint);
+        const uint8_t *data = (uint8_t *)connp->cert0_fingerprint;
 
         InspectionBufferSetup(det_ctx, list_id, buffer, data, data_len);
         InspectionBufferApplyTransforms(buffer, transforms);
@@ -161,7 +174,7 @@ static bool DetectTlsFingerprintValidateCallback(const Signature *s,
         if (cd->content_len != 59) {
             *sigerror = "Invalid length of the specified fingerprint. "
                         "This rule will therefore never match.";
-            SCLogWarning(SC_WARN_POOR_RULE, "rule %u: %s", s->id, *sigerror);
+            SCLogWarning("rule %u: %s", s->id, *sigerror);
             return false;
         }
 
@@ -179,7 +192,7 @@ static bool DetectTlsFingerprintValidateCallback(const Signature *s,
             *sigerror = "No colon delimiters ':' detected in content after "
                         "tls.cert_fingerprint. This rule will therefore "
                         "never match.";
-            SCLogWarning(SC_WARN_POOR_RULE, "rule %u: %s", s->id, *sigerror);
+            SCLogWarning("rule %u: %s", s->id, *sigerror);
             return false;
         }
 
@@ -187,7 +200,7 @@ static bool DetectTlsFingerprintValidateCallback(const Signature *s,
             *sigerror = "tls.cert_fingerprint should not be used together "
                         "with nocase, since the rule is automatically "
                         "lowercased anyway which makes nocase redundant.";
-            SCLogWarning(SC_WARN_POOR_RULE, "rule %u: %s", s->id, *sigerror);
+            SCLogWarning("rule %u: %s", s->id, *sigerror);
         }
     }
 

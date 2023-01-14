@@ -50,11 +50,8 @@ fn log(tx: &RdpTransaction, js: &mut JsonBuilder) -> Result<(), JsonError> {
             js.set_string("event_type", "tls_handshake")?;
             js.open_array("x509_serials")?;
             for blob in chain {
-                match X509Certificate::from_der(&blob.data) {
-                    Ok((_, cert)) => {
-                        js.append_string(&cert.tbs_certificate.serial.to_str_radix(16))?;
-                    }
-                    _ => {}
+                if let Ok((_, cert)) = X509Certificate::from_der(&blob.data) {
+                    js.append_string(&cert.tbs_certificate.serial.to_str_radix(16))?;
                 }
             }
             js.close()?;
@@ -378,7 +375,7 @@ fn mcs_req_to_json(mcs: &McsConnectRequest, js: &mut JsonBuilder) -> Result<(), 
 }
 
 /// converts RdpClientVersion to a string, using the provided prefix
-fn version_to_string<'a>(ver: &RdpClientVersion, prefix: &'a str) -> String {
+fn version_to_string(ver: &RdpClientVersion, prefix: &str) -> String {
     let mut result = String::from(prefix);
     match ver {
         RdpClientVersion::V4 => result.push('4'),

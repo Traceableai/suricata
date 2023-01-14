@@ -270,8 +270,8 @@ static void *TcpSegmentPoolAlloc(void)
 
         seg->pcap_hdr_storage = SCCalloc(1, sizeof(TcpSegmentPcapHdrStorage));
         if (seg->pcap_hdr_storage == NULL) {
-            SCLogError(SC_ERR_MEM_ALLOC, "Unable to allocate memory for "
-                                         "TcpSegmentPcapHdrStorage");
+            SCLogError("Unable to allocate memory for "
+                       "TcpSegmentPcapHdrStorage");
             SCFree(seg);
             return NULL;
         } else {
@@ -279,9 +279,9 @@ static void *TcpSegmentPoolAlloc(void)
             seg->pcap_hdr_storage->pkt_hdr =
                     SCCalloc(1, sizeof(uint8_t) * TCPSEG_PKT_HDR_DEFAULT_SIZE);
             if (seg->pcap_hdr_storage->pkt_hdr == NULL) {
-                SCLogError(SC_ERR_MEM_ALLOC, "Unable to allocate memory for "
-                                             "packet header data within "
-                                             "TcpSegmentPcapHdrStorage");
+                SCLogError("Unable to allocate memory for "
+                           "packet header data within "
+                           "TcpSegmentPcapHdrStorage");
                 SCFree(seg->pcap_hdr_storage);
                 SCFree(seg);
                 return NULL;
@@ -460,8 +460,9 @@ static int StreamTcpReassemblyConfig(bool quiet)
     if (seg) {
         uint32_t prealloc = 0;
         if (StringParseUint32(&prealloc, 10, (uint16_t)strlen(seg->val), seg->val) < 0) {
-            SCLogError(SC_ERR_INVALID_ARGUMENT, "segment-prealloc of "
-                    "%s is invalid", seg->val);
+            SCLogError("segment-prealloc of "
+                       "%s is invalid",
+                    seg->val);
             return -1;
         }
         segment_prealloc = prealloc;
@@ -515,9 +516,7 @@ void StreamTcpReassembleFree(bool quiet)
 
 #ifdef DEBUG
     if (segment_pool_memuse > 0)
-        SCLogInfo("segment_pool_memuse %"PRIu64"", segment_pool_memuse);
-    if (segment_pool_memcnt > 0)
-        SCLogInfo("segment_pool_memcnt %"PRIu64"", segment_pool_memcnt);
+        SCLogDebug("segment_pool_memuse %" PRIu64 "", segment_pool_memuse);
     SCMutexDestroy(&segment_pool_memuse_mutex);
 #endif
 }
@@ -555,7 +554,7 @@ TcpReassemblyThreadCtx *StreamTcpReassembleInitThreadCtx(ThreadVars *tv)
     }
     SCMutexUnlock(&segment_thread_pool_mutex);
     if (ra_ctx->segment_thread_pool_id < 0 || segment_thread_pool == NULL) {
-        SCLogError(SC_ERR_MEM_ALLOC, "failed to setup/expand stream segment pool. Expand stream.reassembly.memcap?");
+        SCLogError("failed to setup/expand stream segment pool. Expand stream.reassembly.memcap?");
         StreamTcpReassembleFreeThreadCtx(ra_ctx);
         SCReturnPtr(NULL, "TcpReassemblyThreadCtx");
     }

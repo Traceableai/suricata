@@ -728,10 +728,9 @@ impl DCERPCState {
         match parser::parse_dcerpc_bindack(input) {
             Ok((leftover_bytes, mut back)) => {
                 if let Some(ref mut bind) = self.bind {
-                    let mut uuid_internal_id = 0;
-                    for r in back.ctxitems.iter() {
+                    for (uuid_internal_id, r) in back.ctxitems.iter().enumerate() {
                         for mut uuid in bind.uuid_list.iter_mut() {
-                            if uuid.internal_id == uuid_internal_id {
+                            if uuid.internal_id == uuid_internal_id as u16 {
                                 uuid.result = r.ack_result;
                                 if uuid.result != 0 {
                                     break;
@@ -740,7 +739,6 @@ impl DCERPCState {
                                 SCLogDebug!("DCERPC BINDACK accepted UUID: {:?}", uuid);
                             }
                         }
-                        uuid_internal_id += 1;
                     }
                     self.bindack = Some(back);
                 }
@@ -1139,7 +1137,7 @@ pub unsafe extern "C" fn rs_dcerpc_parse_request(
 
     SCLogDebug!("Handling request: input_len {} flags {:x} EOF {}",
             stream_slice.len(), flags, flags & core::STREAM_EOF != 0);
-    if flags & core::STREAM_EOF != 0 && stream_slice.len() == 0 {
+    if flags & core::STREAM_EOF != 0 && stream_slice.is_empty() {
         return AppLayerResult::ok();
     }
     /* START with MIDSTREAM set: record might be starting the middle. */
@@ -1162,7 +1160,7 @@ pub unsafe extern "C" fn rs_dcerpc_parse_response(
     let state = cast_pointer!(state, DCERPCState);
     let flags = stream_slice.flags();
 
-    if flags & core::STREAM_EOF != 0 && stream_slice.len() == 0 {
+    if flags & core::STREAM_EOF != 0 && stream_slice.is_empty() {
         return AppLayerResult::ok();
     }
     /* START with MIDSTREAM set: record might be starting the middle. */

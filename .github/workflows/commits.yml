@@ -71,7 +71,7 @@ jobs:
           cd $HOME/.cargo/bin
           curl -OL https://github.com/eqrion/cbindgen/releases/download/v0.24.3/cbindgen
           chmod 755 cbindgen
-      - uses: actions/checkout@v3.1.0
+      - uses: actions/checkout@v3.3.0
         with:
           fetch-depth: 0
       # The action above is supposed to do this for us, but it doesn't appear to stick.
@@ -94,7 +94,7 @@ jobs:
               make -ik distclean > /dev/null
           done
       - run: sccache -s
-      - uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb
+      - uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce
         name: Uploading build log
         if: always()
         with:

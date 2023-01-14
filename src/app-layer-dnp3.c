@@ -471,7 +471,7 @@ static void DNP3SetEvent(DNP3State *dnp3, uint8_t event)
         dnp3->events++;
     }
     else {
-        SCLogWarning(SC_ERR_ALPARSER, "Failed to set event, state or tx pointer was NULL.");
+        SCLogWarning("Failed to set event, state or tx pointer was NULL.");
     }
 }
 
@@ -1096,8 +1096,6 @@ static AppLayerResult DNP3ParseRequest(Flow *f, void *state, AppLayerParserState
 
     if (buffer->len) {
         if (!DNP3BufferAdd(buffer, input, input_len)) {
-            SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate memory to buffer "
-                "DNP3 request data");
             goto error;
         }
         processed = DNP3HandleRequestLinkLayer(dnp3,
@@ -1122,8 +1120,6 @@ static AppLayerResult DNP3ParseRequest(Flow *f, void *state, AppLayerParserState
         /* Not all data was processed, buffer it. */
         if (input_len) {
             if (!DNP3BufferAdd(buffer, input, input_len)) {
-                SCLogError(SC_ERR_MEM_ALLOC,
-                    "Failed to allocate memory to buffer DNP3 request data");
                 goto error;
             }
         }
@@ -1235,8 +1231,6 @@ static AppLayerResult DNP3ParseResponse(Flow *f, void *state, AppLayerParserStat
 
     if (buffer->len) {
         if (!DNP3BufferAdd(buffer, input, input_len)) {
-            SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate memory to buffer "
-                "DNP3 response data");
             goto error;
         }
         processed = DNP3HandleResponseLinkLayer(dnp3,
@@ -1265,8 +1259,6 @@ static AppLayerResult DNP3ParseResponse(Flow *f, void *state, AppLayerParserStat
         /* Not all data was processed, buffer it. */
         if (input_len) {
             if (!DNP3BufferAdd(buffer, input, input_len)) {
-                SCLogError(SC_ERR_MEM_ALLOC,
-                    "Failed to allocate memory to buffer DNP3 response data");
                 goto error;
             }
         }
@@ -1468,8 +1460,9 @@ static int DNP3StateGetEventInfo(const char *event_name, int *event_id,
 {
     *event_id = SCMapEnumNameToValue(event_name, dnp3_decoder_event_table);
     if (*event_id == -1) {
-        SCLogError(SC_ERR_INVALID_ENUM_MAP, "Event \"%s\" not present in "
-            "the DNP3 enum event map table.", event_name);
+        SCLogError("Event \"%s\" not present in "
+                   "the DNP3 enum event map table.",
+                event_name);
         return -1;
     }
 
@@ -1486,8 +1479,9 @@ static int DNP3StateGetEventInfoById(int event_id, const char **event_name,
 {
     *event_name = SCMapEnumValueToName(event_id, dnp3_decoder_event_table);
     if (*event_name == NULL) {
-        SCLogError(SC_ERR_INVALID_ENUM_MAP, "Event \"%d\" not present in "
-            "the DNP3 enum event map table.", event_id);
+        SCLogError("Event \"%d\" not present in "
+                   "the DNP3 enum event map table.",
+                event_id);
         return -1;
     }
 

@@ -133,8 +133,8 @@ impl SMBState {
                     SMBTransactionDCERPC::new_request(cmd, call_id)));
 
         SCLogDebug!("SMB: TX DCERPC created: ID {} hdr {:?}", tx.id, tx.hdr);
-        self.transactions.push(tx);
-        let tx_ref = self.transactions.last_mut();
+        self.transactions.push_back(tx);
+        let tx_ref = self.transactions.back_mut();
         return tx_ref.unwrap();
     }
 
@@ -148,8 +148,8 @@ impl SMBState {
                     SMBTransactionDCERPC::new_response(call_id)));
 
         SCLogDebug!("SMB: TX DCERPC created: ID {} hdr {:?}", tx.id, tx.hdr);
-        self.transactions.push(tx);
-        let tx_ref = self.transactions.last_mut();
+        self.transactions.push_back(tx);
+        let tx_ref = self.transactions.back_mut();
         return tx_ref.unwrap();
     }
 
@@ -178,10 +178,10 @@ impl SMBState {
 /// Handle DCERPC request data from a WRITE, IOCTL or TRANS record.
 /// return bool indicating whether an tx has been created/updated.
 ///
-pub fn smb_write_dcerpc_record<'b>(state: &mut SMBState,
+pub fn smb_write_dcerpc_record(state: &mut SMBState,
         vercmd: SMBVerCmdStat,
         hdr: SMBCommonHdr,
-        data: &'b [u8]) -> bool
+        data: &[u8]) -> bool
 {
     let mut bind_ifaces : Option<Vec<DCERPCIface>> = None;
     let mut is_bind = false;
@@ -346,20 +346,15 @@ fn smb_dcerpc_response_bindack(
                 None => false,
             };
             if found {
-                match state.dcerpc_ifaces {
-                    Some(ref mut ifaces) => {
-                        let mut i = 0;
-                        for r in bindackr.results {
-                            if i >= ifaces.len() {
-                                // TODO set event: more acks that requests
-                                break;
-                            }
-                            ifaces[i].ack_result = r.ack_result;
-                            ifaces[i].acked = true;
-                            i += 1;
+                if let Some(ref mut ifaces) = state.dcerpc_ifaces {
+                    for (i, r) in bindackr.results.into_iter().enumerate() {
+                        if i >= ifaces.len() {
+                            // TODO set event: more acks that requests
+                            break;
                         }
-                    },
-                    _ => {},
+                        ifaces[i].ack_result = r.ack_result;
+                        ifaces[i].acked = true;
+                    }
                 }
             }
         },
@@ -397,7 +392,7 @@ fn smb_read_dcerpc_record_error(state: &mut SMBState,
     return found;
 }
 
-fn dcerpc_response_handle<'b>(tx: &mut SMBTransaction,
+fn dcerpc_response_handle(tx: &mut SMBTransaction,
         vercmd: SMBVerCmdStat,
         dcer: &DceRpcRecord)
 {
@@ -523,7 +518,7 @@ pub fn smb_read_dcerpc_record<'b>(state: &mut SMBState,
 }
 
 /// Try to find out if the input data looks like DCERPC
-pub fn smb_dcerpc_probe<'b>(data: &[u8]) -> bool
+pub fn smb_dcerpc_probe(data: &[u8]) -> bool
 {
     if let Ok((_, recr)) = parse_dcerpc_record(data) {
         SCLogDebug!("SMB: could be DCERPC {:?}", recr);

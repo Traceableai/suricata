@@ -247,6 +247,11 @@ static int LiveSafeDeviceName(const char *devname, char *newdevname, size_t dest
 
     /* If we have to shorten the interface name */
     if (devnamelen > MAX_DEVNAME) {
+        /* special mode for DPDK pci addresses */
+        if (devnamelen >= 5 && strncmp(devname, "0000:", 5) == 0) {
+            strlcpy(newdevname, devname + 5, destlen);
+            return 0;
+        }
 
         /* IF the dest length is over 10 chars long it will not do any
          * good for the shortening. The shortening is done due to the
@@ -262,7 +267,7 @@ static int LiveSafeDeviceName(const char *devname, char *newdevname, size_t dest
 
         ShortenString(devname, newdevname, destlen, '.');
 
-        SCLogInfo("Shortening device name to: %s", newdevname);
+        SCLogInfo("%s: shortening device name to %s", devname, newdevname);
     } else {
         strlcpy(newdevname, devname, destlen);
     }
@@ -283,7 +288,7 @@ LiveDevice *LiveGetDevice(const char *name)
     LiveDevice *pd;
 
     if (name == NULL) {
-        SCLogWarning(SC_ERR_INVALID_VALUE, "Name of device should not be null");
+        SCLogWarning("Name of device should not be null");
         return NULL;
     }
 
@@ -353,7 +358,7 @@ int LiveDeviceListClean()
 
     TAILQ_FOREACH_SAFE(pd, &live_devices, next, tpd) {
         if (live_devices_stats) {
-            SCLogNotice("Stats for '%s':  pkts: %" PRIu64 ", drop: %" PRIu64
+            SCLogNotice("%s: packets: %" PRIu64 ", drops: %" PRIu64
                         " (%.2f%%), invalid chksum: %" PRIu64,
                     pd->dev, SC_ATOMIC_GET(pd->pkts), SC_ATOMIC_GET(pd->drop),
                     100 * ((double)SC_ATOMIC_GET(pd->drop)) / (double)SC_ATOMIC_GET(pd->pkts),
@@ -504,7 +509,7 @@ int LiveDevUseBypass(LiveDevice *dev)
 {
     BypassInfo *bpinfo = SCCalloc(1, sizeof(*bpinfo));
     if (bpinfo == NULL) {
-        SCLogError(SC_ERR_MEM_ALLOC, "Can't allocate bypass info structure");
+        SCLogError("Can't allocate bypass info structure");
         return -1;
     }
 

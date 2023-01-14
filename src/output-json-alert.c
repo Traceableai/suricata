@@ -682,8 +682,8 @@ static int AlertJson(ThreadVars *tv, JsonAlertLogThread *aft, const Packet *p)
         JsonAddrInfoInit(p, LOG_DIR_PACKET, &addr);
 
         /* Check for XFF, overwriting address info if needed. */
-        HttpXFFCfg *xff_cfg = json_output_ctx->xff_cfg != NULL ?
-            json_output_ctx->xff_cfg : json_output_ctx->parent_xff_cfg;;
+        HttpXFFCfg *xff_cfg = json_output_ctx->xff_cfg != NULL ? json_output_ctx->xff_cfg
+                                                               : json_output_ctx->parent_xff_cfg;
         int have_xff_ip = 0;
         char xff_buffer[XFF_MAXLEN];
         xff_buffer[0] = 0;
@@ -1035,9 +1035,9 @@ static void JsonAlertLogSetupMetadata(AlertJsonOutputCtx *json_output_ctx,
         if (payload_buffer_value != NULL) {
             uint32_t value;
             if (ParseSizeStringU32(payload_buffer_value, &value) < 0) {
-                SCLogError(SC_ERR_ALERT_PAYLOAD_BUFFER, "Error parsing "
+                SCLogError("Error parsing "
                            "payload-buffer-size - %s. Killing engine",
-                           payload_buffer_value);
+                        payload_buffer_value);
                 exit(EXIT_FAILURE);
             } else {
                 payload_buffer_size = value;
@@ -1046,8 +1046,9 @@ static void JsonAlertLogSetupMetadata(AlertJsonOutputCtx *json_output_ctx,
 
         if (!warn_no_meta && flags & JSON_BODY_LOGGING) {
             if (((flags & LOG_JSON_APP_LAYER) == 0)) {
-                SCLogWarning(SC_WARN_ALERT_CONFIG, "HTTP body logging has been configured, however, "
-                             "metadata logging has not been enabled. HTTP body logging will be disabled.");
+                SCLogWarning("HTTP body logging has been configured, however, "
+                             "metadata logging has not been enabled. HTTP body logging will be "
+                             "disabled.");
                 flags &= ~JSON_BODY_LOGGING;
                 warn_no_meta = true;
             }

@@ -650,7 +650,6 @@ typedef struct Packet_
 } Packet;
 
 /** highest mtu of the interfaces we monitor */
-extern int g_default_mtu;
 #define DEFAULT_MTU 1500
 #define MINIMUM_MTU 68      /**< ipv4 minimum: rfc791 */
 
@@ -1148,8 +1147,9 @@ static inline void DecodeLinkLayer(ThreadVars *tv, DecodeThreadVars *dtv,
             DecodeCHDLC(tv, dtv, p, data, len);
             break;
         default:
-            SCLogError(SC_ERR_DATALINK_UNIMPLEMENTED, "datalink type "
-                    "%"PRId32" not yet supported", datalink);
+            SCLogError("datalink type "
+                       "%" PRId32 " not yet supported",
+                    datalink);
             break;
     }
 }

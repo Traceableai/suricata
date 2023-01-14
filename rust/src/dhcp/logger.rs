@@ -40,8 +40,10 @@ impl DHCPLogger {
         let options = &tx.message.options;
         for option in options {
             let code = option.code;
+            #[allow(clippy::single_match)]
             match &option.option {
                 &DHCPOptionWrapper::Generic(ref option) => {
+                    #[allow(clippy::single_match)]
                     match code {
                         DHCP_OPT_TYPE => {
                             if !option.data.is_empty() {
@@ -102,12 +104,12 @@ impl DHCPLogger {
         
         for option in options {
             let code = option.code;
-            match &option.option {
-                &DHCPOptionWrapper::ClientId(ref clientid) => {
+            match option.option {
+                DHCPOptionWrapper::ClientId(ref clientid) => {
                     js.set_string("client_id",
                                   &format_addr_hex(&clientid.data))?;
                 }
-                &DHCPOptionWrapper::TimeValue(ref time_value) => {
+                DHCPOptionWrapper::TimeValue(ref time_value) => {
                     match code {
                         DHCP_OPT_ADDRESS_TIME => {
                             if self.extended {
@@ -128,7 +130,7 @@ impl DHCPLogger {
                         _ => {}
                     }
                 }
-                &DHCPOptionWrapper::Generic(ref option) => {
+                DHCPOptionWrapper::Generic(ref option) => {
                     match code {
                         DHCP_OPT_SUBNET_MASK => {
                             if self.extended {
