@@ -357,7 +357,7 @@ impl HTTP2Transaction {
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards");
                     self.end_time = since_the_epoch.as_millis();
-                } else if header.ftype == parser::HTTP2FrameType::DATA as u8 {
+                } else if header.ftype == parser::HTTP2FrameType::Data as u8 {
                     //not end of stream
                     if dir == Direction::ToServer {
                         if self.state < HTTP2TransactionState::HTTP2StateDataClient {
