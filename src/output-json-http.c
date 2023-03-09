@@ -481,6 +481,12 @@ static int JsonHttpLogger(ThreadVars *tv, void *thread_data, const Packet *p, Fl
     SCEnter();
 
     htp_tx_t *tx = txptr;
+
+    // Log only if request and response have progressed to completion
+    if (tx->request_progress != HTP_REQUEST_COMPLETE || tx->response_progress != HTP_RESPONSE_COMPLETE) {
+        SCReturnInt(TM_ECODE_OK);
+    }
+
     JsonHttpLogThread *jhl = (JsonHttpLogThread *)thread_data;
 
     JsonBuilder *js = CreateEveHeaderWithTxId(
@@ -491,6 +497,7 @@ static int JsonHttpLogger(ThreadVars *tv, void *thread_data, const Packet *p, Fl
     SCLogDebug("got a HTTP request and now logging !!");
 
     EveHttpLogJSON(jhl, js, tx, tx_id);
+
     HttpXFFCfg *xff_cfg = jhl->httplog_ctx->xff_cfg != NULL ?
         jhl->httplog_ctx->xff_cfg : jhl->httplog_ctx->parent_xff_cfg;
 
