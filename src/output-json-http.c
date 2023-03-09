@@ -495,7 +495,6 @@ static int JsonHttpLogger(ThreadVars *tv, void *thread_data, const Packet *p, Fl
         return TM_ECODE_OK;
 
     SCLogDebug("got a HTTP request and now logging !!");
-
     EveHttpLogJSON(jhl, js, tx, tx_id);
 
     HttpXFFCfg *xff_cfg = jhl->httplog_ctx->xff_cfg != NULL ?
