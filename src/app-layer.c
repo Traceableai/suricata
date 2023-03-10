@@ -76,6 +76,7 @@ struct AppLayerThreadCtx_ {
 typedef struct AppLayerCounterNames_ {
     char name[MAX_COUNTER_SIZE];
     char tx_name[MAX_COUNTER_SIZE];
+    char tx_incomplete_drops[MAX_COUNTER_SIZE];
     char gap_error[MAX_COUNTER_SIZE];
     char parser_error[MAX_COUNTER_SIZE];
     char internal_error[MAX_COUNTER_SIZE];
@@ -85,6 +86,7 @@ typedef struct AppLayerCounterNames_ {
 typedef struct AppLayerCounters_ {
     uint16_t counter_id;
     uint16_t counter_tx_id;
+    uint16_t counter_tx_incomplete_id;
     uint16_t gap_error_id;
     uint16_t parser_error_id;
     uint16_t internal_error_id;
@@ -124,6 +126,14 @@ void AppLayerIncTxCounter(ThreadVars *tv, Flow *f, uint64_t step)
     const uint16_t id = applayer_counters[f->protomap][f->alproto].counter_tx_id;
     if (likely(tv && id > 0)) {
         StatsAddUI64(tv, id, step);
+    }
+}
+
+void AppLayerIncTxDropCounter(ThreadVars *tv, Flow *f)
+{
+    const uint16_t id = applayer_counters[f->protomap][f->alproto].counter_tx_incomplete_id;
+    if (likely(tv && id > 0)) {
+        StatsIncr(tv, id);
     }
 }
 
@@ -1097,6 +1107,9 @@ void AppLayerSetupCounters()
                     snprintf(applayer_counter_names[ipproto_map][alproto].tx_name,
                             sizeof(applayer_counter_names[ipproto_map][alproto].tx_name),
                             "%s%s", tx_str, alproto_str);
+                    snprintf(applayer_counter_names[ipproto_map][alproto].tx_incomplete_drops,
+                            sizeof(applayer_counter_names[ipproto_map][alproto].tx_incomplete_drops),
+                            "%s%s.incomplete_tx_drops", tx_str, alproto_str);
 
                     if (ipproto == IPPROTO_TCP) {
                         snprintf(applayer_counter_names[ipproto_map][alproto].gap_error,
@@ -1144,6 +1157,9 @@ void AppLayerRegisterThreadCounters(ThreadVars *tv)
 
                 applayer_counters[ipproto_map][alproto].counter_tx_id =
                     StatsRegisterCounter(applayer_counter_names[ipproto_map][alproto].tx_name, tv);
+
+                applayer_counters[ipproto_map][alproto].counter_tx_incomplete_id =
+                    StatsRegisterCounter(applayer_counter_names[ipproto_map][alproto].tx_incomplete_drops, tv);
 
                 if (ipproto == IPPROTO_TCP) {
                     applayer_counters[ipproto_map][alproto].gap_error_id = StatsRegisterCounter(
