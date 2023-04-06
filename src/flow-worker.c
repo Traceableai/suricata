@@ -501,6 +501,7 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data)
     DEBUG_VALIDATE_BUG_ON(tv->flow_queue == NULL);
 
     SCLogDebug("packet %"PRIu64, p->pcap_cnt);
+    SCLogInfo("Thread id: %lu got a packet", SCGetThreadIdLong());
 
     /* update time */
     if (!(PKT_IS_PSEUDOPKT(p))) {
