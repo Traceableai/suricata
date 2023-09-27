@@ -1202,40 +1202,54 @@ static int ReassembleUpdateAppLayer (ThreadVars *tv,
         last_was_gap = false;
 
         /* make sure to only deal with ACK'd data */
-        mydata_len = AdjustToAcked(p, ssn, *stream, app_progress, mydata_len);
+        //mydata_len = AdjustToAcked(p, ssn, *stream, app_progress, mydata_len);
         DEBUG_VALIDATE_BUG_ON(mydata_len > (uint32_t)INT_MAX);
         if (mydata == NULL && mydata_len > 0 && CheckGap(ssn, *stream, p)) {
-            SCLogDebug("sending GAP to app-layer (size: %u)", mydata_len);
-
-            int r = AppLayerHandleTCPData(tv, ra_ctx, p, p->flow, ssn, stream,
-                    NULL, mydata_len,
-                    StreamGetAppLayerFlags(ssn, *stream, p)|STREAM_GAP);
-            AppLayerProfilingStore(ra_ctx->app_tctx, p);
-
-            StreamTcpSetEvent(p, STREAM_REASSEMBLY_SEQ_GAP);
-            (*stream)->flags |= STREAMTCP_STREAM_FLAG_HAS_GAP;
-            StatsIncr(tv, ra_ctx->counter_tcp_reass_gap);
-            ssn->lossy_be_liberal = true;
-
-            /* AppLayerHandleTCPData has likely updated progress. */
-            const bool no_progress_update = (app_progress == STREAM_APP_PROGRESS(*stream));
-            app_progress = STREAM_APP_PROGRESS(*stream);
-
-            /* a GAP also consumes 'data required'. TODO perhaps we can use
-             * this to skip post GAP data until the start of a next record. */
-            if ((*stream)->data_required > 0) {
-                if ((*stream)->data_required > mydata_len) {
-                    (*stream)->data_required -= mydata_len;
-                } else {
-                    (*stream)->data_required = 0;
-                }
+            SCLogDebug("gap ahead %u client %u server %u app_progress %lu", check_for_gap_ahead, (*stream) == &ssn->client, (*stream) == &ssn->server, app_progress);
+            // special case for netscaler
+            const uint8_t direction = (StreamGetAppLayerFlags(ssn, *stream, p) & STREAM_TOSERVER) ? 0 : 1;
+            TcpStream *cur_stream = &ssn->client;
+            if (direction) {
+                cur_stream = &ssn->server;
             }
-            if (r < 0)
-                return 0;
-            if (no_progress_update)
-                break;
-            last_was_gap = true;
-            continue;
+            if (!gap_ahead && app_progress != 0 && SEQ_EQ(TCP_GET_SEQ(p), cur_stream->last_ack) && SEQ_LT(TCP_GET_SEQ(p) + mydata_len, cur_stream->next_seq))  {
+                SCLogDebug("consuming gap (size: %u)", mydata_len);
+            
+                StreamTcpUpdateAppLayerProgress(ssn, direction, mydata_len);
+                app_progress = STREAM_APP_PROGRESS(*stream);
+                continue;
+            } else {
+                SCLogDebug("sending GAP to app-layer (size: %u)", mydata_len);
+                int r = AppLayerHandleTCPData(tv, ra_ctx, p, p->flow, ssn, stream,
+                        NULL, mydata_len,
+                        StreamGetAppLayerFlags(ssn, *stream, p)|STREAM_GAP);
+                AppLayerProfilingStore(ra_ctx->app_tctx, p);
+
+                StreamTcpSetEvent(p, STREAM_REASSEMBLY_SEQ_GAP);
+                (*stream)->flags |= STREAMTCP_STREAM_FLAG_HAS_GAP;
+                StatsIncr(tv, ra_ctx->counter_tcp_reass_gap);
+                ssn->lossy_be_liberal = true;
+
+                /* AppLayerHandleTCPData has likely updated progress. */
+                const bool no_progress_update = (app_progress == STREAM_APP_PROGRESS(*stream));
+                app_progress = STREAM_APP_PROGRESS(*stream);
+
+                /* a GAP also consumes 'data required'. TODO perhaps we can use
+                * this to skip post GAP data until the start of a next record. */
+                if ((*stream)->data_required > 0) {
+                    if ((*stream)->data_required > mydata_len) {
+                        (*stream)->data_required -= mydata_len;
+                    } else {
+                        (*stream)->data_required = 0;
+                    }
+                }
+                if (r < 0)
+                    return 0;
+                if (no_progress_update)
+                    break;
+                last_was_gap = true;
+                continue;
+            }
 
         } else if (flags & STREAM_DEPTH) {
             // we're just called once with this flag, so make sure we pass it on
@@ -1994,6 +2008,7 @@ int StreamTcpReassembleHandleSegment(ThreadVars *tv, TcpReassemblyThreadCtx *ra_
 
         SCLogDebug("packet %"PRIu64" set PKT_STREAM_ADD", p->pcap_cnt);
         p->flags |= PKT_STREAM_ADD;
+        dir = UPDATE_DIR_PACKET;
     } else {
         SCLogDebug("ssn %p / stream %p: not calling StreamTcpReassembleHandleSegmentHandleData:"
                 " p->payload_len %u, STREAMTCP_STREAM_FLAG_NOREASSEMBLY %s",
