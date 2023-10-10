@@ -333,6 +333,10 @@ static void SignalHandlerSigHup(/*@unused@*/ int sig)
 }
 #endif
 
+bool shouldExit() {
+    return (sigterm_count || sigint_count) ;
+}
+
 void GlobalsInitPreConfig(void)
 {
     TimeInit();
@@ -1063,7 +1067,7 @@ static TmEcode ParseInterfacesList(const int runmode, char *pcap_dev)
     SCReturnInt(TM_ECODE_OK);
 }
 
-static void SCInstanceInit(SCInstance *suri, const char *progname)
+void SCInstanceInit(SCInstance *suri, const char *progname)
 {
     memset(suri, 0x00, sizeof(*suri));
 
@@ -1302,7 +1306,7 @@ static bool IsLogDirectoryWritable(const char* str)
     return false;
 }
 
-static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
+TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
 {
     int opt;
 
@@ -2148,7 +2152,7 @@ static int InitRunAs(SCInstance *suri)
     return TM_ECODE_OK;
 }
 
-static int InitSignalHandler(SCInstance *suri)
+int InitSignalHandler(SCInstance *suri)
 {
     /* registering signals we use */
 #ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
@@ -2333,7 +2337,7 @@ static int StartInternalRunMode(SCInstance *suri, int argc, char **argv)
     return TM_ECODE_OK;
 }
 
-static int FinalizeRunMode(SCInstance *suri, char **argv)
+int FinalizeRunMode(SCInstance *suri, char **argv)
 {
     switch (suri->run_mode) {
         case RUNMODE_UNKNOWN:
@@ -2875,26 +2879,26 @@ int InitGlobal(void)
 
 int SuricataMain(int argc, char **argv)
 {
-    SCInstanceInit(&suricata, argv[0]);
+//     SCInstanceInit(&suricata, argv[0]);
 
-    if (InitGlobal() != 0) {
-        exit(EXIT_FAILURE);
-    }
+//     if (InitGlobal() != 0) {
+//         exit(EXIT_FAILURE);
+//     }
 
-#ifdef OS_WIN32
-    /* service initialization */
-    if (WindowsInitService(argc, argv) != 0) {
-        exit(EXIT_FAILURE);
-    }
-#endif /* OS_WIN32 */
+// #ifdef OS_WIN32
+//     /* service initialization */
+//     if (WindowsInitService(argc, argv) != 0) {
+//         exit(EXIT_FAILURE);
+//     }
+// #endif /* OS_WIN32 */
 
-    if (ParseCommandLine(argc, argv, &suricata) != TM_ECODE_OK) {
-        exit(EXIT_FAILURE);
-    }
+//     if (ParseCommandLine(argc, argv, &suricata) != TM_ECODE_OK) {
+//         exit(EXIT_FAILURE);
+//     }
 
-    if (FinalizeRunMode(&suricata, argv) != TM_ECODE_OK) {
-        exit(EXIT_FAILURE);
-    }
+//     if (FinalizeRunMode(&suricata, argv) != TM_ECODE_OK) {
+//         exit(EXIT_FAILURE);
+//     }
 
     switch (StartInternalRunMode(&suricata, argc, argv)) {
         case TM_ECODE_DONE:

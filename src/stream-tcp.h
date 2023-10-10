@@ -38,6 +38,7 @@
 #define STREAMTCP_INIT_FLAG_DROP_INVALID           BIT_U8(1)
 #define STREAMTCP_INIT_FLAG_BYPASS                 BIT_U8(2)
 #define STREAMTCP_INIT_FLAG_INLINE                 BIT_U8(3)
+#define STREAMTCP_INIT_FLAG_ALLOW_GAPS             BIT_U8(4)
 
 /*global flow data*/
 typedef struct TcpStreamCnf_ {

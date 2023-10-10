@@ -31,6 +31,7 @@ int RunModeUnixSocketIsActive(void);
 TmEcode UnixSocketPcapFile(TmEcode tm, struct timespec *last_processed);
 
 float MemcapsGetPressure(void);
+float MemcapsGetPressureReassembly(void);
 
 #ifdef BUILD_UNIX_SOCKET
 TmEcode UnixSocketDatasetAdd(json_t *cmd, json_t* answer, void *data);
