@@ -379,9 +379,9 @@ static int Insert(StreamingBuffer *sb, struct SBB *tree,
     if (SBB_RB_PREV(sbb) == NULL) {
         sb->head = sbb;
     } else {
-        ConsolidateBackward(sb, tree, sbb);
+        //ConsolidateBackward(sb, tree, sbb);
     }
-    ConsolidateFwd(sb, tree, sbb);
+    //ConsolidateFwd(sb, tree, sbb);
 #ifdef DEBUG
     SBBPrintList(sb);
 #endif

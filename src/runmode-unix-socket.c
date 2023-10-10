@@ -147,6 +147,22 @@ float MemcapsGetPressure(void)
     return percent;
 }
 
+
+float MemcapsGetPressureReassembly(void)
+{
+    float percent = 0.0;
+    int i = 1;
+    uint64_t memcap = memcaps[i].GetFunc();
+    if (memcap) {
+        uint64_t memuse = memcaps[i].GetMemuseFunc();
+        float p = (float)((double)memuse / (double)memcap);
+        // SCLogNotice("%s: memuse %"PRIu64", memcap %"PRIu64" => %f%%",
+        //    memcaps[i].name, memuse, memcap, (p * 100));
+        percent = MAX(p, percent);
+    }
+    return percent;
+}
+
 #ifdef BUILD_UNIX_SOCKET
 
 static int RunModeUnixSocketMaster(void);

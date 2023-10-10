@@ -54,6 +54,11 @@
 #include "flow-spare-pool.h"
 #include "flow-worker.h"
 
+#include "runmode-unix-socket.h"
+
+extern SCInstance suricata;
+extern void SCPidfileRemove(const char *pid_filename);
+
 typedef DetectEngineThreadCtx *DetectEngineThreadCtxPtr;
 
 typedef struct FlowTimeoutCounters {
@@ -501,6 +506,18 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data)
     DEBUG_VALIDATE_BUG_ON(tv->flow_queue == NULL);
 
     SCLogDebug("packet %"PRIu64, p->pcap_cnt);
+    uint32_t mp = 0;
+
+    if ((p->pcap_cnt & 0x0000000000003FFF) == 0x0000000000000000) {
+        // for every 16k packets, check memcap
+        mp = MemcapsGetPressureReassembly() * 100;
+    }
+
+    if (mp > 90) {
+        SCLogInfo("memcap reached above 90%%");
+        SCPidfileRemove(suricata.pid_filename);
+        exit(0);
+    }
 
     /* update time */
     if (!(PKT_IS_PSEUDOPKT(p))) {

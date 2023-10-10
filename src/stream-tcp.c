@@ -422,6 +422,13 @@ void StreamTcpInitConfig(bool quiet)
         SCLogConfig("stream \"midstream\" session pickups: %s", stream_config.midstream ? "enabled" : "disabled");
     }
 
+    int allow_gaps = 0;
+    if(ConfGetBool("stream.allow-gaps", &allow_gaps) == 1) {
+        if(allow_gaps == 1) {
+            stream_config.flags |= STREAMTCP_INIT_FLAG_ALLOW_GAPS;
+        }
+    }
+
     (void)ConfGetBool("stream.async-oneside", &stream_config.async_oneside);
 
     if (!quiet) {

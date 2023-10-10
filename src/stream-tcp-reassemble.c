@@ -75,6 +75,8 @@ static uint64_t segment_pool_memuse = 0;
 static uint64_t segment_pool_memcnt = 0;
 #endif
 
+extern TcpStreamCnf stream_config;
+
 thread_local uint64_t t_pcapcnt = UINT64_MAX;
 
 PoolThread *segment_thread_pool = NULL;
@@ -1109,25 +1111,25 @@ static inline bool CheckGap(TcpSession *ssn, TcpStream *stream, Packet *p)
         /* however, we can accept ACKs a bit too liberally. If last_ack
          * is beyond next_seq, we only consider it a gap now if we do
          * already have data beyond the gap. */
-        if (SEQ_GT(stream->last_ack, stream->next_seq)) {
-            if (RB_EMPTY(&stream->sb.sbb_tree)) {
-                SCLogDebug("packet %" PRIu64 ": no GAP. "
-                           "next_seq %u < last_ack %u, but no data in list",
-                        p->pcap_cnt, stream->next_seq, stream->last_ack);
-                return false;
-            } else {
-                const uint64_t next_seq_abs =
-                        STREAM_BASE_OFFSET(stream) + (stream->next_seq - stream->base_seq);
-                const StreamingBufferBlock *blk = stream->sb.head;
-                if (blk->offset > next_seq_abs && blk->offset < last_ack_abs) {
-                    /* ack'd data after the gap */
-                    SCLogDebug("packet %" PRIu64 ": GAP. "
-                               "next_seq %u < last_ack %u, but ACK'd data beyond gap.",
-                            p->pcap_cnt, stream->next_seq, stream->last_ack);
-                    return true;
-                }
-            }
-        }
+        // if (SEQ_GT(stream->last_ack, stream->next_seq)) {
+        //     if (RB_EMPTY(&stream->sb.sbb_tree)) {
+        //         SCLogDebug("packet %" PRIu64 ": no GAP. "
+        //                    "next_seq %u < last_ack %u, but no data in list",
+        //                 p->pcap_cnt, stream->next_seq, stream->last_ack);
+        //         return false;
+        //     } else {
+        //         const uint64_t next_seq_abs =
+        //                 STREAM_BASE_OFFSET(stream) + (stream->next_seq - stream->base_seq);
+        //         const StreamingBufferBlock *blk = stream->sb.head;
+        //         if (blk->offset > next_seq_abs && blk->offset < last_ack_abs) {
+        //             /* ack'd data after the gap */
+        //             SCLogDebug("packet %" PRIu64 ": GAP. "
+        //                        "next_seq %u < last_ack %u, but ACK'd data beyond gap.",
+        //                     p->pcap_cnt, stream->next_seq, stream->last_ack);
+        //             return true;
+        //         }
+        //     }
+        // }
 
         SCLogDebug("packet %" PRIu64 ": GAP! "
                    "last_ack_abs %" PRIu64 " > app_progress %" PRIu64 ", "
@@ -1184,18 +1186,21 @@ static int ReassembleUpdateAppLayer (ThreadVars *tv,
 {
     uint64_t app_progress = STREAM_APP_PROGRESS(*stream);
 
-    SCLogDebug("app progress %"PRIu64, app_progress);
-    SCLogDebug("last_ack %u, base_seq %u", (*stream)->last_ack, (*stream)->base_seq);
+    SCLogInfo("app progress %"PRIu64, app_progress);
+    SCLogInfo("last_ack %u, base_seq %u", (*stream)->last_ack, (*stream)->base_seq);
 
     const uint8_t *mydata;
     uint32_t mydata_len;
     bool last_was_gap = false;
 
+    SCLogInfo("p->sp %u p->dp %u seq %u ack %u", p->sp, p->dp, TCP_GET_SEQ(p), TCP_GET_SEQ(p));
     while (1) {
         const uint8_t flags = StreamGetAppLayerFlags(ssn, *stream, p);
         bool check_for_gap_ahead = ((*stream)->data_required > 0);
         bool gap_ahead =
                 GetAppBuffer(*stream, &mydata, &mydata_len, app_progress, check_for_gap_ahead);
+
+        SCLogInfo("p->sp %u p->dp %u gap_ahead %u check_for_gap_ahead %u last_was_gap %u mydata_len %u", p->sp, p->dp, gap_ahead,check_for_gap_ahead, last_was_gap, mydata_len);
         if (last_was_gap && mydata_len == 0) {
             break;
         }
@@ -1212,7 +1217,9 @@ static int ReassembleUpdateAppLayer (ThreadVars *tv,
             if (direction) {
                 cur_stream = &ssn->server;
             }
-            if (!gap_ahead && app_progress != 0 && SEQ_EQ(TCP_GET_SEQ(p), cur_stream->last_ack) && SEQ_LT(TCP_GET_SEQ(p) + mydata_len, cur_stream->next_seq))  {
+            SCLogDebug("seq %u cur_stream->last_ack %u mydata_len %u cur_stream->next_seq %u", TCP_GET_SEQ(p), cur_stream->last_ack, mydata_len, cur_stream->next_seq);
+            if ((stream_config.flags & STREAMTCP_INIT_FLAG_ALLOW_GAPS) && !gap_ahead && app_progress != 0 && 
+                (*stream) == &ssn->server && SEQ_EQ(TCP_GET_SEQ(p), cur_stream->last_ack) && SEQ_LT(TCP_GET_SEQ(p) + mydata_len, cur_stream->next_seq))  {
                 SCLogDebug("consuming gap (size: %u)", mydata_len);
             
                 StreamTcpUpdateAppLayerProgress(ssn, direction, mydata_len);
@@ -1274,7 +1281,7 @@ static int ReassembleUpdateAppLayer (ThreadVars *tv,
         if ((p->flags & PKT_PSEUDO_STREAM_END) == 0 || ssn->state < TCP_CLOSED) {
             if (mydata_len < (*stream)->data_required) {
                 if (gap_ahead) {
-                    SCLogDebug("GAP while expecting more data (expect %u, gap size %u)",
+                    SCLogInfo("GAP while expecting more data (expect %u, gap size %u)",
                             (*stream)->data_required, mydata_len);
                     (*stream)->app_progress_rel += mydata_len;
                     (*stream)->data_required -= mydata_len;
@@ -2008,7 +2015,9 @@ int StreamTcpReassembleHandleSegment(ThreadVars *tv, TcpReassemblyThreadCtx *ra_
 
         SCLogDebug("packet %"PRIu64" set PKT_STREAM_ADD", p->pcap_cnt);
         p->flags |= PKT_STREAM_ADD;
-        dir = UPDATE_DIR_PACKET;
+        if(stream_config.flags & STREAMTCP_INIT_FLAG_ALLOW_GAPS){
+            dir = UPDATE_DIR_PACKET;
+        }
     } else {
         SCLogDebug("ssn %p / stream %p: not calling StreamTcpReassembleHandleSegmentHandleData:"
                 " p->payload_len %u, STREAMTCP_STREAM_FLAG_NOREASSEMBLY %s",
