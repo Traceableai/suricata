@@ -1210,17 +1210,17 @@ static int ReassembleUpdateAppLayer (ThreadVars *tv,
         //mydata_len = AdjustToAcked(p, ssn, *stream, app_progress, mydata_len);
         DEBUG_VALIDATE_BUG_ON(mydata_len > (uint32_t)INT_MAX);
         if (mydata == NULL && mydata_len > 0 && CheckGap(ssn, *stream, p)) {
-            SCLogInfo("gap ahead %u client %u server %u app_progress %lu", check_for_gap_ahead, (*stream) == &ssn->client, (*stream) == &ssn->server, app_progress);
+            SCLogDebug("gap ahead %u client %u server %u app_progress %lu", check_for_gap_ahead, (*stream) == &ssn->client, (*stream) == &ssn->server, app_progress);
             // special case for netscaler
             const uint8_t direction = (StreamGetAppLayerFlags(ssn, *stream, p) & STREAM_TOSERVER) ? 0 : 1;
             TcpStream *cur_stream = &ssn->client;
             if (direction) {
                 cur_stream = &ssn->server;
             }
-            SCLogInfo("seq %u cur_stream->last_ack %u mydata_len %u cur_stream->next_seq %u", TCP_GET_SEQ(p), cur_stream->last_ack, mydata_len, cur_stream->next_seq);
+            SCLogDebug("seq %u cur_stream->last_ack %u mydata_len %u cur_stream->next_seq %u", TCP_GET_SEQ(p), cur_stream->last_ack, mydata_len, cur_stream->next_seq);
             if ((stream_config.flags & STREAMTCP_INIT_FLAG_ALLOW_GAPS) && !gap_ahead && app_progress != 0 && 
                 (*stream) == &ssn->server && SEQ_EQ(TCP_GET_SEQ(p), cur_stream->last_ack) && SEQ_LT(TCP_GET_SEQ(p) + mydata_len, cur_stream->next_seq))  {
-                SCLogInfo("consuming gap (size: %u)", mydata_len);
+                SCLogDebug("consuming gap (size: %u)", mydata_len);
             
                 StreamTcpUpdateAppLayerProgress(ssn, direction, mydata_len);
                 app_progress = STREAM_APP_PROGRESS(*stream);
