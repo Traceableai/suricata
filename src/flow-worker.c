@@ -513,8 +513,8 @@ static TmEcode FlowWorker(ThreadVars *tv, Packet *p, void *data)
         mp = MemcapsGetPressureReassembly() * 100;
     }
 
-    if (mp > 80) {
-        SCLogInfo("memcap reached above 80%%");
+    if (mp > 90) {
+        SCLogInfo("memcap reached above 90%%");
         SCPidfileRemove(suricata.pid_filename);
         exit(0);
     }
