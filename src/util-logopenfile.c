@@ -509,7 +509,7 @@ SCConfLogOpenGeneric(ConfNode *conf,
     const char *append = ConfNodeLookupChildValue(conf, "append");
     if (append == NULL)
         append = DEFAULT_LOG_MODE_APPEND;
-
+    log_ctx->append = append;
     /* JSON flags */
     log_ctx->json_flags = JSON_PRESERVE_ORDER|JSON_COMPACT|
                           JSON_ENSURE_ASCII|JSON_ESCAPE_SLASH;
@@ -631,7 +631,7 @@ int SCConfLogReopen(LogFileCtx *log_ctx)
     /* Reopen the file. Append is forced in case the file was not
      * moved as part of a rotation process. */
     SCLogDebug("Reopening log file %s.", log_ctx->filename);
-    log_ctx->fp = SCLogOpenFileFp(log_ctx->filename, "yes", log_ctx->filemode);
+    log_ctx->fp = SCLogOpenFileFp(log_ctx->filename, log_ctx->append, log_ctx->filemode);
     if (log_ctx->fp == NULL) {
         return -1; // Already logged by Open..Fp routine.
     }
