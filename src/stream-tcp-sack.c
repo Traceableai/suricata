@@ -199,8 +199,8 @@ static int Insert(TcpStream *stream, struct TCPSACK *tree, uint32_t le, uint32_t
         return 0;
     }
     stream->sack_size += (re - le);
-   // ConsolidateBackward(stream, tree, sa);
-    //ConsolidateFwd(stream, tree, sa);
+    ConsolidateBackward(stream, tree, sa);
+    ConsolidateFwd(stream, tree, sa);
     return 0;
 }
 
